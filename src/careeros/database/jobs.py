@@ -8,6 +8,32 @@ from dataclasses import dataclass
 
 from careeros.collectors.arbeitnow import CollectedJob
 
+_SELECT_COLUMNS = (
+    "id, source, source_job_id, title, company, location,"
+    " description, url, employment_type, remote_status,"
+    " published_at, collected_at, created_at, updated_at"
+)
+
+
+def _stored_job_from_row(row: sqlite3.Row) -> StoredJob:
+    """Build a StoredJob from a SQLite row."""
+    return StoredJob(
+        id=row["id"],
+        source=row["source"],
+        source_job_id=row["source_job_id"],
+        title=row["title"],
+        company=row["company"],
+        location=row["location"],
+        description=row["description"],
+        url=row["url"],
+        employment_type=row["employment_type"],
+        remote_status=row["remote_status"],
+        published_at=row["published_at"],
+        collected_at=row["collected_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
 
 @dataclass(frozen=True)
 class SaveResult:
@@ -76,9 +102,7 @@ def search_jobs(
 
     rows = connection.execute(
         f"""
-        SELECT id, source, source_job_id, title, company, location,
-               description, url, employment_type, remote_status,
-               published_at, collected_at, created_at, updated_at
+        SELECT {_SELECT_COLUMNS}
         FROM jobs
         WHERE {" AND ".join(conditions)}
         ORDER BY published_at DESC NULLS LAST
@@ -87,27 +111,26 @@ def search_jobs(
         params,
     ).fetchall()
 
-    result: list[StoredJob] = []
-    for row in rows:
-        result.append(
-            StoredJob(
-                id=row["id"],
-                source=row["source"],
-                source_job_id=row["source_job_id"],
-                title=row["title"],
-                company=row["company"],
-                location=row["location"],
-                description=row["description"],
-                url=row["url"],
-                employment_type=row["employment_type"],
-                remote_status=row["remote_status"],
-                published_at=row["published_at"],
-                collected_at=row["collected_at"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-            ),
-        )
-    return result
+    return [_stored_job_from_row(row) for row in rows]
+
+
+def get_job_by_id(
+    connection: sqlite3.Connection,
+    job_id: int,
+) -> StoredJob | None:
+    """Retrieve a single job by its database ID, or None if not found."""
+    row = connection.execute(
+        f"""
+        SELECT {_SELECT_COLUMNS}
+        FROM jobs
+        WHERE id = ?
+        """,
+        (job_id,),
+    ).fetchone()
+
+    if row is None:
+        return None
+    return _stored_job_from_row(row)
 
 
 def save_jobs(

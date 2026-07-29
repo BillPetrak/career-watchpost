@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import html
+import re
 import sqlite3
 import sys
 from collections.abc import Sequence
+from html.parser import HTMLParser
 from pathlib import Path
 
 from careeros.collectors.arbeitnow import fetch_jobs
 from careeros.database.connection import connect
-from careeros.database.jobs import save_jobs, search_jobs
+from careeros.database.jobs import get_job_by_id, save_jobs, search_jobs
 from careeros.database.schema import initialize_schema
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -101,6 +104,102 @@ def run_search(
     return 0
 
 
+def run_show(job_id: int, database_path: Path) -> int:
+    """Display a single job by its database ID."""
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            job = get_job_by_id(connection, job_id)
+    except Exception as error:
+        print(f"Error: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    if job is None:
+        print(f"No job found with ID {job_id}.", file=sys.stderr)
+        return 1
+
+    print(f"ID:               {job.id}")
+    print(f"Title:            {job.title}")
+    print(f"Company:          {job.company or 'N/A'}")
+    print(f"Location:         {job.location or 'N/A'}")
+    print(f"Remote status:    {job.remote_status or 'N/A'}")
+    print(f"Employment type:  {job.employment_type or 'N/A'}")
+    print(f"Source:           {job.source}")
+    print(f"Source job ID:    {job.source_job_id or 'N/A'}")
+    print(f"Published:        {job.published_at or 'N/A'}")
+    print(f"Collected:        {job.collected_at}")
+    print(f"URL:              {job.url or 'N/A'}")
+    print()
+    print("Description:")
+    print(clean_description(job.description) if job.description else "N/A")
+
+    return 0
+
+
+class _DescriptionCleaner(HTMLParser):
+    """Strips HTML tags, preserves paragraph/list boundaries, and unescapes entities."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self._parts: list[str] = []
+        self._pending_newline = False
+
+    def _emit_newline(self) -> None:
+        self._pending_newline = True
+
+    def _flush_newline(self) -> None:
+        if self._pending_newline:
+            if not self._parts or self._parts[-1] != "\n":
+                self._parts.append("\n")
+            self._pending_newline = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}:
+            self._emit_newline()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {
+            "p",
+            "div",
+            "li",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "tr",
+            "td",
+            "th",
+            "ul",
+            "ol",
+        }:
+            self._emit_newline()
+
+    def handle_data(self, data: str) -> None:
+        self._flush_newline()
+        cleaned = " ".join(data.split())
+        if cleaned:
+            if self._parts and self._parts[-1] != "\n":
+                self._parts.append(" ")
+            self._parts.append(cleaned)
+
+    def get_text(self) -> str:
+        text = "".join(self._parts)
+        text = re.sub(r"\n+", "\n", text)
+        return text.strip()
+
+
+def clean_description(html_text: str) -> str:
+    """Strip HTML tags, preserve paragraph breaks, and unescape entities."""
+    if not html_text:
+        return ""
+    text = html.unescape(html_text)
+    cleaner = _DescriptionCleaner()
+    cleaner.feed(text)
+    return cleaner.get_text()
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CareerOS command-line parser."""
     parser = argparse.ArgumentParser(
@@ -171,6 +270,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="SQLite database path.",
     )
 
+    show_parser = subparsers.add_parser(
+        "show",
+        help="Show a single job by database ID.",
+    )
+    show_parser.add_argument(
+        "job_id",
+        type=int,
+        help="Database job ID.",
+    )
+    show_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
     return parser
 
 
@@ -202,6 +317,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             location=arguments.location,
             source=arguments.source,
             limit=arguments.limit,
+        )
+
+    if arguments.command == "show":
+        if arguments.job_id < 1:
+            parser.error("job-id must be a positive integer")
+
+        return run_show(
+            job_id=arguments.job_id,
+            database_path=arguments.database,
         )
 
     parser.error("Unsupported command.")
