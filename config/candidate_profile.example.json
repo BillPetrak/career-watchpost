@@ -1,0 +1,26 @@
+{
+  "desired_titles": [
+    "Machine Learning Engineer",
+    "Data Scientist",
+    "Python Developer"
+  ],
+  "skills": [
+    "Python",
+    "Machine Learning",
+    "Data Analysis",
+    "SQL",
+    "Docker",
+    "FastAPI"
+  ],
+  "preferred_locations": [
+    "Greece",
+    "European Union",
+    "Remote"
+  ],
+  "remote_preference": "remote",
+  "excluded_terms": [
+    "intern",
+    "junior",
+    "entry level"
+  ]
+}

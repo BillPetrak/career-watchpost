@@ -72,13 +72,29 @@ def score_job(job: StoredJob, profile: CandidateProfile) -> RankedJob:
     description = job.description or ""
     haystack = f"{job_title} {description}"
 
-    matched_titles = {t for t in profile.desired_titles if _has_phrase(job_title, t)}
-    for desired in list(matched_titles)[:_TITLE_CAP]:
+    matched_titles: list[str] = []
+    seen_titles: set[str] = set()
+    for t in profile.desired_titles:
+        if t not in seen_titles and _has_phrase(job_title, t):
+            seen_titles.add(t)
+            matched_titles.append(t)
+            if len(matched_titles) >= _TITLE_CAP:
+                break
+
+    for desired in matched_titles:
         score += _TITLE_POINTS
         reasons.append(f"Title matches '{desired}' (+{_TITLE_POINTS})")
 
-    matched_skills = {s for s in profile.skills if _contains(haystack, s)}
-    for skill in list(matched_skills)[:_SKILL_CAP]:
+    matched_skills: list[str] = []
+    seen_skills: set[str] = set()
+    for s in profile.skills:
+        if s not in seen_skills and _contains(haystack, s):
+            seen_skills.add(s)
+            matched_skills.append(s)
+            if len(matched_skills) >= _SKILL_CAP:
+                break
+
+    for skill in matched_skills:
         score += _SKILL_POINTS
         reasons.append(f"Has skill '{skill}' (+{_SKILL_POINTS})")
 
@@ -93,8 +109,16 @@ def score_job(job: StoredJob, profile: CandidateProfile) -> RankedJob:
         score += _REMOTE_POINTS
         reasons.append(f"Remote position (+{_REMOTE_POINTS})")
 
-    matched_excluded = {t for t in profile.excluded_terms if _contains(haystack, t)}
-    for term in list(matched_excluded)[:_EXCLUDED_CAP]:
+    matched_excluded: list[str] = []
+    seen_excluded: set[str] = set()
+    for t in profile.excluded_terms:
+        if t not in seen_excluded and _contains(haystack, t):
+            seen_excluded.add(t)
+            matched_excluded.append(t)
+            if len(matched_excluded) >= _EXCLUDED_CAP:
+                break
+
+    for term in matched_excluded:
         score += _EXCLUDED_PENALTY
         reasons.append(f"Contains excluded term '{term}' ({_EXCLUDED_PENALTY})")
 

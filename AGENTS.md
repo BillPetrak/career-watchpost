@@ -22,6 +22,7 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros collect arbeitnow --database /tmp/test.db` | Override DB path |
 | `uv run careeros search engineer --limit 10` | Search stored jobs |
 | `uv run careeros search engineer --remote --location Berlin` | Search with filters |
+| `uv run careeros rank engineer --profile config/candidate_profile.example.json` | Rank stored jobs against profile |
 
 Run order: **lint → mypy → test** (all independent; can run in parallel).
 

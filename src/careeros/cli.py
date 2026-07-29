@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import re
 import sqlite3
 import sys
@@ -15,6 +16,8 @@ from careeros.collectors.arbeitnow import fetch_jobs
 from careeros.database.connection import connect
 from careeros.database.jobs import get_job_by_id, save_jobs, search_jobs
 from careeros.database.schema import initialize_schema
+from careeros.ranking.profile import load_profile
+from careeros.ranking.scorer import score_jobs
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "database" / "careeros.sqlite3"
@@ -200,6 +203,67 @@ def clean_description(html_text: str) -> str:
     return cleaner.get_text()
 
 
+def run_rank(
+    keyword: str,
+    profile_path: Path,
+    database_path: Path,
+    *,
+    remote: bool | None = None,
+    location: str | None = None,
+    source: str | None = None,
+    limit: int = 20,
+) -> int:
+    """Search jobs and rank them against a candidate profile."""
+    try:
+        profile = load_profile(profile_path)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
+        print(f"Failed to load profile: {error}", file=sys.stderr)
+        return 1
+
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            matches = search_jobs(
+                connection,
+                keyword,
+                remote=remote,
+                location=location,
+                source=source,
+                limit=limit,
+            )
+    except (OSError, sqlite3.Error) as error:
+        print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    if not matches:
+        print("No matching jobs found.")
+        return 0
+
+    ranked = score_jobs(matches, profile)
+
+    print(f"Ranked {len(ranked)} job{'s' if len(ranked) != 1 else ''}:")
+    print()
+
+    for i, rj in enumerate(ranked, start=1):
+        location_part = rj.job.location or "N/A"
+        if rj.job.remote_status == "remote":
+            location_part = f"{location_part} (remote)"
+
+        print(f"{i}. [Score {rj.score}] {rj.job.title}")
+        print(f"   ID:       {rj.job.id}")
+        print(f"   Company:  {rj.job.company or 'N/A'}")
+        print(f"   Location: {location_part}")
+        print(f"   Remote:   {rj.job.remote_status or 'N/A'}")
+        print(f"   Source:   {rj.job.source}")
+        print(f"   URL:      {rj.job.url or 'N/A'}")
+        print("   Reasons:")
+        for reason in rj.reasons:
+            print(f"     {reason}")
+        print()
+
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CareerOS command-line parser."""
     parser = argparse.ArgumentParser(
@@ -286,6 +350,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="SQLite database path.",
     )
 
+    rank_parser = subparsers.add_parser(
+        "rank",
+        help="Search and rank jobs against a candidate profile.",
+    )
+    rank_parser.add_argument(
+        "keyword",
+        help="Search keyword matching title, company, or description.",
+    )
+    rank_parser.add_argument(
+        "--profile",
+        type=Path,
+        required=True,
+        help="Path to a candidate profile JSON file.",
+    )
+    rank_parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="Only show remote jobs.",
+    )
+    rank_parser.add_argument(
+        "--location",
+        help="Filter by location (partial match).",
+    )
+    rank_parser.add_argument(
+        "--source",
+        help="Filter by source (e.g. arbeitnow).",
+    )
+    rank_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum results (default: 20).",
+    )
+    rank_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
     return parser
 
 
@@ -326,6 +430,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_show(
             job_id=arguments.job_id,
             database_path=arguments.database,
+        )
+
+    if arguments.command == "rank":
+        if arguments.limit < 1:
+            parser.error("--limit must be at least 1")
+
+        return run_rank(
+            keyword=arguments.keyword,
+            profile_path=arguments.profile,
+            database_path=arguments.database,
+            remote=arguments.remote,
+            location=arguments.location,
+            source=arguments.source,
+            limit=arguments.limit,
         )
 
     parser.error("Unsupported command.")
