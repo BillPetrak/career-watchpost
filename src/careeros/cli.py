@@ -23,11 +23,6 @@ def print_diagnostics() -> int:
     print(f"SQLite library:    {sqlite3.sqlite_version}")
     print(f"Database directory exists: {database_directory.is_dir()}")
 
-    if sys.version_info < (3, 11):
-        print()
-        print("ERROR: CareerOS requires Python 3.11 or newer.")
-        return 1
-
     print()
     print("Environment check passed.")
     return 0
