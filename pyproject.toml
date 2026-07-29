@@ -44,4 +44,6 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["careeros"]
+mypy_path = "src"
+explicit_package_bases = true
+files = ["src/careeros"]
