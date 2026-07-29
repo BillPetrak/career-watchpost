@@ -32,9 +32,7 @@ def test_save_jobs_inserts_new_job(tmp_path: Path) -> None:
         initialize_schema(connection)
         result = save_jobs(connection, [make_job()])
 
-        stored = connection.execute(
-            "SELECT title FROM jobs"
-        ).fetchone()
+        stored = connection.execute("SELECT title FROM jobs").fetchone()
 
     assert result.inserted == 1
     assert result.updated == 0
@@ -54,9 +52,7 @@ def test_save_jobs_updates_existing_job(tmp_path: Path) -> None:
             [make_job(title="Senior Python Engineer")],
         )
 
-        rows = connection.execute(
-            "SELECT title FROM jobs"
-        ).fetchall()
+        rows = connection.execute("SELECT title FROM jobs").fetchall()
 
     assert first_result.inserted == 1
     assert second_result.updated == 1

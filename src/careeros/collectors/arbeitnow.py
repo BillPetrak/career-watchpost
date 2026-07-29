@@ -44,9 +44,7 @@ def _employment_type(value: object) -> str | None:
         return None
 
     job_types = [
-        item.strip()
-        for item in value
-        if isinstance(item, str) and item.strip()
+        item.strip() for item in value if isinstance(item, str) and item.strip()
     ]
     return ", ".join(job_types) or None
 

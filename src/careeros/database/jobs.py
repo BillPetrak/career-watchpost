@@ -1,10 +1,10 @@
-"""Job persistence operations."""
+"""Job persistence and retrieval operations."""
 
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from careeros.collectors.arbeitnow import CollectedJob
 
@@ -20,6 +20,94 @@ class SaveResult:
     def total(self) -> int:
         """Return the total number of processed jobs."""
         return self.inserted + self.updated
+
+
+@dataclass(frozen=True)
+class StoredJob:
+    """A job row read from the database, reusable across search, ranking, and beyond."""
+
+    id: int
+    source: str
+    source_job_id: str | None
+    title: str
+    company: str | None
+    location: str | None
+    description: str | None
+    url: str | None
+    employment_type: str | None
+    remote_status: str | None
+    published_at: str | None
+    collected_at: str
+    created_at: str
+    updated_at: str
+
+
+def search_jobs(
+    connection: sqlite3.Connection,
+    keyword: str,
+    *,
+    remote: bool | None = None,
+    location: str | None = None,
+    source: str | None = None,
+    limit: int = 20,
+) -> list[StoredJob]:
+    """Search jobs by keyword across title, company, and description.
+
+    Optional filters narrow results by remote status, location, or source.
+    """
+    pattern = f"%{keyword}%"
+    conditions: list[str] = [
+        "(title LIKE ? OR company LIKE ? OR description LIKE ?)",
+    ]
+    params: list[str | int] = [pattern, pattern, pattern]
+
+    if remote:
+        conditions.append("remote_status = 'remote'")
+
+    if location is not None:
+        conditions.append("location LIKE ?")
+        params.append(f"%{location}%")
+
+    if source is not None:
+        conditions.append("source = ?")
+        params.append(source)
+
+    params.append(limit)
+
+    rows = connection.execute(
+        f"""
+        SELECT id, source, source_job_id, title, company, location,
+               description, url, employment_type, remote_status,
+               published_at, collected_at, created_at, updated_at
+        FROM jobs
+        WHERE {" AND ".join(conditions)}
+        ORDER BY published_at DESC NULLS LAST
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+
+    result: list[StoredJob] = []
+    for row in rows:
+        result.append(
+            StoredJob(
+                id=row["id"],
+                source=row["source"],
+                source_job_id=row["source_job_id"],
+                title=row["title"],
+                company=row["company"],
+                location=row["location"],
+                description=row["description"],
+                url=row["url"],
+                employment_type=row["employment_type"],
+                remote_status=row["remote_status"],
+                published_at=row["published_at"],
+                collected_at=row["collected_at"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            ),
+        )
+    return result
 
 
 def save_jobs(
