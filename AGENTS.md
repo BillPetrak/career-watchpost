@@ -3,7 +3,7 @@
 ## Quick start
 
 ```bash
-uv sync --group development   # install with dev deps (pytest, ruff, mypy)
+uv sync --extra development   # install with dev deps (pytest, ruff, mypy)
 uv run careeros diagnose      # verify environment
 ```
 
@@ -20,11 +20,18 @@ uv run careeros diagnose      # verify environment
 | `uv run mypy` | Typecheck (strict) |
 | `uv run careeros collect arbeitnow --limit 10` | Collect jobs |
 | `uv run careeros collect arbeitnow --database /tmp/test.db` | Override DB path |
+| `uv run careeros collect all --limit 25` | Collect from all sources sequentially |
+| `uv run careeros collect all --limit 25 --database /tmp/careeros_all.db` | Collect all sources into a custom DB |
 | `uv run careeros search engineer --limit 10` | Search stored jobs |
 | `uv run careeros search engineer --remote --location Berlin` | Search with filters |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json` | Rank stored jobs against profile |
 
 Run order: **lint → mypy → test** (all independent; can run in parallel).
+
+`collect all` runs each registered source sequentially, once per invocation, in
+registry order, and applies `--limit` per source. Respect provider polling
+limits — do not run repeated all-source collections more often than the most
+restrictive source permits (Jobicy: at most once per hour).
 
 ## Project structure
 

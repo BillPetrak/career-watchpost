@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from html.parser import HTMLParser
 from pathlib import Path
 
+from careeros.collecting import CollectionResult, collect_all
 from careeros.collectors import COLLECTORS
 from careeros.database.connection import connect
 from careeros.database.jobs import get_job_by_id, save_jobs, search_jobs
@@ -73,6 +74,52 @@ def run_collect(source: str, limit: int, database_path: Path) -> int:
     print(f"Database: {database_path}")
 
     return 0
+
+
+def run_collect_all(limit: int, database_path: Path) -> int:
+    """Collect from every registered source sequentially and print summaries."""
+    results: list[CollectionResult] = []
+
+    try:
+        for result in collect_all(
+            limit=limit,
+            database_path=database_path,
+            collectors=COLLECTORS,
+        ):
+            results.append(result)
+            print()
+            print(result.source)
+            print("-" * len(result.source))
+
+            if result.succeeded:
+                print(f"Fetched:  {result.fetched}")
+                print(f"Inserted: {result.inserted}")
+                print(f"Updated:  {result.updated}")
+                print("Status:   success")
+            else:
+                print("Status: failed")
+                print(f"Error:  {result.error}")
+                print(
+                    f"{result.source} collection failed: {result.error}",
+                    file=sys.stderr,
+                )
+    except (OSError, sqlite3.Error) as error:
+        print(f"Collection failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    succeeded = sum(1 for result in results if result.succeeded)
+    print()
+    print("Multi-source collection complete")
+    print("-" * len("Multi-source collection complete"))
+    print(f"Sources attempted: {len(results)}")
+    print(f"Succeeded:         {succeeded}")
+    print(f"Failed:            {len(results) - succeeded}")
+    print(f"Fetched:           {sum(result.fetched for result in results)}")
+    print(f"Inserted:          {sum(result.inserted for result in results)}")
+    print(f"Updated:           {sum(result.updated for result in results)}")
+    print(f"Database:          {database_path}")
+
+    return 0 if succeeded == len(results) else 1
 
 
 def run_search(
@@ -291,17 +338,23 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser = subparsers.add_parser(
         "collect",
         help="Collect jobs from an external source.",
+        epilog=(
+            "For 'all', sources run sequentially in a single invocation, each "
+            "called once. Do not run repeated all-source collections more often "
+            "than the most restrictive source permits (Jobicy allows at most one "
+            "poll per hour)."
+        ),
     )
     collect_parser.add_argument(
         "source",
-        choices=list(COLLECTORS),
-        help="Job source to collect.",
+        choices=["all", *COLLECTORS],
+        help="Job source to collect, or 'all' for every registered source.",
     )
     collect_parser.add_argument(
         "--limit",
         type=int,
         default=25,
-        help="Maximum jobs to collect (default: 25).",
+        help="Maximum jobs to collect from each source (default: 25).",
     )
     collect_parser.add_argument(
         "--database",
@@ -414,6 +467,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "collect":
         if arguments.limit < 1:
             parser.error("--limit must be at least 1")
+
+        if arguments.source == "all":
+            return run_collect_all(
+                limit=arguments.limit,
+                database_path=arguments.database,
+            )
 
         return run_collect(
             source=arguments.source,
