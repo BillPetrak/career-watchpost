@@ -66,3 +66,6 @@ page_snapshots/
 # Temporary files
 *.tmp
 *.temp
+
+# Local private notes
+notes.txt
