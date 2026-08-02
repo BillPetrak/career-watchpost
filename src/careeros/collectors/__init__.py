@@ -6,6 +6,7 @@ from typing import Protocol
 
 from careeros.collectors.arbeitnow import fetch_jobs as arbeitnow_fetch_jobs
 from careeros.collectors.http import DEFAULT_TIMEOUT
+from careeros.collectors.jobicy import fetch_jobs as jobicy_fetch_jobs
 from careeros.collectors.models import CollectedJob
 from careeros.collectors.remoteok import fetch_jobs as remoteok_fetch_jobs
 from careeros.collectors.weworkremotely import fetch_jobs as weworkremotely_fetch_jobs
@@ -24,6 +25,7 @@ class Collector(Protocol):
 
 COLLECTORS: dict[str, Collector] = {
     "arbeitnow": arbeitnow_fetch_jobs,
+    "jobicy": jobicy_fetch_jobs,
     "remoteok": remoteok_fetch_jobs,
     "weworkremotely": weworkremotely_fetch_jobs,
 }

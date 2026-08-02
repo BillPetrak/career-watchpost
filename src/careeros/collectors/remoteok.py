@@ -7,6 +7,7 @@ from typing import Any
 
 from careeros.collectors.http import DEFAULT_TIMEOUT, fetch_json
 from careeros.collectors.models import CollectedJob
+from careeros.collectors.normalization import optional_string
 
 API_URL = "https://remoteok.com/api"
 SOURCE_NAME = "remoteok"
@@ -28,15 +29,6 @@ _EMPLOYMENT_TYPE_TAGS = frozenset(
 # The feed's first element is a metadata/header object (last_updated + legal),
 # not a job. Detect it before generic job validation.
 _HEADER_KEYS = frozenset({"last_updated", "legal"})
-
-
-def _optional_string(value: object) -> str | None:
-    """Return a stripped string or None."""
-    if not isinstance(value, str):
-        return None
-
-    stripped = value.strip()
-    return stripped or None
 
 
 def _is_metadata_header(raw_job: dict[str, Any]) -> bool:
@@ -70,7 +62,7 @@ def _employment_type(value: object) -> str | None:
 
 def _published_at(raw_job: dict[str, Any]) -> str | None:
     """Normalize Remote OK's published timestamp, falling back to its epoch."""
-    published = _optional_string(raw_job.get("date"))
+    published = optional_string(raw_job.get("date"))
     if published is not None:
         return published
 
@@ -90,8 +82,8 @@ def normalize_job(
     collected_at: str,
 ) -> CollectedJob | None:
     """Convert a Remote OK feed object into a CareerOS job."""
-    source_job_id = _optional_string(raw_job.get("id"))
-    title = _optional_string(raw_job.get("position"))
+    source_job_id = optional_string(raw_job.get("id"))
+    title = optional_string(raw_job.get("position"))
 
     if source_job_id is None or title is None:
         return None
@@ -100,11 +92,11 @@ def normalize_job(
         source=SOURCE_NAME,
         source_job_id=source_job_id,
         title=title,
-        company=_optional_string(raw_job.get("company")),
-        location=_optional_string(raw_job.get("location")),
-        description=_optional_string(raw_job.get("description")),
-        url=_optional_string(raw_job.get("url"))
-        or _optional_string(raw_job.get("apply_url")),
+        company=optional_string(raw_job.get("company")),
+        location=optional_string(raw_job.get("location")),
+        description=optional_string(raw_job.get("description")),
+        url=optional_string(raw_job.get("url"))
+        or optional_string(raw_job.get("apply_url")),
         employment_type=_employment_type(raw_job.get("tags")),
         remote_status="remote",
         published_at=_published_at(raw_job),
