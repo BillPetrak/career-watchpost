@@ -43,6 +43,7 @@ def print_diagnostics() -> int:
 _SOURCE_LABELS = {
     "arbeitnow": "Arbeitnow",
     "remoteok": "Remote OK",
+    "weworkremotely": "We Work Remotely",
 }
 
 
