@@ -2,31 +2,14 @@
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from urllib.request import Request, urlopen
+
+from careeros.collectors.http import DEFAULT_TIMEOUT, fetch_json
+from careeros.collectors.models import CollectedJob
 
 API_URL = "https://www.arbeitnow.com/api/job-board-api"
 SOURCE_NAME = "arbeitnow"
-
-
-@dataclass(frozen=True)
-class CollectedJob:
-    """Normalized job collected from an external source."""
-
-    source: str
-    source_job_id: str
-    title: str
-    company: str | None
-    location: str | None
-    description: str | None
-    url: str | None
-    employment_type: str | None
-    remote_status: str | None
-    published_at: str | None
-    collected_at: str
 
 
 def _optional_string(value: object) -> str | None:
@@ -88,22 +71,13 @@ def normalize_job(
 def fetch_jobs(
     *,
     limit: int = 25,
-    timeout: float = 30.0,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> list[CollectedJob]:
     """Fetch and normalize jobs from Arbeitnow."""
     if limit < 1:
         raise ValueError("limit must be at least 1")
 
-    request = Request(
-        API_URL,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "CareerOS/0.1",
-        },
-    )
-
-    with urlopen(request, timeout=timeout) as response:
-        payload: object = json.load(response)
+    payload = fetch_json(API_URL, timeout=timeout)
 
     if not isinstance(payload, dict):
         raise RuntimeError("Arbeitnow returned an unexpected response.")

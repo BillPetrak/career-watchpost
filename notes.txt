@@ -1,0 +1,75 @@
+How to resume working on CareerOS
+
+Open a terminal and run:
+
+cd ~/Desktop/Projects/CareerOS
+
+Then synchronize the environment (this is safe even if nothing changed):
+
+uv sync
+
+Now launch OpenCode:
+
+opencode
+
+
+
+Ctrl+L
+
+Many terminal applications use this to clear and redraw the current screen. It may immediately remove the floating characters.
+
+
+
+
+
+
+
+--- ROADMAP ---
+
+Foundation
+    ✅
+
+Database
+    ✅
+
+Collector
+    ✅
+
+Search
+    ✅
+
+Show
+    ✅
+
+Ranking Engine
+    ✅
+
+JSON Profiles
+    ✅
+
+Rank CLI
+    ✅
+──────────────────────────────
+Multiple Sources
+    ⬜
+
+Bookmarks
+    ⬜
+
+Exports
+    ⬜
+
+FastAPI
+    ⬜
+
+Docker
+    ⬜
+
+React UI
+    ⬜
+
+CI/CD
+    ⬜
+
+Deployment
+    ⬜

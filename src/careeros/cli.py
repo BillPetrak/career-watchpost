@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from html.parser import HTMLParser
 from pathlib import Path
 
-from careeros.collectors.arbeitnow import fetch_jobs
+from careeros.collectors import COLLECTORS
 from careeros.database.connection import connect
 from careeros.database.jobs import get_job_by_id, save_jobs, search_jobs
 from careeros.database.schema import initialize_schema
@@ -40,9 +40,17 @@ def print_diagnostics() -> int:
     return 0
 
 
-def collect_arbeitnow(limit: int, database_path: Path) -> int:
-    """Collect Arbeitnow jobs and save them to SQLite."""
-    print(f"Collecting up to {limit} jobs from Arbeitnow...")
+_SOURCE_LABELS = {
+    "arbeitnow": "Arbeitnow",
+    "remoteok": "Remote OK",
+}
+
+
+def run_collect(source: str, limit: int, database_path: Path) -> int:
+    """Collect jobs from a registered source and save them to SQLite."""
+    fetch_jobs = COLLECTORS[source]
+    label = _SOURCE_LABELS.get(source, source)
+    print(f"Collecting up to {limit} jobs from {label}...")
 
     try:
         jobs = fetch_jobs(limit=limit)
@@ -284,7 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect_parser.add_argument(
         "source",
-        choices=["arbeitnow"],
+        choices=list(COLLECTORS),
         help="Job source to collect.",
     )
     collect_parser.add_argument(
@@ -401,11 +409,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "diagnose":
         return print_diagnostics()
 
-    if arguments.command == "collect" and arguments.source == "arbeitnow":
+    if arguments.command == "collect":
         if arguments.limit < 1:
             parser.error("--limit must be at least 1")
 
-        return collect_arbeitnow(
+        return run_collect(
+            source=arguments.source,
             limit=arguments.limit,
             database_path=arguments.database,
         )

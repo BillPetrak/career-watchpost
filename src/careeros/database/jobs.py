@@ -6,7 +6,7 @@ import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from careeros.collectors.arbeitnow import CollectedJob
+from careeros.collectors.models import CollectedJob
 
 _SELECT_COLUMNS = (
     "id, source, source_job_id, title, company, location,"
