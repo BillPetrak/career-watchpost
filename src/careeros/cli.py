@@ -12,10 +12,15 @@ from collections.abc import Sequence
 from html.parser import HTMLParser
 from pathlib import Path
 
-from careeros.collecting import CollectionResult, collect_all
+from careeros.collecting import (
+    CollectionResult,
+    collect_all,
+    collect_due,
+    collect_one,
+)
 from careeros.collectors import COLLECTORS
 from careeros.database.connection import connect
-from careeros.database.jobs import get_job_by_id, save_jobs, search_jobs
+from careeros.database.jobs import get_job_by_id, search_jobs
 from careeros.database.schema import initialize_schema
 from careeros.ranking.profile import load_profile
 from careeros.ranking.scorer import score_jobs
@@ -51,24 +56,30 @@ _SOURCE_LABELS = {
 
 def run_collect(source: str, limit: int, database_path: Path) -> int:
     """Collect jobs from a registered source and save them to SQLite."""
-    fetch_jobs = COLLECTORS[source]
     label = _SOURCE_LABELS.get(source, source)
     print(f"Collecting up to {limit} jobs from {label}...")
 
     try:
-        jobs = fetch_jobs(limit=limit)
-
         with connect(database_path) as connection:
             initialize_schema(connection)
-            result = save_jobs(connection, jobs)
-    except Exception as error:
+            result = collect_one(
+                connection,
+                source=source,
+                collectors=COLLECTORS,
+                limit=limit,
+            )
+    except (OSError, sqlite3.Error) as error:
         print(f"Collection failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    if not result.succeeded:
+        print(f"Collection failed: {result.error}", file=sys.stderr)
         return 1
 
     print()
     print("Collection complete")
     print("-------------------")
-    print(f"Fetched:  {len(jobs)}")
+    print(f"Fetched:  {result.fetched}")
     print(f"Inserted: {result.inserted}")
     print(f"Updated:  {result.updated}")
     print(f"Database: {database_path}")
@@ -111,6 +122,56 @@ def run_collect_all(limit: int, database_path: Path) -> int:
     print()
     print("Multi-source collection complete")
     print("-" * len("Multi-source collection complete"))
+    print(f"Sources attempted: {len(results)}")
+    print(f"Succeeded:         {succeeded}")
+    print(f"Failed:            {len(results) - succeeded}")
+    print(f"Fetched:           {sum(result.fetched for result in results)}")
+    print(f"Inserted:          {sum(result.inserted for result in results)}")
+    print(f"Updated:           {sum(result.updated for result in results)}")
+    print(f"Database:          {database_path}")
+
+    return 0 if succeeded == len(results) else 1
+
+
+def run_collect_due(limit: int, database_path: Path) -> int:
+    """Collect only sources whose polling interval has expired."""
+    results: list[CollectionResult] = []
+
+    try:
+        for result in collect_due(
+            limit=limit,
+            database_path=database_path,
+            collectors=COLLECTORS,
+        ):
+            results.append(result)
+            print()
+            print(result.source)
+            print("-" * len(result.source))
+
+            if result.succeeded:
+                print(f"Fetched:  {result.fetched}")
+                print(f"Inserted: {result.inserted}")
+                print(f"Updated:  {result.updated}")
+                print("Status:   success")
+            else:
+                print("Status: failed")
+                print(f"Error:  {result.error}")
+                print(
+                    f"{result.source} collection failed: {result.error}",
+                    file=sys.stderr,
+                )
+    except (OSError, sqlite3.Error) as error:
+        print(f"Collection failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    succeeded = sum(1 for result in results if result.succeeded)
+    print()
+    print("Due-source collection complete")
+    print("-" * len("Due-source collection complete"))
+
+    if not results:
+        print("No sources are due.")
+
     print(f"Sources attempted: {len(results)}")
     print(f"Succeeded:         {succeeded}")
     print(f"Failed:            {len(results) - succeeded}")
@@ -340,15 +401,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Collect jobs from an external source.",
         epilog=(
             "For 'all', sources run sequentially in a single invocation, each "
-            "called once. Do not run repeated all-source collections more often "
-            "than the most restrictive source permits (Jobicy allows at most one "
-            "poll per hour)."
+            "called once. For 'due', only sources whose last completed run is "
+            "older than their polling interval are collected. Do not run "
+            "repeated all-source collections more often than the most "
+            "restrictive source permits (Jobicy allows at most one poll per "
+            "hour)."
         ),
     )
     collect_parser.add_argument(
         "source",
-        choices=["all", *COLLECTORS],
-        help="Job source to collect, or 'all' for every registered source.",
+        choices=["all", "due", *COLLECTORS],
+        help="Job source to collect, 'all' for every registered source, or "
+        "'due' for sources whose polling interval has expired.",
     )
     collect_parser.add_argument(
         "--limit",
@@ -467,6 +531,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "collect":
         if arguments.limit < 1:
             parser.error("--limit must be at least 1")
+
+        if arguments.source == "due":
+            return run_collect_due(
+                limit=arguments.limit,
+                database_path=arguments.database,
+            )
 
         if arguments.source == "all":
             return run_collect_all(

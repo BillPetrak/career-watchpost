@@ -37,3 +37,8 @@ replaceable integrations rather than permanent dependencies.
 ## Current status
 
 Milestone 1: repository and development foundation.
+
+Current CLI capabilities include multi-source job collection (`collect
+<source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
+persistent run history, plus `search`, `show`, `rank`, and `diagnose`. See
+`AGENTS.md` for the full command reference.
