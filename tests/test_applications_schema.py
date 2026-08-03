@@ -88,8 +88,8 @@ def test_fresh_schema_has_application_tables(tmp_path: Path) -> None:
     }
 
 
-def test_schema_version_is_four(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 4
+def test_schema_version_is_five(tmp_path: Path) -> None:
+    assert SCHEMA_VERSION == 5
 
 
 def test_required_indexes_exist(tmp_path: Path) -> None:
@@ -145,7 +145,7 @@ def test_v3_database_upgrades_with_rows_intact(tmp_path: Path) -> None:
             "SELECT COUNT(*) FROM job_group_members"
         ).fetchone()[0]
 
-    assert version["value"] == str(4)
+    assert version["value"] == str(SCHEMA_VERSION)
     assert _table_names(connection) >= {
         "applications",
         "application_events",

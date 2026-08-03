@@ -40,6 +40,13 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros search engineer --exclude-status applied --exclude-status rejected` | Search, hiding selected application statuses |
 | `uv run careeros search engineer --status interview` | Search, showing only jobs in the selected status |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --untracked` | Rank only untracked jobs |
+| `uv run careeros saved-search create NAME QUERY --mode {search,rank} [--profile PATH] [FILTERS...]` | Create a reusable search/rank workflow (write; locks the DB) |
+| `uv run careeros saved-search list [--database PATH]` | List saved workflows, ordered case-insensitively by name |
+| `uv run careeros saved-search show NAME [--database PATH]` | Show a saved workflow definition |
+| `uv run careeros saved-search run NAME [--database PATH]` | Execute a saved workflow against the current DB (read-only) |
+| `uv run careeros saved-search update NAME [--query TEXT] [--grouped/--no-grouped] [--untracked/--no-untracked] [--status S] [--exclude-status S] [--source S] [--location S] [--remote] [--min-score N] [--limit N] [--profile PATH] [--clear-*]` | Change a saved workflow (write; locks the DB) |
+| `uv run careeros saved-search rename NAME NEW_NAME [--database PATH]` | Rename a saved workflow (write; locks the DB) |
+| `uv run careeros saved-search delete NAME [--database PATH]` | Delete a saved workflow (write; locks the DB) |
 | `uv run python systemd/install.py --dry-run` | Preview systemd user-unit install (writes nothing) |
 | `uv run python systemd/install.py` | Install the systemd user service+timer (not enabled) |
 | `uv run python systemd/install.py --enable` | Install, then enable and start the timer |
@@ -144,8 +151,9 @@ any source, does not touch run history or the jobs table, and exits with code
     echo $?
 
 The read-only commands `collect status`, `collect history`, `search`, `show`,
-`rank`, `group explain`, `application show`, `application list`, and
-`application history` never acquire the collection lock and remain available
+`rank`, `group explain`, `application show`, `application list`,
+`application history`, `saved-search list`, `saved-search show`, and
+`saved-search run` never acquire the collection lock and remain available
 while a collection is running.
 
 ## Application tracking
@@ -212,6 +220,46 @@ grouping tables, so `group regroup` (which deletes and rebuilds
 `ON DELETE RESTRICT`: application history is durable audit data and cannot be
 silently cascade-deleted.
 
+## Saved searches
+
+`saved-search` stores a reusable search or rank workflow definition in the
+`saved_searches` table (schema v5). A saved search captures **intent — query
+and filters — never cached results**: `saved-search run NAME` always executes
+the same shared pipeline as the explicit `search`/`rank` commands
+(`src/careeros/saved_searches/execution.py`), so its output is byte-identical
+and it always reflects the current database. Running a saved search is
+read-only: it never fetches jobs, never writes, and never contacts any external
+service.
+
+`--mode {search,rank}` is **required** at creation and **immutable** afterwards
+(passing `--mode` to `update` is rejected with exit code 2). Mode-specific
+rules: `--profile` is invalid for `search` and **required** for `rank`;
+`--min-score` is rank-only. All other filter flags mirror the explicit
+commands: `--grouped/--no-grouped`, `--untracked/--no-untracked` (tri-state),
+`--status`, `--exclude-status`, `--source`, `--remote`, `--location`, `--limit`,
+`--profile`. Validation is enforced centrally in
+`src/careeros/saved_searches/models.py:validate_fields` and contradicting flag
+combinations are rejected at the argparse layer with exit code 2.
+
+Names are case-insensitive for uniqueness and lookup (`UNIQUE COLLATE NOCASE`)
+but stored as given; `list` orders case-insensitively by name then id. A
+case-only rename is a no-op. Duplicate names and unknown names exit with code 1.
+
+`update` semantics: omitted flags retain prior values; `--grouped/--no-grouped`
+and `--untracked/--no-untracked` set or clear explicitly; `--clear-source`,
+`--clear-location`, `--clear-remote`, `--clear-min-score`, `--clear-profile`,
+`--clear-status-filters` unset stored filters. A `--clear-*` flag combined with
+its own set flag is an argparse error, and clearing the profile of a rank
+workflow is a validation error (rank always requires a profile). An update that
+changes nothing succeeds without touching `updated_at`. Every write commits in
+one transaction and rolls back on failure.
+
+Writes (`create`, `update`, `rename`, `delete`) acquire the per-database
+collection lock and exit 75 on contention with no database change; the reads
+(`list`, `show`, `run`) never lock. Timestamps are timezone-aware UTC ISO-8601.
+The nullable `description` column is stored for future extensibility but has no
+CLI flag yet.
+
 ## systemd user units
 
 The `systemd/` directory holds templates, an installer, and an uninstaller for
@@ -245,6 +293,7 @@ after moving the repository (uninstall first if the old units should go).
 - `src/careeros/collectors/` — job-board API clients
 - `src/careeros/database/` — SQLite layer (schema, connection, persistence)
 - `src/careeros/grouping/` — duplicate detection (normalization, matcher)
+- `src/careeros/saved_searches/` — saved workflow definitions and shared execution
 - `src/careeros/{job_hunter,privacy,ranking,reporting}/` — stubs (empty, not implemented)
 - `tests/` — pytest suite, uses `tmp_path` for isolated SQLite databases
 - `config/` — YAML config (settings.example.yaml, candidate_profile.example.yaml)

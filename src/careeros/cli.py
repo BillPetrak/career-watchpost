@@ -12,12 +12,8 @@ from pathlib import Path
 
 from careeros.applications.models import APPLICATION_STATUSES
 from careeros.applications.service import (
-    ApplicationFilter,
     GroupTrackingInfo,
     UnknownJobError,
-    application_statuses_for_jobs,
-    apply_filter_to_flat,
-    apply_filter_to_groups,
     get_application,
     group_tracking_info,
     latest_event_note,
@@ -38,17 +34,34 @@ from careeros.database.groups import (
     ensure_grouped,
     grouping_summary,
     list_group_infos,
-    search_grouped,
 )
-from careeros.database.jobs import StoredJob, get_job_by_id, search_jobs
+from careeros.database.jobs import StoredJob, get_job_by_id
 from careeros.database.runs import CollectionRun, list_runs, parse_utc
 from careeros.database.schema import initialize_schema
 from careeros.locking import CollectionLockConflict, collection_lock
 from careeros.ranking.profile import load_profile
-from careeros.ranking.scorer import (
-    MatchResult,
-    score_groups,
-    score_jobs,
+from careeros.ranking.scorer import MatchResult, RankedGroup, RankedJob
+from careeros.saved_searches.execution import (
+    execute_rank,
+    execute_search,
+    rank_candidates,
+    search_candidates,
+)
+from careeros.saved_searches.models import (
+    SEARCH_MODES,
+    DuplicateNameError,
+    SavedSearchFields,
+    SavedSearchPatch,
+    UnknownSearchError,
+    ValidationError,
+)
+from careeros.saved_searches.service import (
+    create_search,
+    delete_search,
+    get_search,
+    list_searches,
+    rename_search,
+    update_search,
 )
 from careeros.status import build_statuses
 from careeros.text import clean_description
@@ -395,6 +408,139 @@ def _print_grouped_results(
         print()
 
 
+def _render_search_flat(
+    results: Sequence[StoredJob],
+    tracking_statuses: dict[int, str] | None,
+) -> None:
+    """Render flat search results (shared by search and saved-search run)."""
+    print(f"Found {len(results)} matching job{'s' if len(results) != 1 else ''}:")
+    print()
+
+    for i, job in enumerate(results, start=1):
+        location_part = job.location or "N/A"
+        if job.remote_status == "remote":
+            location_part = f"{location_part} (remote)"
+
+        print(f"  {i}. {job.title}")
+        print(f"     Company:  {job.company or 'N/A'}")
+        print(f"     Location: {location_part}")
+        print(f"     Source:   {job.source}")
+        if tracking_statuses is not None:
+            print(
+                "     Application: "
+                f"{_format_application_status(tracking_statuses.get(job.id))}"
+            )
+        print()
+
+
+def _render_search_grouped(
+    results: Sequence[GroupedJob],
+    tracking_statuses: dict[int, str] | None,
+) -> None:
+    """Render grouped search results (shared by search and saved-search run)."""
+    print(f"Found {len(results)} matching group{'s' if len(results) != 1 else ''}:")
+    print()
+    _print_grouped_results(results, tracking_statuses)
+
+
+def _render_rank_flat(
+    ranked: Sequence[RankedJob],
+    tracking_statuses: dict[int, str] | None,
+    *,
+    min_score: int,
+    candidate_count: int,
+) -> None:
+    """Render flat rank results (shared by rank and saved-search run)."""
+    if candidate_count == 0:
+        print("No matching jobs found.")
+        return
+    if not ranked:
+        if min_score > 0:
+            print(f"No jobs meet the minimum score of {min_score}.")
+        else:
+            print("No matching jobs found.")
+        return
+
+    print(f"Ranked {len(ranked)} job{'s' if len(ranked) != 1 else ''}:")
+    print()
+
+    for i, job in enumerate(ranked, start=1):
+        location_part = job.job.location or "N/A"
+        if job.job.remote_status == "remote":
+            location_part = f"{location_part} (remote)"
+
+        print(f"{i}. [Score {job.match_score}/100] {job.job.title}")
+        print(f"   Match:    {job.match_score}/100")
+        print(f"   ID:       {job.job.id}")
+        print(f"   Company:  {job.job.company or 'N/A'}")
+        print(f"   Location: {location_part}")
+        print(f"   Remote:   {job.job.remote_status or 'N/A'}")
+        print(f"   Source:   {job.job.source}")
+        print(f"   URL:      {job.job.url or 'N/A'}")
+        if tracking_statuses is not None:
+            print(
+                "   Application: "
+                f"{_format_application_status(tracking_statuses.get(job.job.id))}"
+            )
+        _print_match_sections(job.result)
+        print("   Reasons:")
+        for reason in job.reasons:
+            print(f"     {reason}")
+        print()
+
+
+def _render_rank_grouped(
+    ranked: Sequence[RankedGroup],
+    tracking_statuses: dict[int, str] | None,
+    *,
+    min_score: int,
+    candidate_count: int,
+) -> None:
+    """Render grouped rank results (shared by rank and saved-search run)."""
+    if candidate_count == 0:
+        print("No matching jobs found.")
+        return
+    if not ranked:
+        if min_score > 0:
+            print(f"No groups meet the minimum score of {min_score}.")
+        else:
+            print("No matching jobs found.")
+        return
+
+    print(f"Ranked {len(ranked)} group{'s' if len(ranked) != 1 else ''}:")
+    print()
+
+    for i, ranked_group in enumerate(ranked, start=1):
+        group = ranked_group.group
+        rep = group.representative
+        location_part = rep.location or "N/A"
+        if rep.remote_status == "remote":
+            location_part = f"{location_part} (remote)"
+
+        urls = ", ".join(url for url in group.urls if url)
+        print(f"{i}. [Score {ranked_group.match_score}/100] {rep.title}")
+        print(f"   Match:    {ranked_group.match_score}/100")
+        print(f"   ID:       {rep.id}")
+        print(f"   Company:  {rep.company or 'N/A'}")
+        print(f"   Location: {location_part}")
+        print(f"   Remote:   {rep.remote_status or 'N/A'}")
+        print(f"   Source:   {_sources_line(group)}")
+        print(f"   URL:      {urls or 'N/A'}")
+        if tracking_statuses is not None:
+            application_label = _application_line(
+                group_tracking_info(group, tracking_statuses)
+            )
+            print(f"   Application: {application_label}")
+        member_count = len(group.members)
+        if member_count > 1:
+            print(f"   Group:    {member_count} listings grouped")
+        _print_match_sections(ranked_group.result)
+        print("   Reasons:")
+        for reason in ranked_group.reasons:
+            print(f"     {reason}")
+        print()
+
+
 def run_group_regroup(database_path: Path) -> int:
     """Recompute canonical duplicate groups and persist them."""
     try:
@@ -649,92 +795,29 @@ def run_search(
     exclude_statuses: Sequence[str] = (),
 ) -> int:
     """Search jobs in the SQLite database."""
-    results: list[StoredJob] = []
-    grouped_results: list[GroupedJob] = []
-    tracking_statuses: dict[int, str] | None = None
     try:
         with connect(database_path) as connection:
             initialize_schema(connection)
-            if grouped:
-                grouped_results = search_grouped(
-                    connection,
-                    keyword,
-                    remote=remote,
-                    location=location,
-                    source=source,
-                    limit=limit,
-                )
-            else:
-                results = search_jobs(
-                    connection,
-                    keyword,
-                    remote=remote,
-                    location=location,
-                    source=source,
-                    limit=limit,
-                )
-
-            application_filter = ApplicationFilter(
+            outcome = search_candidates(
+                connection,
+                query=keyword,
+                remote=remote,
+                location=location,
+                source=source,
+                limit=limit,
+                grouped=grouped,
                 untracked=untracked,
-                include_statuses=frozenset(include_statuses),
-                exclude_statuses=frozenset(exclude_statuses),
+                include_statuses=tuple(include_statuses),
+                exclude_statuses=tuple(exclude_statuses),
             )
-            if application_filter.applies():
-                if grouped:
-                    candidate_ids = {
-                        member.id
-                        for group in grouped_results
-                        for member in group.members
-                    }
-                    tracking_statuses = application_statuses_for_jobs(
-                        connection, candidate_ids
-                    )
-                    grouped_results = apply_filter_to_groups(
-                        grouped_results,
-                        tracking_statuses,
-                        application_filter,
-                    )
-                else:
-                    candidate_ids = {job.id for job in results}
-                    tracking_statuses = application_statuses_for_jobs(
-                        connection, candidate_ids
-                    )
-                    results = apply_filter_to_flat(
-                        results,
-                        tracking_statuses,
-                        application_filter,
-                    )
     except Exception as error:
         print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
-    if grouped:
-        print(
-            f"Found {len(grouped_results)} matching group"
-            f"{'s' if len(grouped_results) != 1 else ''}:"
-        )
-        print()
-        _print_grouped_results(grouped_results, tracking_statuses)
-        return 0
-
-    print(f"Found {len(results)} matching job{'s' if len(results) != 1 else ''}:")
-    print()
-
-    for i, job in enumerate(results, start=1):
-        location_part = job.location or "N/A"
-        if job.remote_status == "remote":
-            location_part = f"{location_part} (remote)"
-
-        print(f"  {i}. {job.title}")
-        print(f"     Company:  {job.company or 'N/A'}")
-        print(f"     Location: {location_part}")
-        print(f"     Source:   {job.source}")
-        if tracking_statuses is not None:
-            print(
-                "     Application: "
-                f"{_format_application_status(tracking_statuses.get(job.id))}"
-            )
-        print()
+    if outcome.grouped:
+        _render_search_grouped(outcome.groups, outcome.tracking_statuses)
+    else:
+        _render_search_flat(outcome.flat, outcome.tracking_statuses)
 
     return 0
 
@@ -857,160 +940,41 @@ def run_rank(
         print(f"Failed to load profile: {error}", file=sys.stderr)
         return 1
 
-    matches: list[StoredJob] = []
-    grouped_results: list[GroupedJob] = []
-    tracking_statuses: dict[int, str] | None = None
     try:
         with connect(database_path) as connection:
             initialize_schema(connection)
-            if grouped:
-                grouped_results = search_grouped(
-                    connection,
-                    keyword,
-                    remote=remote,
-                    location=location,
-                    source=source,
-                    limit=limit,
-                )
-            else:
-                matches = search_jobs(
-                    connection,
-                    keyword,
-                    remote=remote,
-                    location=location,
-                    source=source,
-                    limit=limit,
-                )
-
-            application_filter = ApplicationFilter(
+            outcome = rank_candidates(
+                connection,
+                query=keyword,
+                profile=profile,
+                remote=remote,
+                location=location,
+                source=source,
+                limit=limit,
+                grouped=grouped,
+                min_score=min_score,
                 untracked=untracked,
-                include_statuses=frozenset(include_statuses),
-                exclude_statuses=frozenset(exclude_statuses),
+                include_statuses=tuple(include_statuses),
+                exclude_statuses=tuple(exclude_statuses),
             )
-            if application_filter.applies():
-                if grouped:
-                    candidate_ids = {
-                        member.id
-                        for group in grouped_results
-                        for member in group.members
-                    }
-                    tracking_statuses = application_statuses_for_jobs(
-                        connection, candidate_ids
-                    )
-                    grouped_results = apply_filter_to_groups(
-                        grouped_results,
-                        tracking_statuses,
-                        application_filter,
-                    )
-                else:
-                    candidate_ids = {job.id for job in matches}
-                    tracking_statuses = application_statuses_for_jobs(
-                        connection, candidate_ids
-                    )
-                    matches = apply_filter_to_flat(
-                        matches,
-                        tracking_statuses,
-                        application_filter,
-                    )
     except (OSError, sqlite3.Error) as error:
         print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
-    if grouped:
-        if not grouped_results:
-            print("No matching jobs found.")
-            return 0
-
-        grouped_ranked = score_groups(grouped_results, profile)
-        if min_score > 0:
-            grouped_ranked = [
-                item for item in grouped_ranked if item.match_score >= min_score
-            ]
-        if not grouped_ranked:
-            if min_score > 0:
-                print(f"No groups meet the minimum score of {min_score}.")
-            else:
-                print("No matching jobs found.")
-            return 0
-
-        print(
-            f"Ranked {len(grouped_ranked)} group"
-            f"{'s' if len(grouped_ranked) != 1 else ''}:"
+    if outcome.grouped:
+        _render_rank_grouped(
+            outcome.grouped_ranked,
+            outcome.tracking_statuses,
+            min_score=min_score,
+            candidate_count=outcome.grouped_candidate_count,
         )
-        print()
-
-        for i, ranked_group in enumerate(grouped_ranked, start=1):
-            group = ranked_group.group
-            rep = group.representative
-            location_part = rep.location or "N/A"
-            if rep.remote_status == "remote":
-                location_part = f"{location_part} (remote)"
-
-            urls = ", ".join(url for url in group.urls if url)
-            print(f"{i}. [Score {ranked_group.match_score}/100] {rep.title}")
-            print(f"   Match:    {ranked_group.match_score}/100")
-            print(f"   ID:       {rep.id}")
-            print(f"   Company:  {rep.company or 'N/A'}")
-            print(f"   Location: {location_part}")
-            print(f"   Remote:   {rep.remote_status or 'N/A'}")
-            print(f"   Source:   {_sources_line(group)}")
-            print(f"   URL:      {urls or 'N/A'}")
-            if tracking_statuses is not None:
-                application_label = _application_line(
-                    group_tracking_info(group, tracking_statuses)
-                )
-                print(f"   Application: {application_label}")
-            member_count = len(group.members)
-            if member_count > 1:
-                print(f"   Group:    {member_count} listings grouped")
-            _print_match_sections(ranked_group.result)
-            print("   Reasons:")
-            for reason in ranked_group.reasons:
-                print(f"     {reason}")
-            print()
-
-        return 0
-
-    if not matches:
-        print("No matching jobs found.")
-        return 0
-
-    ranked = score_jobs(matches, profile)
-    if min_score > 0:
-        ranked = [job for job in ranked if job.match_score >= min_score]
-    if not ranked:
-        if min_score > 0:
-            print(f"No jobs meet the minimum score of {min_score}.")
-        else:
-            print("No matching jobs found.")
-        return 0
-
-    print(f"Ranked {len(ranked)} job{'s' if len(ranked) != 1 else ''}:")
-    print()
-
-    for i, job in enumerate(ranked, start=1):
-        location_part = job.job.location or "N/A"
-        if job.job.remote_status == "remote":
-            location_part = f"{location_part} (remote)"
-
-        print(f"{i}. [Score {job.match_score}/100] {job.job.title}")
-        print(f"   Match:    {job.match_score}/100")
-        print(f"   ID:       {job.job.id}")
-        print(f"   Company:  {job.job.company or 'N/A'}")
-        print(f"   Location: {location_part}")
-        print(f"   Remote:   {job.job.remote_status or 'N/A'}")
-        print(f"   Source:   {job.job.source}")
-        print(f"   URL:      {job.job.url or 'N/A'}")
-        if tracking_statuses is not None:
-            print(
-                "   Application: "
-                f"{_format_application_status(tracking_statuses.get(job.job.id))}"
-            )
-        _print_match_sections(job.result)
-        print("   Reasons:")
-        for reason in job.reasons:
-            print(f"     {reason}")
-        print()
+    else:
+        _render_rank_flat(
+            outcome.flat_ranked,
+            outcome.tracking_statuses,
+            min_score=min_score,
+            candidate_count=outcome.flat_candidate_count,
+        )
 
     return 0
 
@@ -1382,7 +1346,211 @@ def build_parser() -> argparse.ArgumentParser:
         help="SQLite database path.",
     )
 
+    saved_search_parser = subparsers.add_parser(
+        "saved-search",
+        help="Manage reusable search/rank workflow definitions.",
+    )
+    saved_search_commands = saved_search_parser.add_subparsers(
+        dest="saved_search_command",
+        required=True,
+    )
+
+    create_parser = saved_search_commands.add_parser(
+        "create",
+        help="Create a saved search or ranking workflow.",
+    )
+    create_parser.add_argument("name", help="Unique workflow name.")
+    create_parser.add_argument("query", help="Search keyword or query.")
+    create_parser.add_argument(
+        "--mode",
+        choices=SEARCH_MODES,
+        required=True,
+        help="Workflow mode (search or rank).",
+    )
+    _add_saved_search_filter_flags(create_parser)
+
+    list_parser = saved_search_commands.add_parser(
+        "list",
+        help="List saved workflows.",
+    )
+    list_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    show_parser = saved_search_commands.add_parser(
+        "show",
+        help="Show a saved workflow definition.",
+    )
+    show_parser.add_argument("name", help="Workflow name.")
+    show_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    run_parser = saved_search_commands.add_parser(
+        "run",
+        help="Execute a saved workflow against stored jobs.",
+    )
+    run_parser.add_argument("name", help="Workflow name.")
+    run_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    update_parser = saved_search_commands.add_parser(
+        "update",
+        help="Change a saved workflow definition.",
+    )
+    update_parser.add_argument("name", help="Workflow name.")
+    update_parser.add_argument(
+        "--query",
+        help="Replace the search keyword or query.",
+    )
+    update_parser.add_argument(
+        "--mode",
+        choices=SEARCH_MODES,
+        help="Workflow mode (immutable after creation; changing is rejected).",
+    )
+    _add_saved_search_filter_flags(update_parser)
+    update_parser.add_argument(
+        "--clear-source",
+        action="store_true",
+        help="Clear the source filter.",
+    )
+    update_parser.add_argument(
+        "--clear-location",
+        action="store_true",
+        help="Clear the location filter.",
+    )
+    update_parser.add_argument(
+        "--clear-remote",
+        action="store_true",
+        help="Clear the remote filter.",
+    )
+    update_parser.add_argument(
+        "--clear-min-score",
+        action="store_true",
+        help="Clear the minimum-score filter.",
+    )
+    update_parser.add_argument(
+        "--clear-profile",
+        action="store_true",
+        help="Clear the rank profile path.",
+    )
+    update_parser.add_argument(
+        "--clear-status-filters",
+        action="store_true",
+        help="Clear both --status and --exclude-status filters.",
+    )
+
+    rename_parser = saved_search_commands.add_parser(
+        "rename",
+        help="Rename a saved workflow.",
+    )
+    rename_parser.add_argument("name", help="Current workflow name.")
+    rename_parser.add_argument("new_name", help="New workflow name.")
+    rename_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    delete_parser = saved_search_commands.add_parser(
+        "delete",
+        help="Delete a saved workflow.",
+    )
+    delete_parser.add_argument("name", help="Workflow name.")
+    delete_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
     return parser
+
+
+def _add_saved_search_filter_flags(parser: argparse.ArgumentParser) -> None:
+    """Add the shared filter flags used by saved-search create and update."""
+    parser.add_argument(
+        "--grouped",
+        action="store_true",
+        dest="grouped_flag",
+        help="Collapse cross-source duplicates into one result per group.",
+    )
+    parser.add_argument(
+        "--no-grouped",
+        action="store_true",
+        dest="no_grouped_flag",
+        help="Do not collapse cross-source duplicates.",
+    )
+    parser.add_argument(
+        "--profile",
+        help="Candidate profile JSON for rank mode (required in rank mode).",
+    )
+    parser.add_argument(
+        "--source",
+        help="Only include results from this source.",
+    )
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="Only include remote jobs.",
+    )
+    parser.add_argument(
+        "--location",
+        help="Only include results matching this location.",
+    )
+    parser.add_argument(
+        "--untracked",
+        action="store_true",
+        dest="untracked_flag",
+        help="Only include jobs with no application record.",
+    )
+    parser.add_argument(
+        "--no-untracked",
+        action="store_true",
+        dest="no_untracked_flag",
+        help="Do not restrict to untracked jobs.",
+    )
+    parser.add_argument(
+        "--status",
+        action="append",
+        choices=APPLICATION_STATUSES,
+        dest="status_list",
+        help="Only show jobs with this application status (repeatable).",
+    )
+    parser.add_argument(
+        "--exclude-status",
+        action="append",
+        choices=APPLICATION_STATUSES,
+        dest="exclude_status_list",
+        help="Hide jobs with this application status (repeatable).",
+    )
+    parser.add_argument(
+        "--min-score",
+        type=int,
+        help="Only show results with a match score of at least N (0-100).",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Maximum results.",
+    )
+    parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
 
 
 def _lock_conflict_message(error: CollectionLockConflict) -> str:
@@ -1415,6 +1583,441 @@ def _validate_application_filter_flags(
         parser.error("--untracked cannot be combined with --status or --exclude-status")
     if include_statuses and exclude_statuses:
         parser.error("--status and --exclude-status cannot be combined")
+
+
+def _tri_state(
+    parser: argparse.ArgumentParser,
+    *,
+    positive: bool,
+    negative: bool,
+    name: str,
+) -> bool | None:
+    """Resolve a --flag/--no-flag pair to True/False/None (unspecified)."""
+    if positive and negative:
+        parser.error(f"--{name} and --no-{name} cannot be combined")
+    if positive:
+        return True
+    if negative:
+        return False
+    return None
+
+
+def _build_creation_fields(
+    parser: argparse.ArgumentParser,
+    arguments: argparse.Namespace,
+) -> SavedSearchFields:
+    """Validate create flags and build a fresh saved-search definition."""
+    grouped = _tri_state(
+        parser,
+        positive=arguments.grouped_flag,
+        negative=arguments.no_grouped_flag,
+        name="grouped",
+    )
+    untracked = _tri_state(
+        parser,
+        positive=arguments.untracked_flag,
+        negative=arguments.no_untracked_flag,
+        name="untracked",
+    )
+    if grouped is None:
+        grouped = False
+    if untracked is None:
+        untracked = False
+
+    include_statuses = arguments.status_list or ()
+    exclude_statuses = arguments.exclude_status_list or ()
+    if include_statuses and exclude_statuses:
+        parser.error("--status and --exclude-status cannot be combined")
+    if untracked and (include_statuses or exclude_statuses):
+        parser.error("--untracked cannot be combined with --status or --exclude-status")
+
+    mode = arguments.mode
+    if mode == "search":
+        if arguments.profile is not None:
+            parser.error("--profile is only valid in rank mode")
+        if arguments.min_score is not None:
+            parser.error("--min-score is only valid in rank mode")
+    else:
+        if arguments.profile is None:
+            parser.error("rank mode requires --profile")
+
+    if arguments.min_score is not None and not (0 <= arguments.min_score <= 100):
+        parser.error("--min-score must be between 0 and 100")
+    if arguments.limit is not None and arguments.limit < 1:
+        parser.error("--limit must be at least 1")
+
+    return SavedSearchFields(
+        name=arguments.name,
+        query=arguments.query,
+        mode=mode,
+        profile_path=arguments.profile,
+        grouped=grouped,
+        source=arguments.source,
+        remote=True if arguments.remote else None,
+        location=arguments.location,
+        untracked=untracked,
+        include_statuses=tuple(include_statuses),
+        exclude_statuses=tuple(exclude_statuses),
+        min_score=arguments.min_score,
+        result_limit=arguments.limit if arguments.limit is not None else 20,
+    )
+
+
+def _build_update_patch(
+    parser: argparse.ArgumentParser,
+    arguments: argparse.Namespace,
+    *,
+    mode: str,
+) -> tuple[SavedSearchPatch, frozenset[str]]:
+    """Validate update arguments and build a patch plus explicit clears."""
+    grouped = _tri_state(
+        parser,
+        positive=arguments.grouped_flag,
+        negative=arguments.no_grouped_flag,
+        name="grouped",
+    )
+    untracked = _tri_state(
+        parser,
+        positive=arguments.untracked_flag,
+        negative=arguments.no_untracked_flag,
+        name="untracked",
+    )
+
+    include_statuses = arguments.status_list or ()
+    exclude_statuses = arguments.exclude_status_list or ()
+    if arguments.clear_status_filters and (include_statuses or exclude_statuses):
+        parser.error(
+            "--clear-status-filters cannot be combined with "
+            "--status or --exclude-status"
+        )
+    if untracked is True and (include_statuses or exclude_statuses):
+        parser.error("--untracked cannot be combined with --status or --exclude-status")
+    if arguments.clear_status_filters and untracked is True:
+        parser.error("--clear-status-filters cannot be combined with --untracked")
+    if include_statuses and exclude_statuses:
+        parser.error("--status and --exclude-status cannot be combined")
+
+    if mode == "search":
+        if arguments.profile is not None:
+            parser.error("--profile is only valid in rank mode")
+        if arguments.min_score is not None:
+            parser.error("--min-score is only valid in rank mode")
+    if arguments.min_score is not None and not (0 <= arguments.min_score <= 100):
+        parser.error("--min-score must be between 0 and 100")
+    if arguments.limit is not None and arguments.limit < 1:
+        parser.error("--limit must be at least 1")
+
+    _reject_clear_pairs(parser, arguments)
+
+    clears: set[str] = set()
+    if arguments.clear_source:
+        clears.add("source")
+    if arguments.clear_location:
+        clears.add("location")
+    if arguments.clear_remote:
+        clears.add("remote")
+    if arguments.clear_min_score:
+        clears.add("min_score")
+    if arguments.clear_profile:
+        clears.add("profile_path")
+    if arguments.clear_status_filters:
+        clears.add("status_filters")
+
+    return (
+        SavedSearchPatch(
+            query=arguments.query,
+            profile_path=arguments.profile,
+            grouped=grouped,
+            source=arguments.source,
+            remote=True if arguments.remote else None,
+            location=arguments.location,
+            untracked=untracked,
+            include_statuses=tuple(include_statuses) if include_statuses else None,
+            exclude_statuses=tuple(exclude_statuses) if exclude_statuses else None,
+            min_score=arguments.min_score,
+            result_limit=arguments.limit,
+        ),
+        frozenset(clears),
+    )
+
+
+def _reject_clear_pairs(
+    parser: argparse.ArgumentParser,
+    arguments: argparse.Namespace,
+) -> None:
+    """Reject setting a filter while simultaneously clearing it."""
+    pairs = (
+        (arguments.clear_source, arguments.source, "--source"),
+        (arguments.clear_location, arguments.location, "--location"),
+        (arguments.clear_min_score, arguments.min_score, "--min-score"),
+        (arguments.clear_profile, arguments.profile, "--profile"),
+        (arguments.clear_remote, arguments.remote, "--remote"),
+    )
+    for cleared, set_value, flag in pairs:
+        if cleared and set_value is not None:
+            parser.error(f"{flag} and --clear cannot be combined")
+
+
+def _run_saved_search_list(arguments: argparse.Namespace) -> int:
+    try:
+        with connect(arguments.database) as connection:
+            initialize_schema(connection)
+            searches = list_searches(connection)
+    except sqlite3.Error as error:
+        print(
+            f"Failed to list saved searches: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not searches:
+        print("No saved searches.")
+        return 0
+    print(f"Saved searches ({len(searches)}):")
+    for search in searches:
+        print(f"  {search.name}  (mode={search.mode})")
+    return 0
+
+
+def _run_saved_search_show(arguments: argparse.Namespace) -> int:
+    try:
+        with connect(arguments.database) as connection:
+            initialize_schema(connection)
+            search = get_search(connection, arguments.name)
+    except sqlite3.Error as error:
+        print(
+            f"Failed to show saved search: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if search is None:
+        print(f"No saved search named {arguments.name!r}.", file=sys.stderr)
+        return 1
+
+    print(f"Saved search: {search.name}")
+    print(f"  Mode:         {search.mode}")
+    print(f"  Query:        {search.query}")
+    print(f"  Grouped:      {'yes' if search.grouped else 'no'}")
+    print(f"  Source:       {search.source or 'any'}")
+    print(f"  Remote:       {'remote only' if search.remote else 'any'}")
+    print(f"  Location:     {search.location or 'any'}")
+    print(f"  Untracked:    {'yes' if search.untracked else 'no'}")
+    if search.include_statuses:
+        print(f"  Status:       {', '.join(search.include_statuses)}")
+    if search.exclude_statuses:
+        print(f"  Excluded:     {', '.join(search.exclude_statuses)}")
+    print(f"  Result limit: {search.result_limit}")
+    if search.mode == "rank":
+        min_score = search.min_score if search.min_score is not None else "none"
+        print(f"  Min score:    {min_score}")
+        print(f"  Profile:      {search.profile_path or 'none'}")
+    print(f"  Created:      {search.created_at}")
+    print(f"  Updated:      {search.updated_at}")
+    return 0
+
+
+def _run_saved_search_create(
+    arguments: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    fields = _build_creation_fields(parser, arguments)
+    try:
+        with collection_lock(arguments.database, command="saved-search create"):
+            with connect(arguments.database) as connection:
+                initialize_schema(connection)
+                created = create_search(connection, fields=fields)
+    except CollectionLockConflict as error:
+        print(_lock_conflict_message(error), file=sys.stderr)
+        return EXIT_TEMP_FAILURE
+    except OSError as error:
+        print(
+            f"Failed to create saved search: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+    except (DuplicateNameError, ValidationError, sqlite3.Error) as error:
+        print(f"Failed to create saved search: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Created saved search {created.name!r} (mode={created.mode}).")
+    return 0
+
+
+def _run_saved_search_update(
+    arguments: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    if arguments.mode is not None:
+        parser.error("--mode is immutable; it cannot be changed after creation")
+
+    try:
+        with collection_lock(arguments.database, command="saved-search update"):
+            with connect(arguments.database) as connection:
+                initialize_schema(connection)
+                stored = get_search(connection, arguments.name)
+                if stored is None:
+                    print(f"No saved search named {arguments.name!r}.", file=sys.stderr)
+                    return 1
+                patch, clears = _build_update_patch(parser, arguments, mode=stored.mode)
+                updated, changed = update_search(
+                    connection,
+                    name=arguments.name,
+                    patch=patch,
+                    clears=clears,
+                )
+    except CollectionLockConflict as error:
+        print(_lock_conflict_message(error), file=sys.stderr)
+        return EXIT_TEMP_FAILURE
+    except OSError as error:
+        print(
+            f"Failed to update saved search: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+    except (ValidationError, sqlite3.Error) as error:
+        print(f"Failed to update saved search: {error}", file=sys.stderr)
+        return 1
+
+    if not changed:
+        print(f"No changes to saved search {stored.name!r}.")
+        return 0
+    print(f"Updated saved search {updated.name!r}.")
+    return 0
+
+
+def _run_saved_search_rename(arguments: argparse.Namespace) -> int:
+    try:
+        with collection_lock(arguments.database, command="saved-search rename"):
+            with connect(arguments.database) as connection:
+                initialize_schema(connection)
+                renamed = rename_search(
+                    connection,
+                    name=arguments.name,
+                    new_name=arguments.new_name,
+                )
+    except CollectionLockConflict as error:
+        print(_lock_conflict_message(error), file=sys.stderr)
+        return EXIT_TEMP_FAILURE
+    except OSError as error:
+        print(
+            f"Failed to rename saved search: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+    except (DuplicateNameError, UnknownSearchError, sqlite3.Error) as error:
+        print(f"Failed to rename saved search: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Renamed saved search {arguments.name!r} to {renamed.name!r}.")
+    return 0
+
+
+def _run_saved_search_delete(arguments: argparse.Namespace) -> int:
+    try:
+        with collection_lock(arguments.database, command="saved-search delete"):
+            with connect(arguments.database) as connection:
+                initialize_schema(connection)
+                removed = delete_search(connection, name=arguments.name)
+    except CollectionLockConflict as error:
+        print(_lock_conflict_message(error), file=sys.stderr)
+        return EXIT_TEMP_FAILURE
+    except OSError as error:
+        print(
+            f"Failed to delete saved search: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+    except (UnknownSearchError, sqlite3.Error) as error:
+        print(f"Failed to delete saved search: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Deleted saved search {removed.name!r}.")
+    return 0
+
+
+def _run_saved_search_run(arguments: argparse.Namespace) -> int:
+    try:
+        with connect(arguments.database) as connection:
+            initialize_schema(connection)
+            search = get_search(connection, arguments.name)
+            if search is None:
+                print(f"No saved search named {arguments.name!r}.", file=sys.stderr)
+                return 1
+            if search.mode == "rank":
+                if not search.profile_path:
+                    print(
+                        f"Rank saved search {search.name!r} has no profile path.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                profile = load_profile(Path(search.profile_path))
+                rank_outcome = execute_rank(connection, search, profile=profile)
+            else:
+                search_outcome = execute_search(connection, search)
+    except FileNotFoundError as error:
+        print(f"Failed to run saved search: {error}", file=sys.stderr)
+        return 1
+    except (ValueError, json.JSONDecodeError) as error:
+        print(f"Failed to run saved search: {error}", file=sys.stderr)
+        return 1
+    except sqlite3.Error as error:
+        print(
+            f"Failed to run saved search: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if search.mode == "search":
+        if search_outcome.grouped:
+            _render_search_grouped(
+                search_outcome.groups, search_outcome.tracking_statuses
+            )
+        else:
+            _render_search_flat(search_outcome.flat, search_outcome.tracking_statuses)
+        return 0
+
+    min_score = search.min_score or 0
+    if rank_outcome.grouped:
+        _render_rank_grouped(
+            rank_outcome.grouped_ranked,
+            rank_outcome.tracking_statuses,
+            min_score=min_score,
+            candidate_count=rank_outcome.grouped_candidate_count,
+        )
+    else:
+        _render_rank_flat(
+            rank_outcome.flat_ranked,
+            rank_outcome.tracking_statuses,
+            min_score=min_score,
+            candidate_count=rank_outcome.flat_candidate_count,
+        )
+    return 0
+
+
+def _run_saved_search_readish(
+    command: str,
+    arguments: argparse.Namespace,
+) -> int:
+    if command == "list":
+        return _run_saved_search_list(arguments)
+    if command == "show":
+        return _run_saved_search_show(arguments)
+    return _run_saved_search_run(arguments)
+
+
+def _run_saved_search_write(
+    command: str,
+    arguments: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    if command == "create":
+        return _run_saved_search_create(arguments, parser)
+    if command == "update":
+        return _run_saved_search_update(arguments, parser)
+    if command == "rename":
+        return _run_saved_search_rename(arguments)
+    return _run_saved_search_delete(arguments)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1580,6 +2183,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             group_id=arguments.group_id,
             limit=arguments.limit,
         )
+
+    if arguments.command == "saved-search":
+        saved_command = arguments.saved_search_command
+
+        if saved_command in ("list", "show", "run"):
+            return _run_saved_search_readish(saved_command, arguments)
+
+        return _run_saved_search_write(saved_command, arguments, parser)
 
     parser.error("Unsupported command.")
     return 2

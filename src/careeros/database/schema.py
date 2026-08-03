@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -100,6 +100,29 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_application_events_application
             ON application_events(application_id, created_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS saved_searches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            description TEXT,
+            query TEXT NOT NULL,
+            mode TEXT NOT NULL CHECK (mode IN ('search', 'rank')),
+            profile_path TEXT,
+            grouped INTEGER NOT NULL DEFAULT 0,
+            source TEXT,
+            remote INTEGER,
+            location TEXT,
+            untracked INTEGER NOT NULL DEFAULT 0,
+            include_statuses TEXT,
+            exclude_statuses TEXT,
+            min_score INTEGER CHECK (min_score IS NULL OR min_score BETWEEN 0 AND 100),
+            result_limit INTEGER NOT NULL DEFAULT 20 CHECK (result_limit > 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_saved_searches_name
+            ON saved_searches(name COLLATE NOCASE);
         """
     )
 

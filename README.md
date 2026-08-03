@@ -41,7 +41,8 @@ Milestone 1: repository and development foundation.
 Current CLI capabilities include multi-source job collection (`collect
 <source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
 persistent run history, read-only collection observability (`collect status`,
-`collect history`), plus `search`, `show`, `rank`, `group`, and `diagnose`.
+`collect history`), plus `search`, `show`, `rank`, `group`,
+`saved-search`, `application`, and `diagnose`.
 Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
@@ -84,6 +85,38 @@ are anchored to `jobs.id` (never to the derived grouping tables), so
 `--status STATUS` (repeatable), and `--exclude-status STATUS` (repeatable) —
 which show the actual state (`Application: Applied`, `Application: Untracked`)
 on matching results. Without these flags the default output is unchanged.
+
+## Saved searches
+
+CareerOS can capture a reusable search or rank workflow so the same filters can
+be re-run later without retyping the flags. A saved search stores the query and
+filters (*intent*), never cached results: running it always queries the current
+database. Running a saved search never submits applications, sends email, or
+contacts any external service.
+
+```bash
+# Capture a recurring engineer search (search mode)
+uv run careeros saved-search create engineer "Engineer" --mode search --remote
+
+# Capture a ranking workflow (rank mode requires --profile)
+uv run careeros saved-search create top-roles "Engineer" --mode rank \
+  --profile config/candidate_profile.example.json --min-score 70
+
+uv run careeros saved-search list                       # list workflows
+uv run careeros saved-search show engineer              # view a definition
+uv run careeros saved-search run engineer               # re-run against current DB
+uv run careeros saved-search update engineer --limit 50 # change filters
+uv run careeros saved-search rename engineer dev        # rename
+uv run careeros saved-search delete engineer            # remove
+```
+
+`--mode {search,rank}` is required at creation and cannot change afterwards.
+Mode-specific rules apply (`--profile` is invalid for `search` and required for
+`rank`; `--min-score` is rank-only). Names are case-insensitive for lookup but
+stored as given. `saved-search run` output is identical to the explicit
+`search`/`rank` commands. The write commands (`create`, `update`, `rename`,
+`delete`) respect the per-database lock and exit 75 on contention; the read
+commands (`list`, `show`, `run`) never lock.
 
 ## Scheduled collection
 
