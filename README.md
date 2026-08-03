@@ -42,7 +42,8 @@ Current CLI capabilities include multi-source job collection (`collect
 <source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
 persistent run history, read-only collection observability (`collect status`,
 `collect history`), plus `search`, `show`, `rank`, `group`,
-`saved-search`, `application`, and `diagnose`.
+`saved-search`, `application`, a read-only `report` (Career Snapshot), and
+`diagnose`.
 Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
@@ -117,6 +118,54 @@ stored as given. `saved-search run` output is identical to the explicit
 `search`/`rank` commands. The write commands (`create`, `update`, `rename`,
 `delete`) respect the per-database lock and exit 75 on contention; the read
 commands (`list`, `show`, `run`) never lock.
+
+## Career Snapshot
+
+The **Career Snapshot** is a read-only local report (`careeros report`) that
+pulls your stored jobs, application tracking, saved searches, and collection
+history into one deterministic screen. It is a dashboard, not an agent: it
+never submits applications, never sends email, never fetches jobs, and never
+contacts any external service. The report holds no per-database lock, so it
+runs fine while a collection is in progress, and it never writes — not even a
+`collection_runs` entry.
+
+```bash
+uv run careeros report                                   # text (default)
+uv run careeros report --format json                     # same data as JSON
+uv run careeros report --profile config/candidate_profile.example.json
+uv run careeros report --saved-search top-roles          # rank workflow drives the ranking
+uv run careeros report --limit 5 --grouped               # cap + collapse duplicates
+```
+
+`--format text` (default) and `--format json` are two renderers over the same
+immutable report model built by the same read-only reporting service, so both
+carry identical data. The text output has five sections:
+
+- **Overview** — stored jobs, canonical groups, distinct opportunities,
+  tracked applications, saved searches, per-source last-run summary, and which
+  sources are currently due.
+- **Application pipeline** — one count per status (including `rejected` and
+  `withdrawn`) plus the most recently changed applications (newest first,
+  capped by `--limit`).
+- **Action items** — the pipeline items worth acting on, in prominence order:
+  interview attention, offer attention, interested (not applied), and applied
+  (awaiting progress). `rejected`/`withdrawn` appear only in the pipeline
+  counts, never as actions. CareerOS never invents deadlines or follow-up
+  dates from text.
+- **Recommended opportunities** — profile-ranked jobs using the shared ranking
+  engine. Without `--profile` or `--saved-search` the section is honestly
+  skipped with a note. Tracked jobs are excluded (recommendations only propose
+  new opportunities), and `--grouped` collapses cross-source duplicates.
+- **Collection health** — per-source last run, outcome, fetched/inserted/
+  updated counts, last error, next-due time, and incomplete-run count.
+
+With `--saved-search NAME`, the named **rank-mode** saved search governs the
+query, filters, minimum score, and result limit; `--profile` may be passed
+alongside it to override the stored profile. Report flags like `--grouped`
+cannot be combined with `--saved-search` (the saved search already defines its
+own grouping), and a search-mode saved search is rejected. Exit codes: `0`
+success (including an empty database), `1` unknown saved search or
+profile/database failure, `2` invalid flags.
 
 ## Scheduled collection
 

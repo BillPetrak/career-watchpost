@@ -30,6 +30,7 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros search engineer --grouped` | Search, collapsing cross-source duplicates into one result per group |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json` | Rank stored jobs against profile |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --grouped` | Rank jobs, one scored result per duplicate group |
+| `uv run careeros report [--format {text,json}] [--profile PATH] [--saved-search NAME] [--limit N] [--grouped]` | Read-only Career Snapshot dashboard (default format: text) |
 | `uv run careeros group regroup [--database PATH]` | Recompute canonical duplicate groups (write; locks the DB) |
 | `uv run careeros group explain [--database PATH] [--group-id ID] [--limit N]` | Show canonical groups read-only |
 | `uv run careeros application set JOB_ID STATUS [--note TEXT] [--database PATH]` | Set/update a job's application status (write; locks the DB) |
@@ -152,8 +153,9 @@ any source, does not touch run history or the jobs table, and exits with code
 
 The read-only commands `collect status`, `collect history`, `search`, `show`,
 `rank`, `group explain`, `application show`, `application list`,
-`application history`, `saved-search list`, `saved-search show`, and
-`saved-search run` never acquire the collection lock and remain available
+`application history`, `saved-search list`, `saved-search show`,
+`saved-search run`, and `report` never acquire the collection lock and remain
+available
 while a collection is running.
 
 ## Application tracking
@@ -260,6 +262,66 @@ collection lock and exit 75 on contention with no database change; the reads
 The nullable `description` column is stored for future extensibility but has no
 CLI flag yet.
 
+## Career Snapshot
+
+`report` produces a read-only **Career Snapshot** dashboard over stored jobs,
+application tracking, saved searches, and collection history. It is a dashboard,
+not an agent: it never submits applications, never sends email, never fetches
+jobs, and never contacts any external service. It never acquires the collection
+lock (so it runs happily while a collection is in progress) and never writes —
+not even a `collection_runs` entry. It is built entirely by
+`src/careeros/reporting/` (immutable `models.py`, read-only `service.py`
+`build_report`, and the `render.py` `render_report`/`render_report_json`
+renderers, which share the same report model).
+
+```bash
+uv run careeros report                                                     # text
+uv run careeros report --format json                                       # same data as JSON
+uv run careeros report --profile config/candidate_profile.example.json     # rank untracked jobs
+uv run careeros report --saved-search top-roles                            # rank workflow drives scoring
+uv run careeros report --grouped                                           # collapse duplicates
+uv run careeros report --limit 5                                           # cap action items + recommendations
+```
+
+`--format {text,json}` selects the renderer (default `text`); both render the
+same immutable `Report`, so the JSON carries exactly the data the text shows.
+Report defaults: no profile/no saved search → recommendations are skipped with
+an explicit note; `--limit 10` caps the "recently changed" list, each action
+category, AND the recommendations.
+
+Sections and semantics:
+
+- **Overview** — stored jobs, canonical groups, grouped members, distinct
+  opportunities (`total_jobs - grouped_members + groups`), tracked applications,
+  saved searches, a per-source last-run summary, and due sources.
+- **Application pipeline** — one count per status in `APPLICATION_STATUSES`
+  order (zero-filled), and the most recently changed applications newest first
+  (`updated_at DESC, id DESC`), capped by `--limit`. Each entry shows the latest
+  non-empty event note.
+- **Action items** — active pipeline categories in prominence order: interview
+  attention, offer attention, interested (not applied), applied (awaiting
+  progress). `rejected`/`withdrawn` appear **only** in the pipeline counts,
+  never as action items. CareerOS never invents deadlines or follow-up dates
+  from text.
+- **Recommended opportunities** — profile-ranked jobs from the shared ranking
+  engine. Tracked jobs are excluded (`untracked=True`), so the section only
+  proposes new opportunities. `--grouped` collapses cross-source duplicates
+  (untracked status then described per canonical group).
+- **Collection health** — per-source last run, outcome, fetched/inserted/
+  updated, last error, next due, and incomplete-run count; a malformed stored
+  timestamp is treated as "never run / due" and never crashes.
+
+`--saved-search NAME` requires a **rank-mode** saved search (search-mode is
+rejected); it governs the query, filters, minimum score, and result limit
+(`saved_search.result_limit` applies first, report `--limit` only trims).
+`--profile` may be passed alongside to override the saved search's stored
+profile path. `--grouped` cannot be combined with `--saved-search`.
+
+Exit codes: `0` on success (including an empty database), `1` for an unknown
+saved-search name or profile/database/setup failure, `2` for invalid flags or a
+search-mode `--saved-search`. The command never exits 75 and never touches the
+database beyond idempotent schema initialization.
+
 ## systemd user units
 
 The `systemd/` directory holds templates, an installer, and an uninstaller for
@@ -294,7 +356,8 @@ after moving the repository (uninstall first if the old units should go).
 - `src/careeros/database/` — SQLite layer (schema, connection, persistence)
 - `src/careeros/grouping/` — duplicate detection (normalization, matcher)
 - `src/careeros/saved_searches/` — saved workflow definitions and shared execution
-- `src/careeros/{job_hunter,privacy,ranking,reporting}/` — stubs (empty, not implemented)
+- `src/careeros/reporting/` — Career Snapshot dashboard (models, service, renderers)
+- `src/careeros/{job_hunter,privacy,ranking}/` — stubs (empty, not implemented)
 - `tests/` — pytest suite, uses `tmp_path` for isolated SQLite databases
 - `config/` — YAML config (settings.example.yaml, candidate_profile.example.yaml)
 - `data/database/careeros.sqlite3` — default SQLite DB path
@@ -305,7 +368,7 @@ after moving the repository (uninstall first if the old units should go).
 - **No external runtime dependencies** — only stdlib + dev tools
 - **SQLite only** — schema managed in `schema.py`, not via migration tooling
 - **No CI/CD**, no pre-commit hooks, no Makefile
-- Module sub-packages beyond `collectors`, `database`, and `grouping` are stubs; adding real code there is expected
+- Module sub-packages beyond `collectors`, `database`, `grouping`, and `reporting` are stubs; adding real code there is expected
 - Ruff: `line-length = 88`, selected rules `E F I UP B`
 - `mypy` is strict, scoped to `src/careeros` only (not tests)
 

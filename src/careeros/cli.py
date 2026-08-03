@@ -40,7 +40,15 @@ from careeros.database.runs import CollectionRun, list_runs, parse_utc
 from careeros.database.schema import initialize_schema
 from careeros.locking import CollectionLockConflict, collection_lock
 from careeros.ranking.profile import load_profile
-from careeros.ranking.scorer import MatchResult, RankedGroup, RankedJob
+from careeros.ranking.scorer import (
+    CandidateProfile,
+    MatchResult,
+    RankedGroup,
+    RankedJob,
+)
+from careeros.reporting.models import Report
+from careeros.reporting.render import render_report, render_report_json
+from careeros.reporting.service import build_report
 from careeros.saved_searches.execution import (
     execute_rank,
     execute_search,
@@ -50,6 +58,7 @@ from careeros.saved_searches.execution import (
 from careeros.saved_searches.models import (
     SEARCH_MODES,
     DuplicateNameError,
+    SavedSearch,
     SavedSearchFields,
     SavedSearchPatch,
     UnknownSearchError,
@@ -979,6 +988,75 @@ def run_rank(
     return 0
 
 
+def run_report(
+    arguments: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    """Show a read-only Career Snapshot report (never writes or locks)."""
+    if arguments.limit < 1:
+        parser.error("--limit must be at least 1")
+    if arguments.saved_search is not None and arguments.grouped:
+        parser.error("--grouped cannot be combined with --saved-search")
+
+    saved_search: SavedSearch | None = None
+    profile: CandidateProfile | None = None
+    report: Report | None = None
+
+    try:
+        with connect(arguments.database) as connection:
+            initialize_schema(connection)
+
+            if arguments.saved_search is not None:
+                definition = get_search(connection, arguments.saved_search)
+                if definition is None:
+                    print(
+                        f"No saved search named {arguments.saved_search!r}.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                if definition.mode != "rank":
+                    print(
+                        f"Saved search {definition.name!r} is mode={definition.mode}; "
+                        "report --saved-search requires a rank-mode saved search.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                saved_search = definition
+
+            if arguments.profile is not None:
+                profile = load_profile(arguments.profile)
+            elif saved_search is not None:
+                if not saved_search.profile_path:
+                    print(
+                        f"Rank saved search {saved_search.name!r} has no profile path.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                profile = load_profile(Path(saved_search.profile_path))
+
+            report = build_report(
+                connection,
+                now=_utc_now(),
+                profile=profile,
+                saved_search=saved_search,
+                limit=arguments.limit,
+                grouped=arguments.grouped,
+            )
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
+        print(f"Failed to load profile: {error}", file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error) as error:
+        print(f"Report failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    assert report is not None
+    if arguments.format == "json":
+        print(render_report_json(report), end="")
+    else:
+        print(render_report(report), end="")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CareerOS command-line parser."""
     parser = argparse.ArgumentParser(
@@ -1303,6 +1381,51 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_DATABASE_PATH,
         help="SQLite database path.",
+    )
+
+    report_parser = subparsers.add_parser(
+        "report",
+        help=(
+            "Show a read-only Career Snapshot of jobs, applications, and "
+            "collection state."
+        ),
+    )
+    report_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+    report_parser.add_argument(
+        "--profile",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a candidate profile JSON file "
+            "(overrides a saved search's profile)."
+        ),
+    )
+    report_parser.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Maximum recommendations and action items to show (default: 10).",
+    )
+    report_parser.add_argument(
+        "--grouped",
+        action="store_true",
+        help="Collapse cross-source duplicates in recommendations (flat default).",
+    )
+    report_parser.add_argument(
+        "--saved-search",
+        default=None,
+        help="Name of a rank-mode saved search whose filters drive recommendations.",
+    )
+    report_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: text).",
     )
 
     group_parser = subparsers.add_parser(
@@ -2162,6 +2285,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             include_statuses=arguments.status or (),
             exclude_statuses=arguments.exclude_status or (),
         )
+
+    if arguments.command == "report":
+        return run_report(arguments, parser)
 
     if arguments.command == "group":
         if arguments.group_command == "regroup":
