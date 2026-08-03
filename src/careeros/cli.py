@@ -24,12 +24,17 @@ from careeros.database.connection import connect
 from careeros.database.jobs import get_job_by_id, search_jobs
 from careeros.database.runs import CollectionRun, list_runs, parse_utc
 from careeros.database.schema import initialize_schema
+from careeros.locking import CollectionLockConflict, collection_lock
 from careeros.ranking.profile import load_profile
 from careeros.ranking.scorer import score_jobs
 from careeros.status import build_statuses
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "database" / "careeros.sqlite3"
+
+# EX_TEMPFAIL from sysexits.h: a conventional "temporary failure, retry later"
+# code, distinct from 1 (collection/setup failure) and 2 (argparse errors).
+EXIT_TEMP_FAILURE = 75
 
 
 def print_diagnostics() -> int:
@@ -709,6 +714,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _lock_conflict_message(error: CollectionLockConflict) -> str:
+    """Format a concise lock-contention message for stderr."""
+    lines = [
+        "Collection already running for database:",
+        str(error.database_path),
+        f"Lock file: {error.lock_path}",
+    ]
+    owner: list[str] = []
+    if error.metadata.get("pid"):
+        owner.append(f"pid={error.metadata['pid']}")
+    if error.metadata.get("command"):
+        owner.append(f"command={error.metadata['command']!r}")
+    if error.metadata.get("acquired_at"):
+        owner.append(f"acquired_at={error.metadata['acquired_at']}")
+    if owner:
+        lines.append("Owner: " + ", ".join(owner))
+    return "\n".join(lines)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CareerOS command-line interface."""
     parser = build_parser()
@@ -737,22 +761,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("--limit must be at least 1")
 
         if collect_command == "due":
-            return run_collect_due(
-                limit=arguments.limit,
-                database_path=arguments.database,
-            )
+            lock_command = "collect due"
+        elif collect_command == "all":
+            lock_command = "collect all"
+        else:
+            lock_command = f"collect {collect_command}"
 
-        if collect_command == "all":
-            return run_collect_all(
-                limit=arguments.limit,
-                database_path=arguments.database,
-            )
+        try:
+            with collection_lock(arguments.database, command=lock_command):
+                if collect_command == "due":
+                    return run_collect_due(
+                        limit=arguments.limit,
+                        database_path=arguments.database,
+                    )
 
-        return run_collect(
-            source=collect_command,
-            limit=arguments.limit,
-            database_path=arguments.database,
-        )
+                if collect_command == "all":
+                    return run_collect_all(
+                        limit=arguments.limit,
+                        database_path=arguments.database,
+                    )
+
+                return run_collect(
+                    source=collect_command,
+                    limit=arguments.limit,
+                    database_path=arguments.database,
+                )
+        except CollectionLockConflict as error:
+            print(_lock_conflict_message(error), file=sys.stderr)
+            return EXIT_TEMP_FAILURE
+        except OSError as error:
+            message = f"Collection failed: {type(error).__name__}: {error}"
+            print(message, file=sys.stderr)
+            return 1
 
     if arguments.command == "search":
         if arguments.limit < 1:

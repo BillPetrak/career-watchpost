@@ -44,8 +44,8 @@ exactly one interval. Polling intervals live in
 arbeitnow/remoteok/weworkremotely: provisional defaults). Manual
 `collect <source>` and `collect all` bypass scheduling, but every collection
 attempt is recorded in the `collection_runs` table. `collect due` exits 0 when
-nothing is due or all due sources succeed, and 1 when any due source fails or
-setup fails.
+nothing is due or all due sources succeed, 1 when any due source fails or setup
+fails, and 75 when another collection already holds the database lock.
 
 `collect status` and `collect history` are read-only observability commands:
 they never fetch jobs, never write to the database, and never alter scheduling
@@ -60,6 +60,35 @@ is treated as due). `collect history` lists collection runs newest first
 `incomplete`; `--failed` restricts the list to completed failed attempts, and
 `--source` filters to one registered source. Both exit 0 on success and 1 on
 database/setup failure.
+
+## Collection locking
+
+`collect <source>`, `collect all`, and `collect due` are mutually exclusive per
+database. Each holds one OS-level advisory lock (an exclusive `flock`) on a
+companion file next to the resolved absolute database path for the whole
+command:
+
+    /path/to/careeros.sqlite3.lock
+
+The lock is acquired before any network collection begins and retained through
+schema setup, fetching, persistence, and run-history recording. Two different
+databases never block one another, and relative and equivalent absolute paths
+of the same database map to the same lock. Ownership is managed by the
+operating system, so a stale companion file left behind after a crash never
+blocks a later run — do not delete lock files as a remedy. Lock-file contents
+are informational metadata only (pid, command, acquisition time, database
+path); the OS lock, not file contents, determines ownership.
+
+On contention a collection command prints a message to stderr, does not fetch
+any source, does not touch run history or the jobs table, and exits with code
+75 (`EX_TEMPFAIL`, a conventional temporary-failure code). Example:
+
+    uv run careeros collect due --database /tmp/careeros_lock_test.db
+    echo $?
+
+The read-only commands `collect status`, `collect history`, `search`, `show`,
+and `rank` never acquire the collection lock and remain available while a
+collection is running.
 
 ## Project structure
 

@@ -41,5 +41,7 @@ Milestone 1: repository and development foundation.
 Current CLI capabilities include multi-source job collection (`collect
 <source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
 persistent run history, read-only collection observability (`collect status`,
-`collect history`), plus `search`, `show`, `rank`, and `diagnose`. See
-`AGENTS.md` for the full command reference.
+`collect history`), plus `search`, `show`, `rank`, and `diagnose`. Collection
+commands are mutually exclusive per database via an OS advisory lock, while the
+read-only commands remain available during collection; a lock conflict exits
+with code 75. See `AGENTS.md` for the full command reference.
