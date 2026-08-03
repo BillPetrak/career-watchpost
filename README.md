@@ -41,10 +41,10 @@ Milestone 1: repository and development foundation.
 Current CLI capabilities include multi-source job collection (`collect
 <source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
 persistent run history, read-only collection observability (`collect status`,
-`collect history`), plus `search`, `show`, `rank`, and `diagnose`. Collection
-commands are mutually exclusive per database via an OS advisory lock, while the
-read-only commands remain available during collection; a lock conflict exits
-with code 75. See `AGENTS.md` for the full command reference.
+`collect history`), plus `search`, `show`, `rank`, `group`, and `diagnose`.
+Collection commands are mutually exclusive per database via an OS advisory
+lock, while the read-only commands remain available during collection; a lock
+conflict exits with code 75. See `AGENTS.md` for the full command reference.
 
 ## Cross-source duplicate detection
 
@@ -54,6 +54,36 @@ canonical groups; `group explain` shows them read-only). Grouping is
 non-destructive: the `jobs` table is the source of truth and the derived group
 tables never mutate it. `search --grouped` and `rank --grouped` collapse
 cross-source duplicates into one result per group.
+
+## Application tracking
+
+CareerOS records what you have done with a vacancy so already-handled jobs can
+be recognized later. Tracking is **local workflow state only**: CareerOS never
+submits applications, sends email, or contacts any external service on your
+behalf.
+
+One current application record is stored per tracked job (keyed by the stable
+`jobs.id`) together with an append-only history of every status transition.
+Supported statuses: `interested`, `applied`, `interview`, `offer`, `rejected`,
+`withdrawn`.
+
+```bash
+uv run careeros application set 12 applied --note "sent CV"   # track + note
+uv run careeros application set 12 interview                  # transition
+uv run careeros application show 12                           # current state
+uv run careeros application list --status applied             # filtered list
+uv run careeros application history 12                        # event history
+```
+
+Repeating the same status with no note is an idempotent no-op; adding a note
+appends a same-status history event. Every write is transactional, and records
+are anchored to `jobs.id` (never to the derived grouping tables), so
+`group regroup` can never delete or orphan application history.
+
+`search` and `rank` accept explicit tracking filters — `--untracked`,
+`--status STATUS` (repeatable), and `--exclude-status STATUS` (repeatable) —
+which show the actual state (`Application: Applied`, `Application: Untracked`)
+on matching results. Without these flags the default output is unchanged.
 
 ## Scheduled collection
 

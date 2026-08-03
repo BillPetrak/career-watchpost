@@ -32,6 +32,14 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --grouped` | Rank jobs, one scored result per duplicate group |
 | `uv run careeros group regroup [--database PATH]` | Recompute canonical duplicate groups (write; locks the DB) |
 | `uv run careeros group explain [--database PATH] [--group-id ID] [--limit N]` | Show canonical groups read-only |
+| `uv run careeros application set JOB_ID STATUS [--note TEXT] [--database PATH]` | Set/update a job's application status (write; locks the DB) |
+| `uv run careeros application show JOB_ID [--database PATH]` | Show current application state for one job |
+| `uv run careeros application list [--status STATUS ...] [--limit N] [--database PATH]` | List tracked applications |
+| `uv run careeros application history JOB_ID [--limit N] [--database PATH]` | Show the event history for one tracked job |
+| `uv run careeros search engineer --untracked` | Search, showing only jobs with no application record |
+| `uv run careeros search engineer --exclude-status applied --exclude-status rejected` | Search, hiding selected application statuses |
+| `uv run careeros search engineer --status interview` | Search, showing only jobs in the selected status |
+| `uv run careeros rank engineer --profile config/candidate_profile.example.json --untracked` | Rank only untracked jobs |
 | `uv run python systemd/install.py --dry-run` | Preview systemd user-unit install (writes nothing) |
 | `uv run python systemd/install.py` | Install the systemd user service+timer (not enabled) |
 | `uv run python systemd/install.py --enable` | Install, then enable and start the timer |
@@ -136,8 +144,73 @@ any source, does not touch run history or the jobs table, and exits with code
     echo $?
 
 The read-only commands `collect status`, `collect history`, `search`, `show`,
-`rank`, and `group explain` never acquire the collection lock and remain
-available while a collection is running.
+`rank`, `group explain`, `application show`, `application list`, and
+`application history` never acquire the collection lock and remain available
+while a collection is running.
+
+## Application tracking
+
+CareerOS records what you have done with a stored vacancy so handled jobs can
+be recognized later. Tracking is **local workflow state only**: CareerOS never
+submits applications, never sends email, and never contacts any external
+service on your behalf. One current application record is stored per tracked
+job, keyed by the stable `jobs.id`, plus an append-only history of every status
+transition.
+
+Supported statuses (validated centrally in
+`src/careeros/applications/models.py` and exposed as argparse choices):
+
+- `interested`
+- `applied`
+- `interview`
+- `offer`
+- `rejected`
+- `withdrawn`
+
+`application set JOB_ID STATUS [--note TEXT]` rules:
+
+- First assignment creates the application and one explicit event whose old
+  status is empty.
+- A real transition updates the current status and appends an event.
+- Repeating the identical status with **no** note is an idempotent no-op.
+- Repeating the identical status **with** a note appends a same-status event,
+  supporting "note without a status transition".
+
+Every write is transactional: the application-row change and its history event
+commit together, and any failure rolls the whole operation back. Timestamps are
+timezone-aware UTC ISO-8601. `application show` reports the job details, the
+current status, first-tracked/last-updated times, and the latest note if any.
+`application history` lists events newest first (event ID, timestamp, old ->
+new status, note). `application list [--status ...]` lists tracked applications
+newest first, optionally filtered by status.
+
+`application set` is a write command: it acquires the per-database collection
+lock and exits 75 on contention. The read-only `application show`/`list`/
+`history` never lock and never change database contents beyond idempotent
+schema initialization.
+
+`search` and `rank` accept the tracking flags `--untracked`, `--status STATUS`
+(repeatable), and `--exclude-status STATUS` (repeatable). `--untracked` is
+mutually exclusive with the other two, and `--status` is mutually exclusive
+with `--exclude-status` (rejected with exit code 2). With no tracking flags the
+default output is unchanged. When a tracking flag is active, results carry an
+`Application:` line showing the actual state (e.g. `Application: Applied`,
+`Application: Untracked`).
+
+For grouped results (`--grouped`), a canonical group is treated as tracked when
+**any** current member has an application record; filtering and the
+`Application:` line then describe that group status. If the tracked member is
+not the displayed representative, the annotation says so, e.g.
+`Application: Applied (via job 3, arbeitnow)`. The durable record always stays
+on the single concrete `jobs.id` that was tracked; application rows are never
+duplicated across group members and source job rows are never mutated.
+
+Application records are anchored to `jobs.id`, **never** to the derived
+grouping tables, so `group regroup` (which deletes and rebuilds
+`job_groups`/`job_group_members`) can never delete or orphan them. Both
+`applications.job_id` and `application_events.application_id` use
+`ON DELETE RESTRICT`: application history is durable audit data and cannot be
+silently cascade-deleted.
 
 ## systemd user units
 
@@ -168,6 +241,7 @@ after moving the repository (uninstall first if the old units should go).
 ## Project structure
 
 - `src/careeros/` — package root, entrypoint `careeros.cli:main`
+- `src/careeros/applications/` — application-tracking workflow (models, service)
 - `src/careeros/collectors/` — job-board API clients
 - `src/careeros/database/` — SQLite layer (schema, connection, persistence)
 - `src/careeros/grouping/` — duplicate detection (normalization, matcher)

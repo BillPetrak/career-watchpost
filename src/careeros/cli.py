@@ -10,6 +10,21 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from careeros.applications.models import APPLICATION_STATUSES
+from careeros.applications.service import (
+    ApplicationFilter,
+    GroupTrackingInfo,
+    UnknownJobError,
+    application_statuses_for_jobs,
+    apply_filter_to_flat,
+    apply_filter_to_groups,
+    get_application,
+    group_tracking_info,
+    latest_event_note,
+    list_application_events,
+    list_applications,
+    set_application_status,
+)
 from careeros.collecting import (
     CollectionResult,
     collect_all,
@@ -25,7 +40,7 @@ from careeros.database.groups import (
     list_group_infos,
     search_grouped,
 )
-from careeros.database.jobs import get_job_by_id, search_jobs
+from careeros.database.jobs import StoredJob, get_job_by_id, search_jobs
 from careeros.database.runs import CollectionRun, list_runs, parse_utc
 from careeros.database.schema import initialize_schema
 from careeros.locking import CollectionLockConflict, collection_lock
@@ -348,7 +363,10 @@ def _sources_line(group: GroupedJob) -> str:
     return ", ".join(str(s) for s in group.sources)
 
 
-def _print_grouped_results(results: Sequence[GroupedJob]) -> None:
+def _print_grouped_results(
+    results: Sequence[GroupedJob],
+    tracking_statuses: dict[int, str] | None = None,
+) -> None:
     """Print grouped search results with per-group member details."""
     for i, group in enumerate(results, start=1):
         rep = group.representative
@@ -360,6 +378,11 @@ def _print_grouped_results(results: Sequence[GroupedJob]) -> None:
         print(f"     Company:  {rep.company or 'N/A'}")
         print(f"     Location: {location_part}")
         print(f"     Source:   {_sources_line(group)}")
+        if tracking_statuses is not None:
+            print(
+                "     Application: "
+                f"{_application_line(group_tracking_info(group, tracking_statuses))}"
+            )
         member_count = len(group.members)
         if member_count > 1:
             print(f"     Group:    {member_count} listings grouped")
@@ -432,6 +455,186 @@ def run_group_explain(
     return 0
 
 
+def _format_application_status(status: str | None) -> str:
+    """Render a stored application status (or 'Untracked') for display."""
+    return status.capitalize() if status else "Untracked"
+
+
+def _application_line(info: GroupTrackingInfo) -> str:
+    """Render one 'Application:' line for a grouped result.
+
+    Distinguishes untracked results, results tracked directly on the displayed
+    representative, and results tracked through another member of the group.
+    """
+    if info.status is None:
+        return "Untracked"
+    label = info.status.capitalize()
+    if info.on_representative or info.owner is None:
+        return label
+    return f"{label} (via job {info.owner.id}, {info.owner.source})"
+
+
+def run_application_set(
+    job_id: int,
+    status: str,
+    note: str | None,
+    database_path: Path,
+) -> int:
+    """Set or update a job's application status (write; acquires the lock)."""
+    try:
+        with collection_lock(database_path, command="application set"):
+            with connect(database_path) as connection:
+                initialize_schema(connection)
+                result = set_application_status(
+                    connection,
+                    job_id=job_id,
+                    status=status,
+                    note=note,
+                )
+    except CollectionLockConflict as error:
+        print(_lock_conflict_message(error), file=sys.stderr)
+        return EXIT_TEMP_FAILURE
+    except UnknownJobError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error) as error:
+        print(f"Application failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    if result.created:
+        print(f"Tracked job {job_id} as {status}.")
+    elif result.changed:
+        print(f"Updated job {job_id} to {status}.")
+    else:
+        print(f"Job {job_id} is already {status}; no change.")
+    return 0
+
+
+def run_application_show(job_id: int, database_path: Path) -> int:
+    """Show the current application state for one job (read-only)."""
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            job = get_job_by_id(connection, job_id)
+            if job is None:
+                print(f"No job found with ID {job_id}.", file=sys.stderr)
+                return 1
+            application = get_application(connection, job_id=job_id)
+            note = None
+            if application is not None:
+                note = latest_event_note(connection, application_id=application.id)
+    except (OSError, sqlite3.Error) as error:
+        print(f"Application failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    if application is None:
+        print(f"Job {job_id} is not currently tracked.")
+        return 0
+
+    print(f"Application for job {job_id} ({job.title})")
+    print("-" * len(f"Application for job {job_id} ({job.title})"))
+    print(f"{'Job ID:':<16}{job.id}")
+    print(f"{'Title:':<16}{job.title}")
+    print(f"{'Company:':<16}{job.company or 'N/A'}")
+    print(f"{'Source:':<16}{job.source}")
+    print(f"{'URL:':<16}{job.url or 'N/A'}")
+    print(f"{'Status:':<16}{_format_application_status(application.current_status)}")
+    print(f"{'First tracked:':<16}{application.created_at}")
+    print(f"{'Last updated:':<16}{application.updated_at}")
+    if note is not None:
+        print(f"{'Note:':<16}{note}")
+    return 0
+
+
+def run_application_list(
+    database_path: Path,
+    *,
+    statuses: Sequence[str] | None = None,
+    limit: int = 20,
+) -> int:
+    """List tracked applications, optionally filtered by status (read-only)."""
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            items = list_applications(connection, statuses=statuses, limit=limit)
+    except (OSError, sqlite3.Error) as error:
+        print(f"Application failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print("Tracked applications")
+    print("--------------------")
+
+    if statuses:
+        print(f"Filter: status={', '.join(statuses)}")
+
+    if not items:
+        print()
+        print("No applications tracked.")
+        return 0
+
+    for item in items:
+        application = item.application
+        job = item.job
+        print()
+        print(f"{application.id}. {job.title}")
+        print(f"   Job ID:   {job.id}")
+        print(f"   Company:  {job.company or 'N/A'}")
+        print(f"   Source:   {job.source}")
+        print(f"   Status:   {_format_application_status(application.current_status)}")
+        print(f"   First:    {application.created_at}")
+        print(f"   Updated:  {application.updated_at}")
+        if item.latest_note is not None:
+            print(f"   Note:     {item.latest_note}")
+
+    return 0
+
+
+def run_application_history(
+    job_id: int,
+    database_path: Path,
+    *,
+    limit: int = 20,
+) -> int:
+    """Show the event history for one tracked job (read-only)."""
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            job = get_job_by_id(connection, job_id)
+            if job is None:
+                print(f"No job found with ID {job_id}.", file=sys.stderr)
+                return 1
+            application = get_application(connection, job_id=job_id)
+            if application is None:
+                print(f"Job {job_id} is not currently tracked.")
+                return 0
+            events = list_application_events(
+                connection,
+                application_id=application.id,
+                limit=limit,
+            )
+    except (OSError, sqlite3.Error) as error:
+        print(f"Application failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Application history for job {job_id} ({job.title})")
+    print("-" * len(f"Application history for job {job_id} ({job.title})"))
+
+    if not events:
+        print()
+        print("No history recorded.")
+        return 0
+
+    for event in events:
+        old_status = event.old_status or "-"
+        print()
+        print(f"Event {event.id} | {event.created_at}")
+        print(f"  Status: {old_status} -> {event.new_status}")
+        if event.note is not None:
+            print(f"  Note:   {event.note}")
+
+    return 0
+
+
 def run_search(
     keyword: str,
     database_path: Path,
@@ -441,8 +644,14 @@ def run_search(
     source: str | None = None,
     limit: int = 20,
     grouped: bool = False,
+    untracked: bool = False,
+    include_statuses: Sequence[str] = (),
+    exclude_statuses: Sequence[str] = (),
 ) -> int:
     """Search jobs in the SQLite database."""
+    results: list[StoredJob] = []
+    grouped_results: list[GroupedJob] = []
+    tracking_statuses: dict[int, str] | None = None
     try:
         with connect(database_path) as connection:
             initialize_schema(connection)
@@ -464,6 +673,37 @@ def run_search(
                     source=source,
                     limit=limit,
                 )
+
+            application_filter = ApplicationFilter(
+                untracked=untracked,
+                include_statuses=frozenset(include_statuses),
+                exclude_statuses=frozenset(exclude_statuses),
+            )
+            if application_filter.applies():
+                if grouped:
+                    candidate_ids = {
+                        member.id
+                        for group in grouped_results
+                        for member in group.members
+                    }
+                    tracking_statuses = application_statuses_for_jobs(
+                        connection, candidate_ids
+                    )
+                    grouped_results = apply_filter_to_groups(
+                        grouped_results,
+                        tracking_statuses,
+                        application_filter,
+                    )
+                else:
+                    candidate_ids = {job.id for job in results}
+                    tracking_statuses = application_statuses_for_jobs(
+                        connection, candidate_ids
+                    )
+                    results = apply_filter_to_flat(
+                        results,
+                        tracking_statuses,
+                        application_filter,
+                    )
     except Exception as error:
         print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
@@ -474,7 +714,7 @@ def run_search(
             f"{'s' if len(grouped_results) != 1 else ''}:"
         )
         print()
-        _print_grouped_results(grouped_results)
+        _print_grouped_results(grouped_results, tracking_statuses)
         return 0
 
     print(f"Found {len(results)} matching job{'s' if len(results) != 1 else ''}:")
@@ -489,6 +729,11 @@ def run_search(
         print(f"     Company:  {job.company or 'N/A'}")
         print(f"     Location: {location_part}")
         print(f"     Source:   {job.source}")
+        if tracking_statuses is not None:
+            print(
+                "     Application: "
+                f"{_format_application_status(tracking_statuses.get(job.id))}"
+            )
         print()
 
     return 0
@@ -601,6 +846,9 @@ def run_rank(
     limit: int = 20,
     grouped: bool = False,
     min_score: int = 0,
+    untracked: bool = False,
+    include_statuses: Sequence[str] = (),
+    exclude_statuses: Sequence[str] = (),
 ) -> int:
     """Search jobs and rank them against a candidate profile."""
     try:
@@ -609,6 +857,9 @@ def run_rank(
         print(f"Failed to load profile: {error}", file=sys.stderr)
         return 1
 
+    matches: list[StoredJob] = []
+    grouped_results: list[GroupedJob] = []
+    tracking_statuses: dict[int, str] | None = None
     try:
         with connect(database_path) as connection:
             initialize_schema(connection)
@@ -630,6 +881,37 @@ def run_rank(
                     source=source,
                     limit=limit,
                 )
+
+            application_filter = ApplicationFilter(
+                untracked=untracked,
+                include_statuses=frozenset(include_statuses),
+                exclude_statuses=frozenset(exclude_statuses),
+            )
+            if application_filter.applies():
+                if grouped:
+                    candidate_ids = {
+                        member.id
+                        for group in grouped_results
+                        for member in group.members
+                    }
+                    tracking_statuses = application_statuses_for_jobs(
+                        connection, candidate_ids
+                    )
+                    grouped_results = apply_filter_to_groups(
+                        grouped_results,
+                        tracking_statuses,
+                        application_filter,
+                    )
+                else:
+                    candidate_ids = {job.id for job in matches}
+                    tracking_statuses = application_statuses_for_jobs(
+                        connection, candidate_ids
+                    )
+                    matches = apply_filter_to_flat(
+                        matches,
+                        tracking_statuses,
+                        application_filter,
+                    )
     except (OSError, sqlite3.Error) as error:
         print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
@@ -673,6 +955,11 @@ def run_rank(
             print(f"   Remote:   {rep.remote_status or 'N/A'}")
             print(f"   Source:   {_sources_line(group)}")
             print(f"   URL:      {urls or 'N/A'}")
+            if tracking_statuses is not None:
+                application_label = _application_line(
+                    group_tracking_info(group, tracking_statuses)
+                )
+                print(f"   Application: {application_label}")
             member_count = len(group.members)
             if member_count > 1:
                 print(f"   Group:    {member_count} listings grouped")
@@ -714,6 +1001,11 @@ def run_rank(
         print(f"   Remote:   {job.job.remote_status or 'N/A'}")
         print(f"   Source:   {job.job.source}")
         print(f"   URL:      {job.job.url or 'N/A'}")
+        if tracking_statuses is not None:
+            print(
+                "   Application: "
+                f"{_format_application_status(tracking_statuses.get(job.job.id))}"
+            )
         _print_match_sections(job.result)
         print("   Reasons:")
         for reason in job.reasons:
@@ -813,6 +1105,102 @@ def build_parser() -> argparse.ArgumentParser:
         help="SQLite database path.",
     )
 
+    application_parser = subparsers.add_parser(
+        "application",
+        help="Track application workflow state for stored jobs.",
+    )
+    application_commands = application_parser.add_subparsers(
+        dest="application_command",
+        required=True,
+    )
+
+    set_parser = application_commands.add_parser(
+        "set",
+        help="Set or update the application status for a stored job.",
+    )
+    set_parser.add_argument(
+        "job_id",
+        type=int,
+        help="Database job ID.",
+    )
+    set_parser.add_argument(
+        "status",
+        choices=APPLICATION_STATUSES,
+        help="Application status (one of: %(choices)s).",
+    )
+    set_parser.add_argument(
+        "--note",
+        default=None,
+        help="Optional note attached to this status change.",
+    )
+    set_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    show_parser = application_commands.add_parser(
+        "show",
+        help="Show the current application state for one job.",
+    )
+    show_parser.add_argument(
+        "job_id",
+        type=int,
+        help="Database job ID.",
+    )
+    show_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    list_parser = application_commands.add_parser(
+        "list",
+        help="List tracked applications.",
+    )
+    list_parser.add_argument(
+        "--status",
+        action="append",
+        choices=APPLICATION_STATUSES,
+        help="Only show applications with this status (repeatable).",
+    )
+    list_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum applications to show (default: 20).",
+    )
+    list_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    history_parser = application_commands.add_parser(
+        "history",
+        help="Show the event history for one tracked job.",
+    )
+    history_parser.add_argument(
+        "job_id",
+        type=int,
+        help="Database job ID.",
+    )
+    history_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum events to show (default: 20).",
+    )
+    history_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
     search_parser = subparsers.add_parser(
         "search",
         help="Search collected jobs.",
@@ -838,6 +1226,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--grouped",
         action="store_true",
         help="Collapse cross-source duplicates into one result per group.",
+    )
+    search_parser.add_argument(
+        "--untracked",
+        action="store_true",
+        help="Only show jobs with no application record.",
+    )
+    search_parser.add_argument(
+        "--status",
+        action="append",
+        choices=APPLICATION_STATUSES,
+        help="Only show jobs with this application status (repeatable).",
+    )
+    search_parser.add_argument(
+        "--exclude-status",
+        action="append",
+        choices=APPLICATION_STATUSES,
+        help="Hide jobs with this application status (repeatable).",
     )
     search_parser.add_argument(
         "--limit",
@@ -899,6 +1304,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--grouped",
         action="store_true",
         help="Collapse cross-source duplicates into one result per group.",
+    )
+    rank_parser.add_argument(
+        "--untracked",
+        action="store_true",
+        help="Only show jobs with no application record.",
+    )
+    rank_parser.add_argument(
+        "--status",
+        action="append",
+        choices=APPLICATION_STATUSES,
+        help="Only show jobs with this application status (repeatable).",
+    )
+    rank_parser.add_argument(
+        "--exclude-status",
+        action="append",
+        choices=APPLICATION_STATUSES,
+        help="Hide jobs with this application status (repeatable).",
     )
     rank_parser.add_argument(
         "--limit",
@@ -982,6 +1404,19 @@ def _lock_conflict_message(error: CollectionLockConflict) -> str:
     return "\n".join(lines)
 
 
+def _validate_application_filter_flags(
+    parser: argparse.ArgumentParser,
+    arguments: argparse.Namespace,
+) -> None:
+    """Reject contradictory combinations of tracking filter flags."""
+    include_statuses = arguments.status or ()
+    exclude_statuses = arguments.exclude_status or ()
+    if arguments.untracked and (include_statuses or exclude_statuses):
+        parser.error("--untracked cannot be combined with --status or --exclude-status")
+    if include_statuses and exclude_statuses:
+        parser.error("--status and --exclude-status cannot be combined")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CareerOS command-line interface."""
     parser = build_parser()
@@ -1043,9 +1478,43 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(message, file=sys.stderr)
             return 1
 
+    if arguments.command == "application":
+        application_command = arguments.application_command
+
+        if application_command in ("list", "history") and arguments.limit < 1:
+            parser.error("--limit must be at least 1")
+
+        if application_command in ("set", "show", "history") and arguments.job_id < 1:
+            parser.error("job-id must be a positive integer")
+
+        if application_command == "set":
+            return run_application_set(
+                job_id=arguments.job_id,
+                status=arguments.status,
+                note=arguments.note or None,
+                database_path=arguments.database,
+            )
+
+        if application_command == "show":
+            return run_application_show(arguments.job_id, arguments.database)
+
+        if application_command == "list":
+            return run_application_list(
+                arguments.database,
+                statuses=arguments.status,
+                limit=arguments.limit,
+            )
+
+        return run_application_history(
+            arguments.job_id,
+            arguments.database,
+            limit=arguments.limit,
+        )
+
     if arguments.command == "search":
         if arguments.limit < 1:
             parser.error("--limit must be at least 1")
+        _validate_application_filter_flags(parser, arguments)
 
         return run_search(
             keyword=arguments.keyword,
@@ -1055,6 +1524,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             source=arguments.source,
             limit=arguments.limit,
             grouped=arguments.grouped,
+            untracked=arguments.untracked,
+            include_statuses=arguments.status or (),
+            exclude_statuses=arguments.exclude_status or (),
         )
 
     if arguments.command == "show":
@@ -1071,6 +1543,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("--limit must be at least 1")
         if arguments.min_score < 0 or arguments.min_score > 100:
             parser.error("--min-score must be between 0 and 100")
+        _validate_application_filter_flags(parser, arguments)
 
         return run_rank(
             keyword=arguments.keyword,
@@ -1082,6 +1555,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             limit=arguments.limit,
             grouped=arguments.grouped,
             min_score=arguments.min_score,
+            untracked=arguments.untracked,
+            include_statuses=arguments.status or (),
+            exclude_statuses=arguments.exclude_status or (),
         )
 
     if arguments.command == "group":
