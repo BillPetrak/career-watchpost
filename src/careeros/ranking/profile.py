@@ -95,4 +95,10 @@ def load_profile(path: Path | str) -> CandidateProfile:
         preferred_locations=_load_string_list(data, "preferred_locations"),
         remote_preference=_load_remote_preference(data),
         excluded_terms=_load_string_list(data, "excluded_terms"),
+        required_skills=_load_string_list(data, "required_skills"),
+        hard_excluded_terms=_load_string_list(data, "hard_excluded_terms"),
+        preferred_employment_types=_load_string_list(
+            data, "preferred_employment_types"
+        ),
+        preferred_seniority=_load_string_list(data, "preferred_seniority"),
     )

@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import html
 import json
-import re
 import sqlite3
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from html.parser import HTMLParser
 from pathlib import Path
 
 from careeros.collecting import (
@@ -33,8 +30,13 @@ from careeros.database.runs import CollectionRun, list_runs, parse_utc
 from careeros.database.schema import initialize_schema
 from careeros.locking import CollectionLockConflict, collection_lock
 from careeros.ranking.profile import load_profile
-from careeros.ranking.scorer import score_jobs
+from careeros.ranking.scorer import (
+    MatchResult,
+    score_groups,
+    score_jobs,
+)
 from careeros.status import build_statuses
+from careeros.text import clean_description
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "database" / "careeros.sqlite3"
@@ -524,68 +526,68 @@ def run_show(job_id: int, database_path: Path) -> int:
     return 0
 
 
-class _DescriptionCleaner(HTMLParser):
-    """Strips HTML tags, preserves paragraph/list boundaries, and unescapes entities."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=False)
-        self._parts: list[str] = []
-        self._pending_newline = False
-
-    def _emit_newline(self) -> None:
-        self._pending_newline = True
-
-    def _flush_newline(self) -> None:
-        if self._pending_newline:
-            if not self._parts or self._parts[-1] != "\n":
-                self._parts.append("\n")
-            self._pending_newline = False
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}:
-            self._emit_newline()
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {
-            "p",
-            "div",
-            "li",
-            "h1",
-            "h2",
-            "h3",
-            "h4",
-            "h5",
-            "h6",
-            "tr",
-            "td",
-            "th",
-            "ul",
-            "ol",
-        }:
-            self._emit_newline()
-
-    def handle_data(self, data: str) -> None:
-        self._flush_newline()
-        cleaned = " ".join(data.split())
-        if cleaned:
-            if self._parts and self._parts[-1] != "\n":
-                self._parts.append(" ")
-            self._parts.append(cleaned)
-
-    def get_text(self) -> str:
-        text = "".join(self._parts)
-        text = re.sub(r"\n+", "\n", text)
-        return text.strip()
+_PREFERRED_MISSING_DISPLAY_CAP = 8
 
 
-def clean_description(html_text: str) -> str:
-    """Strip HTML tags, preserve paragraph breaks, and unescape entities."""
-    if not html_text:
-        return ""
-    text = html.unescape(html_text)
-    cleaner = _DescriptionCleaner()
-    cleaner.feed(text)
-    return cleaner.get_text()
+def _print_match_sections(result: MatchResult) -> None:
+    """Print the Matched / Missing or unmatched summary for a scored result."""
+    print("     Matched:")
+    printed = False
+    for title in result.matched_titles:
+        print(f"       - Title: '{title}'")
+        printed = True
+    for skill in result.matched_skills:
+        print(f"       - {skill}")
+        printed = True
+    if result.location_matched is not None:
+        print(f"       - Location: {result.location_matched}")
+        printed = True
+    if result.remote_matched:
+        print("       - Remote position")
+        printed = True
+    if result.employment_matched is not None:
+        print(f"       - Employment type: {result.employment_matched}")
+        printed = True
+    if result.seniority_matched is not None:
+        print(f"       - Seniority: {result.seniority_matched}")
+        printed = True
+    if not printed:
+        print("       - none")
+
+    print("     Missing or unmatched:")
+    printed = False
+    if result.description_unavailable:
+        print("       - Description unavailable; skills not evaluated")
+        printed = True
+    else:
+        for skill in result.missing_required_skills:
+            print(f"       - {skill} (required, not found)")
+            printed = True
+        preferred = result.preferred_skills_not_observed
+        for skill in preferred[:_PREFERRED_MISSING_DISPLAY_CAP]:
+            print(f"       - {skill} (preferred, not observed)")
+            printed = True
+        remaining = len(preferred) - _PREFERRED_MISSING_DISPLAY_CAP
+        if remaining > 0:
+            print(
+                f"       - ... and {remaining} more preferred skill"
+                f"{'s' if remaining != 1 else ''}"
+            )
+            printed = True
+    if result.employment_mismatch:
+        print("       - Employment type mismatch")
+        printed = True
+    if result.seniority_mismatch:
+        print("       - Seniority mismatch")
+        printed = True
+    for term in result.excluded_terms:
+        print(f"       - Contains excluded term '{term}'")
+        printed = True
+    for term in result.hard_excluded_terms:
+        print(f"       - Hard excluded: contains '{term}'")
+        printed = True
+    if not printed:
+        print("       - none")
 
 
 def run_rank(
@@ -598,6 +600,7 @@ def run_rank(
     source: str | None = None,
     limit: int = 20,
     grouped: bool = False,
+    min_score: int = 0,
 ) -> int:
     """Search jobs and rank them against a candidate profile."""
     try:
@@ -636,13 +639,17 @@ def run_rank(
             print("No matching jobs found.")
             return 0
 
-        grouped_ranked = [
-            (score_jobs([group.representative], profile)[0], group)
-            for group in grouped_results
-        ]
-        grouped_ranked.sort(
-            key=lambda item: (-item[0].score, item[1].representative.id)
-        )
+        grouped_ranked = score_groups(grouped_results, profile)
+        if min_score > 0:
+            grouped_ranked = [
+                item for item in grouped_ranked if item.match_score >= min_score
+            ]
+        if not grouped_ranked:
+            if min_score > 0:
+                print(f"No groups meet the minimum score of {min_score}.")
+            else:
+                print("No matching jobs found.")
+            return 0
 
         print(
             f"Ranked {len(grouped_ranked)} group"
@@ -650,23 +657,28 @@ def run_rank(
         )
         print()
 
-        for i, (rj, group) in enumerate(grouped_ranked, start=1):
-            location_part = rj.job.location or "N/A"
-            if rj.job.remote_status == "remote":
+        for i, ranked_group in enumerate(grouped_ranked, start=1):
+            group = ranked_group.group
+            rep = group.representative
+            location_part = rep.location or "N/A"
+            if rep.remote_status == "remote":
                 location_part = f"{location_part} (remote)"
 
-            print(f"{i}. [Score {rj.score}] {rj.job.title}")
-            print(f"   ID:       {rj.job.id}")
-            print(f"   Company:  {rj.job.company or 'N/A'}")
+            urls = ", ".join(url for url in group.urls if url)
+            print(f"{i}. [Score {ranked_group.match_score}/100] {rep.title}")
+            print(f"   Match:    {ranked_group.match_score}/100")
+            print(f"   ID:       {rep.id}")
+            print(f"   Company:  {rep.company or 'N/A'}")
             print(f"   Location: {location_part}")
-            print(f"   Remote:   {rj.job.remote_status or 'N/A'}")
+            print(f"   Remote:   {rep.remote_status or 'N/A'}")
             print(f"   Source:   {_sources_line(group)}")
-            print(f"   URL:      {rj.job.url or 'N/A'}")
+            print(f"   URL:      {urls or 'N/A'}")
             member_count = len(group.members)
             if member_count > 1:
                 print(f"   Group:    {member_count} listings grouped")
+            _print_match_sections(ranked_group.result)
             print("   Reasons:")
-            for reason in rj.reasons:
+            for reason in ranked_group.reasons:
                 print(f"     {reason}")
             print()
 
@@ -677,24 +689,34 @@ def run_rank(
         return 0
 
     ranked = score_jobs(matches, profile)
+    if min_score > 0:
+        ranked = [job for job in ranked if job.match_score >= min_score]
+    if not ranked:
+        if min_score > 0:
+            print(f"No jobs meet the minimum score of {min_score}.")
+        else:
+            print("No matching jobs found.")
+        return 0
 
     print(f"Ranked {len(ranked)} job{'s' if len(ranked) != 1 else ''}:")
     print()
 
-    for i, rj in enumerate(ranked, start=1):
-        location_part = rj.job.location or "N/A"
-        if rj.job.remote_status == "remote":
+    for i, job in enumerate(ranked, start=1):
+        location_part = job.job.location or "N/A"
+        if job.job.remote_status == "remote":
             location_part = f"{location_part} (remote)"
 
-        print(f"{i}. [Score {rj.score}] {rj.job.title}")
-        print(f"   ID:       {rj.job.id}")
-        print(f"   Company:  {rj.job.company or 'N/A'}")
+        print(f"{i}. [Score {job.match_score}/100] {job.job.title}")
+        print(f"   Match:    {job.match_score}/100")
+        print(f"   ID:       {job.job.id}")
+        print(f"   Company:  {job.job.company or 'N/A'}")
         print(f"   Location: {location_part}")
-        print(f"   Remote:   {rj.job.remote_status or 'N/A'}")
-        print(f"   Source:   {rj.job.source}")
-        print(f"   URL:      {rj.job.url or 'N/A'}")
+        print(f"   Remote:   {job.job.remote_status or 'N/A'}")
+        print(f"   Source:   {job.job.source}")
+        print(f"   URL:      {job.job.url or 'N/A'}")
+        _print_match_sections(job.result)
         print("   Reasons:")
-        for reason in rj.reasons:
+        for reason in job.reasons:
             print(f"     {reason}")
         print()
 
@@ -885,6 +907,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum results (default: 20).",
     )
     rank_parser.add_argument(
+        "--min-score",
+        type=int,
+        default=0,
+        help="Only show results with a match score of at least N (0-100).",
+    )
+    rank_parser.add_argument(
         "--database",
         type=Path,
         default=DEFAULT_DATABASE_PATH,
@@ -1041,6 +1069,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "rank":
         if arguments.limit < 1:
             parser.error("--limit must be at least 1")
+        if arguments.min_score < 0 or arguments.min_score > 100:
+            parser.error("--min-score must be between 0 and 100")
 
         return run_rank(
             keyword=arguments.keyword,
@@ -1051,6 +1081,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             source=arguments.source,
             limit=arguments.limit,
             grouped=arguments.grouped,
+            min_score=arguments.min_score,
         )
 
     if arguments.command == "group":

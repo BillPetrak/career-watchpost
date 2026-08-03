@@ -12,6 +12,10 @@
     "Docker",
     "FastAPI"
   ],
+  "required_skills": [
+    "Python",
+    "SQL"
+  ],
   "preferred_locations": [
     "Greece",
     "European Union",
@@ -22,5 +26,12 @@
     "intern",
     "junior",
     "entry level"
+  ],
+  "hard_excluded_terms": [],
+  "preferred_employment_types": [
+    "Full-time"
+  ],
+  "preferred_seniority": [
+    "Senior"
   ]
 }
