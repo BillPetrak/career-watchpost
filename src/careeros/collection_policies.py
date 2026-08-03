@@ -16,10 +16,16 @@ from careeros.collectors import CollectorName
 
 @dataclass(frozen=True)
 class SourcePolicy:
-    """Minimum polling interval for a single job source."""
+    """Minimum polling interval for a single job source.
+
+    ``documented`` records whether the interval is a documented fair-use
+    requirement (jobicy) or a provisional default; it is informational and
+    does not affect scheduling.
+    """
 
     source: CollectorName
     min_interval: timedelta
+    documented: bool = False
 
 
 # Jobicy's 60-minute minimum interval is a documented fair-use requirement.
@@ -30,5 +36,5 @@ SOURCE_POLICIES: dict[CollectorName, SourcePolicy] = {
     "arbeitnow": SourcePolicy("arbeitnow", timedelta(hours=6)),
     "remoteok": SourcePolicy("remoteok", timedelta(hours=4)),
     "weworkremotely": SourcePolicy("weworkremotely", timedelta(hours=6)),
-    "jobicy": SourcePolicy("jobicy", timedelta(minutes=60)),
+    "jobicy": SourcePolicy("jobicy", timedelta(minutes=60), documented=True),
 }

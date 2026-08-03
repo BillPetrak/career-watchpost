@@ -9,6 +9,7 @@ import re
 import sqlite3
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -21,9 +22,11 @@ from careeros.collecting import (
 from careeros.collectors import COLLECTORS
 from careeros.database.connection import connect
 from careeros.database.jobs import get_job_by_id, search_jobs
+from careeros.database.runs import CollectionRun, list_runs, parse_utc
 from careeros.database.schema import initialize_schema
 from careeros.ranking.profile import load_profile
 from careeros.ranking.scorer import score_jobs
+from careeros.status import build_statuses
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "database" / "careeros.sqlite3"
@@ -181,6 +184,147 @@ def run_collect_due(limit: int, database_path: Path) -> int:
     print(f"Database:          {database_path}")
 
     return 0 if succeeded == len(results) else 1
+
+
+def _utc_now() -> datetime:
+    """Return the current time as a timezone-aware UTC datetime."""
+    return datetime.now(UTC)
+
+
+def _format_interval(interval: timedelta) -> str:
+    """Render a polling interval as a short human-readable string."""
+    total_seconds = int(interval.total_seconds())
+    if total_seconds % 3600 == 0:
+        hours = total_seconds // 3600
+        return "1 hour" if hours == 1 else f"{hours} hours"
+    minutes = total_seconds // 60
+    return "1 minute" if minutes == 1 else f"{minutes} minutes"
+
+
+def _format_duration(started_at: str | None, finished_at: str | None) -> str:
+    """Format elapsed wall time between two stored timestamps, or '-'.
+
+    Returns '-' when either timestamp is missing or malformed.
+    """
+    if started_at is None or finished_at is None:
+        return "-"
+    start = parse_utc(started_at)
+    finish = parse_utc(finished_at)
+    if start is None or finish is None:
+        return "-"
+    return f"{(finish - start).total_seconds():.1f}s"
+
+
+def _run_status(run: CollectionRun) -> str:
+    """Derive the display status of a stored run."""
+    if run.succeeded == 1:
+        return "success"
+    if run.succeeded == 0:
+        return "failed"
+    return "incomplete"
+
+
+def run_collect_status(database_path: Path) -> int:
+    """Show polling status for every registered source without mutating state."""
+    now = _utc_now()
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            statuses = build_statuses(connection, now=now)
+    except (OSError, sqlite3.Error) as error:
+        print(f"Status failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print("Collection status")
+    print("-----------------")
+    print(f"As of: {now.isoformat()}")
+
+    for status in statuses:
+        print()
+        print(_SOURCE_LABELS.get(status.source, status.source))
+        print(
+            f"  Interval:       {_format_interval(status.min_interval)}"
+            f" ({'documented' if status.documented else 'provisional'})"
+        )
+        if status.last_attempt is not None:
+            print(f"  Last attempt:   {status.last_attempt.isoformat()}")
+            print(
+                "  Last status:    "
+                + ("success" if status.last_succeeded else "failed")
+            )
+            print(f"  Fetched:        {status.last_fetched}")
+            print(f"  Inserted:       {status.last_inserted}")
+            print(f"  Updated:        {status.last_updated}")
+            print(f"  Error:          {status.last_error or '-'}")
+        else:
+            print("  Last attempt:   never")
+            print("  Last status:    never")
+            print("  Fetched:        -")
+            print("  Inserted:       -")
+            print("  Updated:        -")
+            print("  Error:          -")
+        print(
+            "  Next due:       "
+            + (status.next_due.isoformat() if status.next_due is not None else "now")
+        )
+        print(f"  State:          {'due' if status.due else 'not due'}")
+        if status.incomplete_runs:
+            print(f"  Incomplete runs: {status.incomplete_runs}")
+
+    return 0
+
+
+def run_collect_history(
+    *,
+    source: str | None,
+    limit: int,
+    failed: bool,
+    database_path: Path,
+) -> int:
+    """Show recent collection run history without mutating state."""
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            runs = list_runs(
+                connection,
+                source=source,
+                limit=limit,
+                failed_only=failed,
+            )
+    except (OSError, sqlite3.Error) as error:
+        print(f"History failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print("Run history")
+    print("-----------")
+
+    filters = []
+    if source is not None:
+        filters.append(f"source={source}")
+    if failed:
+        filters.append("failed only")
+    if filters:
+        print(f"Filter: {', '.join(filters)}")
+
+    if not runs:
+        print()
+        print("No collection runs found.")
+        return 0
+
+    for run in runs:
+        print()
+        print(f"Run {run.run_id} ({run.source})")
+        print(f"  Status:   {_run_status(run)}")
+        print(f"  Started:  {run.started_at or '-'}")
+        print(f"  Finished: {run.finished_at or '-'}")
+        print(f"  Elapsed:  {_format_duration(run.started_at, run.finished_at)}")
+        print(f"  Fetched:  {run.fetched}")
+        print(f"  Inserted: {run.inserted}")
+        print(f"  Updated:  {run.updated}")
+        if run.error:
+            print(f"  Error:    {run.error}")
+
+    return 0
 
 
 def run_search(
@@ -408,19 +552,64 @@ def build_parser() -> argparse.ArgumentParser:
             "hour)."
         ),
     )
-    collect_parser.add_argument(
-        "source",
-        choices=["all", "due", *COLLECTORS],
-        help="Job source to collect, 'all' for every registered source, or "
-        "'due' for sources whose polling interval has expired.",
+    collect_commands = collect_parser.add_subparsers(
+        dest="collect_command",
+        required=True,
     )
-    collect_parser.add_argument(
+
+    for name in ("all", "due", *COLLECTORS):
+        if name == "all":
+            command_help = "Collect from every registered source."
+        elif name == "due":
+            command_help = "Collect only sources whose polling interval has expired."
+        else:
+            command_help = f"Collect jobs from {_SOURCE_LABELS.get(name, name)}."
+        command_parser = collect_commands.add_parser(name, help=command_help)
+        command_parser.add_argument(
+            "--limit",
+            type=int,
+            default=25,
+            help="Maximum jobs to collect (default: 25).",
+        )
+        command_parser.add_argument(
+            "--database",
+            type=Path,
+            default=DEFAULT_DATABASE_PATH,
+            help="SQLite database path.",
+        )
+
+    status_parser = collect_commands.add_parser(
+        "status",
+        help="Show collection status for every registered source.",
+    )
+    status_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    history_parser = collect_commands.add_parser(
+        "history",
+        help="Show recent collection run history.",
+    )
+    history_parser.add_argument(
+        "--source",
+        choices=[*COLLECTORS],
+        help="Only show runs for this source.",
+    )
+    history_parser.add_argument(
         "--limit",
         type=int,
-        default=25,
-        help="Maximum jobs to collect from each source (default: 25).",
+        default=20,
+        help="Maximum runs to show (default: 20).",
     )
-    collect_parser.add_argument(
+    history_parser.add_argument(
+        "--failed",
+        action="store_true",
+        help="Only show completed failed runs.",
+    )
+    history_parser.add_argument(
         "--database",
         type=Path,
         default=DEFAULT_DATABASE_PATH,
@@ -529,23 +718,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         return print_diagnostics()
 
     if arguments.command == "collect":
+        collect_command = arguments.collect_command
+
+        if collect_command == "status":
+            return run_collect_status(database_path=arguments.database)
+
+        if collect_command == "history":
+            if arguments.limit < 1:
+                parser.error("--limit must be at least 1")
+            return run_collect_history(
+                source=arguments.source,
+                limit=arguments.limit,
+                failed=arguments.failed,
+                database_path=arguments.database,
+            )
+
         if arguments.limit < 1:
             parser.error("--limit must be at least 1")
 
-        if arguments.source == "due":
+        if collect_command == "due":
             return run_collect_due(
                 limit=arguments.limit,
                 database_path=arguments.database,
             )
 
-        if arguments.source == "all":
+        if collect_command == "all":
             return run_collect_all(
                 limit=arguments.limit,
                 database_path=arguments.database,
             )
 
         return run_collect(
-            source=arguments.source,
+            source=collect_command,
             limit=arguments.limit,
             database_path=arguments.database,
         )

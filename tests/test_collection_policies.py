@@ -6,7 +6,18 @@ from careeros.collection_policies import SOURCE_POLICIES, SourcePolicy
 
 
 def test_jobicy_minimum_interval_is_one_hour() -> None:
-    assert SOURCE_POLICIES["jobicy"] == SourcePolicy("jobicy", timedelta(minutes=60))
+    assert SOURCE_POLICIES["jobicy"] == SourcePolicy(
+        "jobicy", timedelta(minutes=60), documented=True
+    )
+
+
+def test_jobicy_interval_is_documented() -> None:
+    assert SOURCE_POLICIES["jobicy"].documented is True
+
+
+def test_other_intervals_are_provisional() -> None:
+    for source in ("arbeitnow", "remoteok", "weworkremotely"):
+        assert SOURCE_POLICIES[source].documented is False
 
 
 def test_every_registered_source_has_a_policy() -> None:
