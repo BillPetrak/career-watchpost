@@ -25,8 +25,14 @@ except ImportError:  # pragma: no cover - non-POSIX platforms
     _fcntl = None  # type: ignore[assignment]
 
 
-class CollectionLockConflict(Exception):
-    """Raised when another process already holds the collection lock."""
+class LockConflict(Exception):
+    """Base class for process-level advisory lock contention.
+
+    Carries the lock's deterministic companion path and diagnostic metadata so
+    a caller can report exactly which lock is held and by whom.
+    """
+
+    lock_name: str
 
     def __init__(
         self,
@@ -34,20 +40,38 @@ class CollectionLockConflict(Exception):
         lock_path: Path,
         metadata: dict[str, str],
     ) -> None:
-        super().__init__(f"collection lock is held for {database_path}")
+        super().__init__(f"{self.lock_name} lock is held for {database_path}")
         self.database_path = database_path
         self.lock_path = lock_path
         self.metadata = metadata
 
 
-def lock_path_for(database_path: Path) -> Path:
+class CollectionLockConflict(LockConflict):
+    """Raised when another process already holds the collection lock."""
+
+    lock_name = "collection"
+
+
+class NotificationLockConflict(LockConflict):
+    """Raised when another process already holds the notification lock.
+
+    The notification lock exists solely to serialize reminder-notification
+    delivery workers. It must never grow into a general-purpose project lock;
+    other commands must keep using their own specific locks.
+    """
+
+    lock_name = "notification"
+
+
+def lock_path_for(database_path: Path, suffix: str = ".lock") -> Path:
     """Return the deterministic companion lock path for a database.
 
-    The lock path is the resolved absolute database path plus a ``.lock``
-    suffix, so relative and equivalent absolute paths map to the same lock and
-    two different databases never share one.
+    The lock path is the resolved absolute database path plus ``suffix`` (a
+    default of ``.lock`` for collection and ``.notify.lock`` for notification),
+    so relative and equivalent absolute paths map to the same lock and two
+    different databases never share one.
     """
-    return Path(str(database_path.resolve()) + ".lock")
+    return Path(str(database_path.resolve()) + suffix)
 
 
 def _read_metadata(lock_path: Path) -> dict[str, str]:
@@ -104,14 +128,53 @@ def collection_lock(
     lock. The companion file is never removed; a stale file is harmless because
     ownership is OS-managed.
     """
+    yield from _lock(
+        database_path,
+        command=command or "careeros",
+        suffix=".lock",
+        conflict_cls=CollectionLockConflict,
+    )
+
+
+@contextmanager
+def notification_lock(
+    database_path: Path,
+    *,
+    command: str | None = None,
+) -> Iterator[None]:
+    """Serialize reminder-notification delivery workers for one database.
+
+    A non-blocking exclusive ``flock`` on the ``.notify.lock`` companion file
+    is held only around the short claim/finalize transactions, never while the
+    external notification subprocess runs. Raises
+    :class:`NotificationLockConflict` when another notification worker already
+    holds the lock.
+
+    This lock exists solely to serialize notification workers; it must never
+    evolve into a general-purpose project lock.
+    """
+    yield from _lock(
+        database_path,
+        command=command or "careeros notify",
+        suffix=".notify.lock",
+        conflict_cls=NotificationLockConflict,
+    )
+
+
+def _lock(
+    database_path: Path,
+    *,
+    command: str,
+    suffix: str,
+    conflict_cls: type[LockConflict],
+) -> Iterator[None]:
+    """Shared advisory-lock acquisition/release used by the public locks."""
     if _fcntl is None:  # pragma: no cover - non-POSIX platforms
-        raise RuntimeError("collection locking requires a POSIX flock platform")
+        raise RuntimeError("locking requires a POSIX flock platform")
 
     resolved = database_path.resolve()
-    lock_path = lock_path_for(resolved)
+    lock_path = lock_path_for(resolved, suffix)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    if command is None:
-        command = "careeros"
 
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
@@ -119,7 +182,7 @@ def collection_lock(
             _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
         except OSError as error:
             if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
-                raise CollectionLockConflict(
+                raise conflict_cls(
                     resolved, lock_path, _read_metadata(lock_path)
                 ) from error
             raise

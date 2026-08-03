@@ -16,6 +16,7 @@ from datetime import datetime
 from careeros.database.applications import StoredApplication
 from careeros.database.jobs import StoredJob
 from careeros.database.reminders import StoredReminder
+from careeros.notifications.models import NotificationSummary
 from careeros.ranking.scorer import RankedGroup, RankedJob
 from careeros.status import SourceStatus
 
@@ -120,12 +121,14 @@ class Reminders:
     timezone, so "today" is defined and reported in UTC only. ``upcoming`` is
     the open reminders due at or after the report's ``now``, ordered by
     urgency (``due_at ASC`` then ``id ASC``), capped by the report limit.
+    ``notifications`` carries the durable delivery summary.
     """
 
     overdue_count: int
     due_today_utc_count: int
     open_total: int
     upcoming: tuple[ReminderSnapshot, ...]
+    notifications: NotificationSummary
 
 
 @dataclass(frozen=True)

@@ -15,6 +15,7 @@ from typing import Any
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.reminders import StoredReminder
+from careeros.notifications.models import NotificationSummary
 from careeros.ranking.scorer import RankedGroup, RankedJob
 from careeros.reporting.models import (
     ACTION_ITEM_LABELS,
@@ -154,6 +155,7 @@ def _action_line(item: ActionItem) -> str:
 
 
 def _render_reminders(reminders: Reminders) -> str:
+    notifications = reminders.notifications
     lines = [
         "Reminders",
         "---------",
@@ -174,6 +176,12 @@ def _render_reminders(reminders: Reminders) -> str:
             )
             if reminder.message is not None:
                 lines.append(f"      Message: {reminder.message}")
+    lines.append("Notifications:")
+    lines.append(f"  Pending due:    {notifications.pending_due}")
+    lines.append(f"  Delivered total: {notifications.delivered_total}")
+    lines.append(f"  Failed total:    {notifications.failed_total}")
+    lines.append(f"  Last delivered:  {notifications.last_delivered_at or 'never'}")
+    lines.append(f"  Last failed:     {notifications.last_failed_at or 'never'}")
     lines.append(
         "Reminder times are stored and compared in UTC. "
         "Due today (UTC) means within the current UTC calendar day; "
@@ -370,6 +378,16 @@ def _reminder_dict(reminder: StoredReminder) -> dict[str, Any]:
     }
 
 
+def _notification_summary_dict(summary: NotificationSummary) -> dict[str, Any]:
+    return {
+        "pending_due": summary.pending_due,
+        "delivered_total": summary.delivered_total,
+        "failed_total": summary.failed_total,
+        "last_delivered_at": summary.last_delivered_at,
+        "last_failed_at": summary.last_failed_at,
+    }
+
+
 def _ranked_job_dict(ranked: RankedJob) -> dict[str, Any]:
     return {
         "job": _job_dict(ranked.job),
@@ -442,6 +460,9 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
                 }
                 for snapshot in report.reminders.upcoming
             ],
+            "notification_summary": _notification_summary_dict(
+                report.reminders.notifications
+            ),
         },
         "recommendations": {
             "grouped": recommendations.grouped,

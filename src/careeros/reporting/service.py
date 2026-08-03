@@ -16,6 +16,7 @@ from careeros.applications.models import APPLICATION_STATUSES
 from careeros.database.applications import StoredApplication
 from careeros.database.groups import grouping_summary
 from careeros.database.jobs import _SELECT_COLUMNS, _stored_job_from_row
+from careeros.notifications.service import notification_summary
 from careeros.ranking.scorer import CandidateProfile
 from careeros.reminders.service import (
     count_due_today_reminders,
@@ -228,6 +229,7 @@ def _build_reminders(
         due_today_utc_count=count_due_today_reminders(connection, now=now),
         open_total=count_open_reminders(connection),
         upcoming=snapshots,
+        notifications=notification_summary(connection, now=now),
     )
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -143,6 +143,31 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_reminders_due
             ON reminders(due_at, completed_at);
+
+        CREATE TABLE IF NOT EXISTS reminder_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reminder_id INTEGER NOT NULL
+                REFERENCES reminders(id) ON DELETE RESTRICT,
+            scheduled_due_at TEXT NOT NULL,
+            attempted_at TEXT NOT NULL,
+            delivered_at TEXT,
+            status TEXT NOT NULL CHECK (
+                status IN ('attempted', 'delivered', 'failed')
+            ),
+            error TEXT,
+            backend TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS
+            idx_reminder_notifications_delivered_occurrence
+            ON reminder_notifications(reminder_id, scheduled_due_at)
+            WHERE status = 'delivered';
+
+        CREATE INDEX IF NOT EXISTS idx_reminder_notifications_reminder
+            ON reminder_notifications(reminder_id, scheduled_due_at, id);
+
+        CREATE INDEX IF NOT EXISTS idx_reminder_notifications_attempted
+            ON reminder_notifications(attempted_at);
         """
     )
 

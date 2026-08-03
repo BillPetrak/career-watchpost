@@ -18,8 +18,24 @@ from pathlib import Path
 
 SERVICE_NAME = "careeros-collect.service"
 TIMER_NAME = "careeros-collect.timer"
+NOTIFY_SERVICE_NAME = "careeros-reminder-notify.service"
+NOTIFY_TIMER_NAME = "careeros-reminder-notify.timer"
 UNIT_NAMES = (SERVICE_NAME, TIMER_NAME)
+NOTIFY_UNIT_NAMES = (NOTIFY_SERVICE_NAME, NOTIFY_TIMER_NAME)
+ALL_UNIT_NAMES = (*UNIT_NAMES, *NOTIFY_UNIT_NAMES)
 DEFAULT_UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
+
+# Each choice installs exactly its own unit set; "all" installs every set.
+UNIT_SETS: dict[str, tuple[str, ...]] = {
+    "collect": UNIT_NAMES,
+    "notify": NOTIFY_UNIT_NAMES,
+    "all": ALL_UNIT_NAMES,
+}
+
+
+def unit_names_for(choice: str) -> tuple[str, ...]:
+    """Return the unit filenames selected by a ``--units`` choice."""
+    return UNIT_SETS[choice]
 
 _SAFE_EXEC_CHARS = set(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-"
@@ -52,8 +68,8 @@ def render_unit(name: str, uv_bin: Path, project_dir: Path) -> str:
     )
 
 
-def rendered_units(uv_bin: Path, project_dir: Path) -> dict[str, str]:
-    return {name: render_unit(name, uv_bin, project_dir) for name in UNIT_NAMES}
+def rendered_units(uv_bin: Path, project_dir: Path, units: tuple[str, ...]) -> dict[str, str]:
+    return {name: render_unit(name, uv_bin, project_dir) for name in units}
 
 
 def find_conflicts(unit_dir: Path, units: dict[str, str]) -> list[Path]:
@@ -103,7 +119,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable",
         action="store_true",
-        help="Enable and start the timer after installing the units.",
+        help="Enable and start the installed timer(s) after writing the units.",
+    )
+    parser.add_argument(
+        "--units",
+        choices=("collect", "notify", "all"),
+        default="collect",
+        help="Which unit set to install (default: collect; 'notify' installs "
+        "the reminder-notification timer independently, 'all' installs both).",
     )
     parser.add_argument(
         "--force",
@@ -132,7 +155,8 @@ def main(argv: list[str] | None = None) -> int:
 
     project_dir = (args.project or repo_root()).resolve()
     unit_dir = args.unit_dir.resolve()
-    units = rendered_units(uv_bin, project_dir)
+    unit_names = unit_names_for(args.units)
+    units = rendered_units(uv_bin, project_dir, unit_names)
     conflicts = find_conflicts(unit_dir, units)
 
     if conflicts and not args.force:
@@ -149,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.dry_run:
-        for name in UNIT_NAMES:
+        for name in unit_names:
             target = unit_dir / name
             tag = "overwrite" if target.exists() else "write"
             print(f"would {tag}: {target}")
@@ -171,13 +195,15 @@ def main(argv: list[str] | None = None) -> int:
         return daemon_returncode
 
     if args.enable:
-        enable_returncode = systemctl(["enable", "--now", TIMER_NAME], execute=execute)
-        if execute and enable_returncode != 0:
-            print("systemctl --user enable failed.", file=sys.stderr)
-            return enable_returncode
+        for timer in (name for name in unit_names if name.endswith(".timer")):
+            enable_returncode = systemctl(["enable", "--now", timer], execute=execute)
+            if execute and enable_returncode != 0:
+                print(f"systemctl --user enable failed for {timer}.", file=sys.stderr)
+                return enable_returncode
 
     if args.enable:
-        print("Timer enabled: careeros-collect.timer")
+        for timer in (name for name in unit_names if name.endswith(".timer")):
+            print(f"Timer enabled: {timer}")
     print(
         "Optional: run 'loginctl enable-linger $USER' so the timer also runs "
         "without a login session."
