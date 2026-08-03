@@ -28,6 +28,12 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros search engineer --limit 10` | Search stored jobs |
 | `uv run careeros search engineer --remote --location Berlin` | Search with filters |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json` | Rank stored jobs against profile |
+| `uv run python systemd/install.py --dry-run` | Preview systemd user-unit install (writes nothing) |
+| `uv run python systemd/install.py` | Install the systemd user service+timer (not enabled) |
+| `uv run python systemd/install.py --enable` | Install, then enable and start the timer |
+| `uv run python systemd/uninstall.py --dry-run` | Preview uninstall (writes nothing) |
+| `uv run python systemd/uninstall.py` | Remove the installed systemd user units |
+| `loginctl enable-linger "$USER"` | Manual only: run the timer without a login session |
 
 Run order: **lint → mypy → test** (all independent; can run in parallel).
 
@@ -89,6 +95,32 @@ any source, does not touch run history or the jobs table, and exits with code
 The read-only commands `collect status`, `collect history`, `search`, `show`,
 and `rank` never acquire the collection lock and remain available while a
 collection is running.
+
+## systemd user units
+
+The `systemd/` directory holds templates, an installer, and an uninstaller for
+a periodic user-manager collection. One timer drives the `careeros-collect`
+oneshot service, which runs `careeros collect due` so CareerOS stays
+authoritative for source eligibility. Defaults: `OnStartupSec=5min`,
+`OnUnitActiveSec=15min`, `RandomizedDelaySec=3min`,
+`SuccessExitStatus=75` (exit 75 is the expected temporary lock-contention
+result and is treated as success; genuine failures still mark the service
+failed).
+
+The installer renders the templates with the absolute `uv` binary path and
+absolute project root, writes them to `~/.config/systemd/user`, and runs
+`systemctl --user daemon-reload`. It never touches the database. Existing unit
+files that differ from the generated content abort the install unless
+`--force` is passed. `--enable` enables and starts the timer; without it the
+units are installed but not started. `--dry-run` previews everything without
+writing, and `--no-systemctl` writes the units while only printing the
+systemctl commands (used by tests). The uninstaller removes only files whose
+content matches the rendered templates and never touches the database.
+
+Lingering is intentionally never enabled automatically; run
+`loginctl enable-linger "$USER"` manually if the timer must run without a login
+session. The units embed the absolute project path, so re-run the installer
+after moving the repository (uninstall first if the old units should go).
 
 ## Project structure
 

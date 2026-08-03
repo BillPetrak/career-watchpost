@@ -1,0 +1,8 @@
+[Unit]
+Description=CareerOS scheduled job collection
+
+[Service]
+Type=oneshot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@UV_BIN@ run --project @PROJECT_DIR@ careeros collect due
+SuccessExitStatus=75

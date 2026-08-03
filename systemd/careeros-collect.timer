@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer for CareerOS scheduled job collection
+
+[Timer]
+OnStartupSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=3min
+
+[Install]
+WantedBy=timers.target

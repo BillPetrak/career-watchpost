@@ -45,3 +45,23 @@ persistent run history, read-only collection observability (`collect status`,
 commands are mutually exclusive per database via an OS advisory lock, while the
 read-only commands remain available during collection; a lock conflict exits
 with code 75. See `AGENTS.md` for the full command reference.
+
+## Scheduled collection
+
+A periodic run can be installed as a systemd user service and timer from the
+repository-owned templates in `systemd/`:
+
+```bash
+uv run python systemd/install.py --dry-run   # preview (writes nothing)
+uv run python systemd/install.py             # install units (not enabled)
+uv run python systemd/install.py --enable    # install, enable, and start
+uv run python systemd/uninstall.py           # remove the units
+```
+
+The timer runs `careeros collect due` every 15 minutes (first check 5 minutes
+after login) so CareerOS stays authoritative for per-source eligibility. The
+installer and uninstaller never touch the database. If the timer must run
+without a login session, enable lingering manually with
+`loginctl enable-linger "$USER"`; it is never enabled automatically. Re-run the
+installer after moving the repository, since the units embed the absolute
+project path.
