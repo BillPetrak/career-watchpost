@@ -42,8 +42,8 @@ Current CLI capabilities include multi-source job collection (`collect
 <source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
 persistent run history, read-only collection observability (`collect status`,
 `collect history`), plus `search`, `show`, `rank`, `group`,
-`saved-search`, `application`, a read-only `report` (Career Snapshot), and
-`diagnose`.
+`saved-search`, `application`, `reminder`, a read-only `report` (Career
+Snapshot), and `diagnose`.
 Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
@@ -86,6 +86,42 @@ are anchored to `jobs.id` (never to the derived grouping tables), so
 `--status STATUS` (repeatable), and `--exclude-status STATUS` (repeatable) —
 which show the actual state (`Application: Applied`, `Application: Untracked`)
 on matching results. Without these flags the default output is unchanged.
+
+## Reminders
+
+CareerOS lets you attach local follow-up reminders to a stored job so a planned
+next step is not lost. Reminders are **local workflow state only**: CareerOS
+records and reports them locally, and it does not send messages, contact
+employers, submit applications, or infer deadlines. Reminder commands are
+`careeros reminder <add|list|show|update|complete|reopen|delete>`.
+
+```bash
+uv run careeros reminder add 12 interview 2026-08-10T14:00:00Z \
+  --message "second round call"            # add a reminder
+uv run careeros reminder list              # open reminders, soonest first
+uv run careeros reminder list --overdue    # open + past due
+uv run careeros reminder list --upcoming   # open + future
+uv run careeros reminder list --completed  # done reminders
+uv run careeros reminder show 3            # one reminder in detail
+uv run careeros reminder update 3 --kind interview --due-at 2026-08-11T09:00:00+02:00
+uv run careeros reminder update 3 --clear-message # drop the message
+uv run careeros reminder complete 3        # mark done (idempotent)
+uv run careeros reminder reopen 3          # reopen (idempotent)
+uv run careeros reminder delete 3          # remove the reminder
+```
+
+Reminder kinds are validated centrally: `follow_up`, `interview`, `offer`,
+`review`, and `custom`. A reminder is anchored to the stable `jobs.id` (never
+the derived grouping tables), so `group regroup` can never delete or orphan it.
+
+Due timestamps are deliberately strict and deterministic: a full ISO-8601
+timestamp with an explicit UTC offset is required (`2026-08-10T14:00:00Z` or
+`+02:00`); naive and date-only values are rejected because CareerOS never
+guesses a timezone. Values are normalized and stored as UTC. `complete` and
+`reopen` are idempotent no-ops; `update` only changes fields you pass and
+supports deliberate message clearing. The write commands (`add`, `update`,
+`complete`, `reopen`, `delete`) respect the per-database lock and exit 75 on
+contention; the reads (`list`, `show`) never lock.
 
 ## Saved searches
 
@@ -139,7 +175,7 @@ uv run careeros report --limit 5 --grouped               # cap + collapse duplic
 
 `--format text` (default) and `--format json` are two renderers over the same
 immutable report model built by the same read-only reporting service, so both
-carry identical data. The text output has five sections:
+carry identical data. The text output has six sections:
 
 - **Overview** — stored jobs, canonical groups, distinct opportunities,
   tracked applications, saved searches, per-source last-run summary, and which
@@ -152,6 +188,10 @@ carry identical data. The text output has five sections:
   (awaiting progress). `rejected`/`withdrawn` appear only in the pipeline
   counts, never as actions. CareerOS never invents deadlines or follow-up
   dates from text.
+- **Reminders** — overdue count, due-today count, open total, and the urgent
+  open reminders (soonest first, capped by `--limit`). "Due today (UTC)" means
+  within the current UTC calendar day: CareerOS stores and compares reminder
+  times in UTC and never assumes your local timezone.
 - **Recommended opportunities** — profile-ranked jobs using the shared ranking
   engine. Without `--profile` or `--saved-search` the section is honestly
   skipped with a note. Tracked jobs are excluded (recommendations only propose

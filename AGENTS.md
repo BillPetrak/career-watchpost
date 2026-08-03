@@ -41,6 +41,13 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros search engineer --exclude-status applied --exclude-status rejected` | Search, hiding selected application statuses |
 | `uv run careeros search engineer --status interview` | Search, showing only jobs in the selected status |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --untracked` | Rank only untracked jobs |
+| `uv run careeros reminder add JOB_ID KIND DUE_AT [--message TEXT] [--database PATH]` | Add a local follow-up reminder for a stored job (write; locks the DB) |
+| `uv run careeros reminder list [--open\|--overdue\|--due\|--upcoming\|--completed] [--job ID] [--kind KIND] [--after TS] [--before TS] [--limit N] [--database PATH]` | List reminders, soonest first (read-only) |
+| `uv run careeros reminder show REMINDER_ID [--database PATH]` | Show one reminder in detail (read-only) |
+| `uv run careeros reminder update REMINDER_ID [--kind KIND] [--due-at TS] [--message TEXT\|--clear-message] [--database PATH]` | Change a reminder (write; locks the DB) |
+| `uv run careeros reminder complete REMINDER_ID [--database PATH]` | Mark an open reminder completed (write; locks the DB) |
+| `uv run careeros reminder reopen REMINDER_ID [--database PATH]` | Reopen a completed reminder (write; locks the DB) |
+| `uv run careeros reminder delete REMINDER_ID [--database PATH]` | Delete a reminder (write; locks the DB) |
 | `uv run careeros saved-search create NAME QUERY --mode {search,rank} [--profile PATH] [FILTERS...]` | Create a reusable search/rank workflow (write; locks the DB) |
 | `uv run careeros saved-search list [--database PATH]` | List saved workflows, ordered case-insensitively by name |
 | `uv run careeros saved-search show NAME [--database PATH]` | Show a saved workflow definition |
@@ -153,9 +160,9 @@ any source, does not touch run history or the jobs table, and exits with code
 
 The read-only commands `collect status`, `collect history`, `search`, `show`,
 `rank`, `group explain`, `application show`, `application list`,
-`application history`, `saved-search list`, `saved-search show`,
-`saved-search run`, and `report` never acquire the collection lock and remain
-available
+`application history`, `reminder list`, `reminder show`, `saved-search list`,
+`saved-search show`, `saved-search run`, and `report` never acquire the
+collection lock and remain available
 while a collection is running.
 
 ## Application tracking
@@ -222,6 +229,65 @@ grouping tables, so `group regroup` (which deletes and rebuilds
 `ON DELETE RESTRICT`: application history is durable audit data and cannot be
 silently cascade-deleted.
 
+## Reminders
+
+`reminder` manages local follow-up reminders attached to stored jobs so a
+planned next step is not lost. Reminders are **local workflow state only**:
+CareerOS records and reports them locally, and it does not send messages,
+contact employers, submit applications, or infer deadlines. Reminder rows live
+in the `reminders` table (schema v6) and are anchored to the stable `jobs.id`
+— **never** to the derived grouping tables — so `group regroup` (which deletes
+and rebuilds `job_groups`/`job_group_members`) can never delete or orphan them
+and regrouping is guaranteed to leave every reminder row byte-identical.
+
+Supported kinds (validated centrally in `src/careeros/reminders/models.py` and
+exposed as argparse choices):
+
+- `follow_up`
+- `interview`
+- `offer`
+- `review`
+- `custom`
+
+`reminder add JOB_ID KIND DUE_AT [--message TEXT]` rules:
+
+- The job must already exist (unknown job exits with code 1).
+- A full ISO-8601 timestamp with an explicit UTC offset is required (`Z`
+  accepted). Naive timestamps and date-only values are rejected with exit
+  code 2 — CareerOS never guesses a timezone. Values are normalized and stored
+  as UTC (`+00:00`).
+- Messages must be non-empty (whitespace-only is rejected with exit code 2).
+
+`reminder list` shows reminders joined with their jobs, soonest first, in a
+deterministic order (`due_at ASC`, then `id ASC`). With no filter it shows open
+reminders (`--limit` defaults to 20). The mutually exclusive state flags are
+`--open`, `--overdue` (due before now), `--due` (due now or earlier), and
+`--upcoming` (due after now), plus `--completed`. Additional filters: `--job`,
+`--kind`, `--after`, `--before` (all ISO-8601 with explicit offsets).
+
+`reminder complete` and `reminder reopen` are idempotent: completing an already
+completed reminder (and reopening an already open one) is a no-op that
+preserves due time, kind, and message. `reminder update` only changes explicitly
+provided fields (`--kind`, `--due-at`, `--message`, or the mutually exclusive
+`--clear-message`), a no-op update leaves `updated_at` untouched, and omitted
+fields retain prior values. `reminder show` displays one reminder with its job
+details.
+
+Every write (`add`, `update`, `complete`, `reopen`, `delete`) is transactional
+and commits in one transaction, rolling back completely on failure. Write
+commands acquire the per-database collection lock and exit 75 on contention
+with no database change; the read-only `list` and `show` never lock and never
+change database contents beyond idempotent schema initialization. `reminders`
+uses `ON DELETE RESTRICT` on `jobs.id`, matching the application-tracking
+tables. Exit codes: `0` success, `1` unknown job/reminder or database failure,
+`2` validation/usage error, `75` lock contention.
+
+`application show` appends a `Reminders:` block listing the job's reminders
+after its application note, so a job's follow-up context is visible in one
+place. Application status changes never create, complete, reschedule, or delete
+reminders automatically, and grouped `search`/`rank` results are not annotated
+with reminders.
+
 ## Saved searches
 
 `saved-search` stores a reusable search or rank workflow definition in the
@@ -265,9 +331,10 @@ CLI flag yet.
 ## Career Snapshot
 
 `report` produces a read-only **Career Snapshot** dashboard over stored jobs,
-application tracking, saved searches, and collection history. It is a dashboard,
-not an agent: it never submits applications, never sends email, never fetches
-jobs, and never contacts any external service. It never acquires the collection
+application tracking, reminders, saved searches, and collection history. It is
+a dashboard, not an agent: it never submits applications, never sends email,
+never fetches jobs, and never contacts any external service. It never acquires
+the collection
 lock (so it runs happily while a collection is in progress) and never writes —
 not even a `collection_runs` entry. It is built entirely by
 `src/careeros/reporting/` (immutable `models.py`, read-only `service.py`
@@ -303,6 +370,13 @@ Sections and semantics:
   progress). `rejected`/`withdrawn` appear **only** in the pipeline counts,
   never as action items. CareerOS never invents deadlines or follow-up dates
   from text.
+- **Reminders** — overdue count, "due today (UTC)" count, open total, and the
+  open reminders due at or after the report's `now`, ordered by urgency
+  (`due_at ASC`, then `id ASC`) and capped by `--limit`. "Due today (UTC)"
+  means within the current UTC calendar day: reminder times are stored and
+  compared in UTC and CareerOS does not assume your local timezone. All
+  reminder data comes from the shared reminder service; the report never
+  duplicates its logic.
 - **Recommended opportunities** — profile-ranked jobs from the shared ranking
   engine. Tracked jobs are excluded (`untracked=True`), so the section only
   proposes new opportunities. `--grouped` collapses cross-source duplicates
@@ -356,6 +430,7 @@ after moving the repository (uninstall first if the old units should go).
 - `src/careeros/database/` — SQLite layer (schema, connection, persistence)
 - `src/careeros/grouping/` — duplicate detection (normalization, matcher)
 - `src/careeros/saved_searches/` — saved workflow definitions and shared execution
+- `src/careeros/reminders/` — local follow-up reminders (models, service)
 - `src/careeros/reporting/` — Career Snapshot dashboard (models, service, renderers)
 - `src/careeros/{job_hunter,privacy,ranking}/` — stubs (empty, not implemented)
 - `tests/` — pytest suite, uses `tmp_path` for isolated SQLite databases
@@ -368,7 +443,7 @@ after moving the repository (uninstall first if the old units should go).
 - **No external runtime dependencies** — only stdlib + dev tools
 - **SQLite only** — schema managed in `schema.py`, not via migration tooling
 - **No CI/CD**, no pre-commit hooks, no Makefile
-- Module sub-packages beyond `collectors`, `database`, `grouping`, and `reporting` are stubs; adding real code there is expected
+- Module sub-packages beyond `collectors`, `database`, `grouping`, `saved_searches`, `reminders`, and `reporting` are stubs; adding real code there is expected
 - Ruff: `line-length = 88`, selected rules `E F I UP B`
 - `mypy` is strict, scoped to `src/careeros` only (not tests)
 

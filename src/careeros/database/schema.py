@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -123,6 +123,26 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_saved_searches_name
             ON saved_searches(name COLLATE NOCASE);
+
+        CREATE TABLE IF NOT EXISTS reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL
+                REFERENCES jobs(id) ON DELETE RESTRICT,
+            kind TEXT NOT NULL CHECK (
+                kind IN ('follow_up', 'interview', 'offer', 'review', 'custom')
+            ),
+            message TEXT,
+            due_at TEXT NOT NULL,
+            completed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_reminders_job
+            ON reminders(job_id);
+
+        CREATE INDEX IF NOT EXISTS idx_reminders_due
+            ON reminders(due_at, completed_at);
         """
     )
 

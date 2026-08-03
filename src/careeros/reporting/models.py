@@ -15,6 +15,7 @@ from datetime import datetime
 
 from careeros.database.applications import StoredApplication
 from careeros.database.jobs import StoredJob
+from careeros.database.reminders import StoredReminder
 from careeros.ranking.scorer import RankedGroup, RankedJob
 from careeros.status import SourceStatus
 
@@ -102,6 +103,32 @@ class Recommendations:
 
 
 @dataclass(frozen=True)
+class ReminderSnapshot:
+    """One open reminder joined with its stored job for the report."""
+
+    reminder: StoredReminder
+    job: StoredJob
+
+
+@dataclass(frozen=True)
+class Reminders:
+    """Reminder counts and upcoming action items for the report.
+
+    ``overdue_count`` counts open reminders whose due time has passed.
+    ``due_today_utc_count`` counts open reminders whose due time falls within
+    the current UTC calendar day; CareerOS does not know the user's local
+    timezone, so "today" is defined and reported in UTC only. ``upcoming`` is
+    the open reminders due at or after the report's ``now``, ordered by
+    urgency (``due_at ASC`` then ``id ASC``), capped by the report limit.
+    """
+
+    overdue_count: int
+    due_today_utc_count: int
+    open_total: int
+    upcoming: tuple[ReminderSnapshot, ...]
+
+
+@dataclass(frozen=True)
 class CollectionHealth:
     """Per-source collection health, including incomplete runs."""
 
@@ -116,5 +143,6 @@ class Report:
     overview: Overview
     pipeline: ApplicationPipeline
     actions: ActionItems
+    reminders: Reminders
     recommendations: Recommendations
     health: CollectionHealth

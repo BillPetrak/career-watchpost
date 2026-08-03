@@ -46,6 +46,28 @@ from careeros.ranking.scorer import (
     RankedGroup,
     RankedJob,
 )
+from careeros.reminders.models import (
+    REMINDER_KINDS,
+)
+from careeros.reminders.models import (
+    UnknownJobError as ReminderUnknownJobError,
+)
+from careeros.reminders.models import (
+    UnknownReminderError as ReminderUnknownReminderError,
+)
+from careeros.reminders.models import (
+    ValidationError as ReminderValidationError,
+)
+from careeros.reminders.service import (
+    add_reminder,
+    complete_reminder,
+    delete_reminder,
+    list_reminders,
+    reminders_for_job,
+    reopen_reminder,
+    require_reminder,
+    update_reminder,
+)
 from careeros.reporting.models import Report
 from careeros.reporting.render import render_report, render_report_json
 from careeros.reporting.service import build_report
@@ -678,6 +700,7 @@ def run_application_show(job_id: int, database_path: Path) -> int:
             note = None
             if application is not None:
                 note = latest_event_note(connection, application_id=application.id)
+            reminders = reminders_for_job(connection, job_id=job_id)
     except (OSError, sqlite3.Error) as error:
         print(f"Application failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
@@ -698,6 +721,19 @@ def run_application_show(job_id: int, database_path: Path) -> int:
     print(f"{'Last updated:':<16}{application.updated_at}")
     if note is not None:
         print(f"{'Note:':<16}{note}")
+    if reminders:
+        print()
+        print("Reminders:")
+        for entry in reminders:
+            reminder = entry.reminder
+            suffix = ""
+            if reminder.message is not None:
+                suffix = f"; {reminder.message}"
+            print(
+                f"  - [{reminder.id}] {reminder.kind}, "
+                f"due {reminder.due_at}, {_reminder_state_text(reminder.completed_at)}"
+                f"{suffix}"
+            )
     return 0
 
 
@@ -787,6 +823,272 @@ def run_application_history(
         if event.note is not None:
             print(f"  Note:   {event.note}")
 
+    return 0
+
+
+def _reminder_state_text(completed_at: str | None) -> str:
+    """Render a reminder's completion state for display."""
+    return "open" if completed_at is None else f"completed {completed_at}"
+
+
+def _reminder_message_line(message: str | None) -> str | None:
+    """Render a reminder message line, or None when absent."""
+    return f"Message: {message}" if message is not None else None
+
+
+def run_reminder_add(
+    job_id: int,
+    kind: str,
+    due_at: str,
+    message: str | None,
+    database_path: Path,
+) -> int:
+    """Add a reminder for a stored job (write; acquires the lock)."""
+    try:
+        with collection_lock(database_path, command="reminder add"):
+            with connect(database_path) as connection:
+                initialize_schema(connection)
+                result = add_reminder(
+                    connection,
+                    job_id=job_id,
+                    kind=kind,
+                    due_at=due_at,
+                    message=message,
+                )
+    except CollectionLockConflict as error:
+        print(_lock_conflict_message(error), file=sys.stderr)
+        return EXIT_TEMP_FAILURE
+    except ReminderUnknownJobError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except ReminderValidationError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    except (OSError, sqlite3.Error) as error:
+        print(f"Reminder failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Added reminder {result.id} for job {job_id} (due {result.due_at}).")
+    return 0
+
+
+def run_reminder_list(
+    database_path: Path,
+    *,
+    state: str | None,
+    job_id: int | None,
+    kind: str | None,
+    after: str | None,
+    before: str | None,
+    limit: int,
+) -> int:
+    """List reminders with optional filters (read-only, no lock)."""
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            entries = list_reminders(
+                connection,
+                job_id=job_id,
+                kind=kind,
+                state=state,
+                after=after,
+                before=before,
+                limit=limit,
+            )
+    except ReminderValidationError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    except (OSError, sqlite3.Error) as error:
+        print(f"Reminder failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print("Reminders")
+    print("---------")
+
+    filters = []
+    if state is not None:
+        filters.append(f"state={state}")
+    if job_id is not None:
+        filters.append(f"job={job_id}")
+    if kind is not None:
+        filters.append(f"kind={kind}")
+    if after is not None:
+        filters.append(f"after={after}")
+    if before is not None:
+        filters.append(f"before={before}")
+    if filters:
+        print(f"Filter: {', '.join(filters)}")
+    else:
+        print(
+            "Showing open reminders (soonest first); use --completed to list completed."
+        )
+
+    if not entries:
+        print()
+        print("No reminders found.")
+        return 0
+
+    for i, entry in enumerate(entries, start=1):
+        reminder = entry.reminder
+        print()
+        print(
+            f"  {i}. Reminder {reminder.id} | {reminder.kind} | job {reminder.job_id}"
+        )
+        print(f"     Title:   {entry.job.title}")
+        print(f"     Company: {entry.job.company or 'N/A'}")
+        print(f"     Due:     {reminder.due_at}")
+        print(f"     Status:  {_reminder_state_text(reminder.completed_at)}")
+        if reminder.message is not None:
+            print(f"     Message: {reminder.message}")
+
+    return 0
+
+
+def run_reminder_show(reminder_id: int, database_path: Path) -> int:
+    """Show one reminder by ID (read-only, no lock)."""
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            reminder = require_reminder(connection, reminder_id)
+            job = get_job_by_id(connection, reminder.job_id)
+            if job is None:
+                print(f"No job found with ID {reminder.job_id}.", file=sys.stderr)
+                return 1
+    except ReminderUnknownReminderError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error) as error:
+        print(f"Reminder failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Reminder {reminder.id}")
+    print("-" * len(f"Reminder {reminder.id}"))
+    print(
+        f"{'Job:':<9}{reminder.job_id} "
+        f"({job.title}, {job.company or 'N/A'}, {job.source})"
+    )
+    print(f"{'Kind:':<9}{reminder.kind}")
+    print(f"{'Due:':<9}{reminder.due_at}")
+    print(f"{'Status:':<9}{_reminder_state_text(reminder.completed_at)}")
+    if reminder.message is not None:
+        print(f"{'Message:':<9}{reminder.message}")
+    print(f"{'Created:':<9}{reminder.created_at}")
+    print(f"{'Updated:':<9}{reminder.updated_at}")
+    return 0
+
+
+def run_reminder_complete(reminder_id: int, database_path: Path) -> int:
+    """Mark an open reminder completed (write; acquires the lock)."""
+    try:
+        with collection_lock(database_path, command="reminder complete"):
+            with connect(database_path) as connection:
+                initialize_schema(connection)
+                _reminder, changed = complete_reminder(
+                    connection, reminder_id=reminder_id
+                )
+    except CollectionLockConflict as error:
+        print(_lock_conflict_message(error), file=sys.stderr)
+        return EXIT_TEMP_FAILURE
+    except ReminderUnknownReminderError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error) as error:
+        print(f"Reminder failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    if changed:
+        print(f"Completed reminder {reminder_id}.")
+    else:
+        print(f"Reminder {reminder_id} is already completed; no change.")
+    return 0
+
+
+def run_reminder_reopen(reminder_id: int, database_path: Path) -> int:
+    """Reopen a completed reminder (write; acquires the lock)."""
+    try:
+        with collection_lock(database_path, command="reminder reopen"):
+            with connect(database_path) as connection:
+                initialize_schema(connection)
+                _reminder, changed = reopen_reminder(
+                    connection, reminder_id=reminder_id
+                )
+    except CollectionLockConflict as error:
+        print(_lock_conflict_message(error), file=sys.stderr)
+        return EXIT_TEMP_FAILURE
+    except ReminderUnknownReminderError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error) as error:
+        print(f"Reminder failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    if changed:
+        print(f"Reopened reminder {reminder_id}.")
+    else:
+        print(f"Reminder {reminder_id} is already open; no change.")
+    return 0
+
+
+def run_reminder_update(
+    reminder_id: int,
+    database_path: Path,
+    *,
+    due_at: str | None,
+    kind: str | None,
+    message: str | None,
+    clear_message: bool,
+) -> int:
+    """Change a reminder's due time, kind, or message (write; acquires the lock)."""
+    try:
+        with collection_lock(database_path, command="reminder update"):
+            with connect(database_path) as connection:
+                initialize_schema(connection)
+                _reminder, changed = update_reminder(
+                    connection,
+                    reminder_id=reminder_id,
+                    due_at=due_at,
+                    kind=kind,
+                    message=message,
+                    clear_message=clear_message,
+                )
+    except CollectionLockConflict as error:
+        print(_lock_conflict_message(error), file=sys.stderr)
+        return EXIT_TEMP_FAILURE
+    except ReminderUnknownReminderError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except ReminderValidationError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    except (OSError, sqlite3.Error) as error:
+        print(f"Reminder failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    if changed:
+        print(f"Updated reminder {reminder_id}.")
+    else:
+        print(f"No changes to reminder {reminder_id}.")
+    return 0
+
+
+def run_reminder_delete(reminder_id: int, database_path: Path) -> int:
+    """Delete a reminder by ID (write; acquires the lock)."""
+    try:
+        with collection_lock(database_path, command="reminder delete"):
+            with connect(database_path) as connection:
+                initialize_schema(connection)
+                delete_reminder(connection, reminder_id=reminder_id)
+    except CollectionLockConflict as error:
+        print(_lock_conflict_message(error), file=sys.stderr)
+        return EXIT_TEMP_FAILURE
+    except ReminderUnknownReminderError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error) as error:
+        print(f"Reminder failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Deleted reminder {reminder_id}.")
     return 0
 
 
@@ -1463,6 +1765,202 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum groups to show (default: 20).",
     )
     explain_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    reminder_parser = subparsers.add_parser(
+        "reminder",
+        help="Manage local follow-up reminders for stored jobs.",
+    )
+    reminder_commands = reminder_parser.add_subparsers(
+        dest="reminder_command",
+        required=True,
+    )
+
+    add_parser = reminder_commands.add_parser(
+        "add",
+        help="Add a reminder for a stored job.",
+    )
+    add_parser.add_argument("job_id", type=int, help="Database job ID.")
+    add_parser.add_argument(
+        "kind",
+        choices=REMINDER_KINDS,
+        help="Reminder kind (one of: %(choices)s).",
+    )
+    add_parser.add_argument(
+        "due_at",
+        help=(
+            "Due timestamp as ISO-8601 with an explicit UTC offset, e.g. "
+            "2026-08-10T14:00:00Z."
+        ),
+    )
+    add_parser.add_argument(
+        "--message", default=None, help="Optional reminder message."
+    )
+    add_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    list_parser = reminder_commands.add_parser(
+        "list",
+        help="List reminders for stored jobs.",
+    )
+    state_group = list_parser.add_mutually_exclusive_group()
+    state_group.add_argument(
+        "--open",
+        action="store_const",
+        const="open",
+        dest="state",
+        help="Only show open (not completed) reminders (default).",
+    )
+    state_group.add_argument(
+        "--overdue",
+        action="store_const",
+        const="overdue",
+        dest="state",
+        help="Only show open reminders whose due time has passed.",
+    )
+    state_group.add_argument(
+        "--due",
+        action="store_const",
+        const="due",
+        dest="state",
+        help="Only show open reminders due now or earlier.",
+    )
+    state_group.add_argument(
+        "--upcoming",
+        action="store_const",
+        const="upcoming",
+        dest="state",
+        help="Only show open reminders due in the future.",
+    )
+    state_group.add_argument(
+        "--completed",
+        action="store_const",
+        const="completed",
+        dest="state",
+        help="Only show completed reminders.",
+    )
+    list_parser.add_argument(
+        "--job",
+        type=int,
+        dest="job_id",
+        default=None,
+        help="Only show reminders for this job.",
+    )
+    list_parser.add_argument(
+        "--kind",
+        choices=REMINDER_KINDS,
+        default=None,
+        help="Only show reminders of this kind.",
+    )
+    list_parser.add_argument(
+        "--after",
+        default=None,
+        help="Only show reminders due at or after this ISO-8601 timestamp.",
+    )
+    list_parser.add_argument(
+        "--before",
+        default=None,
+        help="Only show reminders due at or before this ISO-8601 timestamp.",
+    )
+    list_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum reminders to show (default: 20).",
+    )
+    list_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    show_parser = reminder_commands.add_parser(
+        "show",
+        help="Show one reminder by ID.",
+    )
+    show_parser.add_argument("reminder_id", type=int, help="Database reminder ID.")
+    show_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    update_parser = reminder_commands.add_parser(
+        "update",
+        help="Change a reminder's due time, kind, or message.",
+    )
+    update_parser.add_argument("reminder_id", type=int, help="Database reminder ID.")
+    update_parser.add_argument(
+        "--due-at",
+        dest="due_at",
+        default=None,
+        help="New due timestamp (ISO-8601 with an explicit UTC offset).",
+    )
+    update_parser.add_argument(
+        "--kind",
+        choices=REMINDER_KINDS,
+        default=None,
+        help="New reminder kind.",
+    )
+    message_group = update_parser.add_mutually_exclusive_group()
+    message_group.add_argument(
+        "--message",
+        dest="message",
+        default=None,
+        help="New reminder message.",
+    )
+    message_group.add_argument(
+        "--clear-message",
+        action="store_true",
+        help="Clear the reminder message.",
+    )
+    update_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    complete_parser = reminder_commands.add_parser(
+        "complete",
+        help="Mark an open reminder completed.",
+    )
+    complete_parser.add_argument("reminder_id", type=int, help="Database reminder ID.")
+    complete_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    reopen_parser = reminder_commands.add_parser(
+        "reopen",
+        help="Reopen a completed reminder.",
+    )
+    reopen_parser.add_argument("reminder_id", type=int, help="Database reminder ID.")
+    reopen_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    delete_parser = reminder_commands.add_parser(
+        "delete",
+        help="Delete a reminder by ID.",
+    )
+    delete_parser.add_argument("reminder_id", type=int, help="Database reminder ID.")
+    delete_parser.add_argument(
         "--database",
         type=Path,
         default=DEFAULT_DATABASE_PATH,
@@ -2317,6 +2815,62 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_saved_search_readish(saved_command, arguments)
 
         return _run_saved_search_write(saved_command, arguments, parser)
+
+    if arguments.command == "reminder":
+        reminder_command = arguments.reminder_command
+
+        if reminder_command == "list" and arguments.limit < 1:
+            parser.error("--limit must be at least 1")
+
+        if reminder_command == "add" and arguments.job_id < 1:
+            parser.error("job-id must be a positive integer")
+
+        if (
+            reminder_command in ("show", "update", "complete", "reopen", "delete")
+            and arguments.reminder_id < 1
+        ):
+            parser.error("reminder-id must be a positive integer")
+
+        if reminder_command == "add":
+            return run_reminder_add(
+                job_id=arguments.job_id,
+                kind=arguments.kind,
+                due_at=arguments.due_at,
+                message=arguments.message,
+                database_path=arguments.database,
+            )
+
+        if reminder_command == "show":
+            return run_reminder_show(arguments.reminder_id, arguments.database)
+
+        if reminder_command == "list":
+            return run_reminder_list(
+                arguments.database,
+                state=arguments.state,
+                job_id=arguments.job_id,
+                kind=arguments.kind,
+                after=arguments.after,
+                before=arguments.before,
+                limit=arguments.limit,
+            )
+
+        if reminder_command == "complete":
+            return run_reminder_complete(arguments.reminder_id, arguments.database)
+
+        if reminder_command == "reopen":
+            return run_reminder_reopen(arguments.reminder_id, arguments.database)
+
+        if reminder_command == "update":
+            return run_reminder_update(
+                arguments.reminder_id,
+                arguments.database,
+                due_at=arguments.due_at,
+                kind=arguments.kind,
+                message=arguments.message,
+                clear_message=arguments.clear_message,
+            )
+
+        return run_reminder_delete(arguments.reminder_id, arguments.database)
 
     parser.error("Unsupported command.")
     return 2

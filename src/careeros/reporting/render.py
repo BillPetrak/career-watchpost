@@ -14,6 +14,7 @@ from typing import Any
 
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
+from careeros.database.reminders import StoredReminder
 from careeros.ranking.scorer import RankedGroup, RankedJob
 from careeros.reporting.models import (
     ACTION_ITEM_LABELS,
@@ -24,6 +25,7 @@ from careeros.reporting.models import (
     CollectionHealth,
     Overview,
     Recommendations,
+    Reminders,
     Report,
 )
 from careeros.status import SourceStatus
@@ -42,6 +44,7 @@ def render_report(report: Report) -> str:
         _render_overview(report.overview),
         _render_pipeline(report.pipeline),
         _render_actions(report.actions),
+        _render_reminders(report.reminders),
         _render_recommendations(report.recommendations),
         _render_health(report.health),
     ]
@@ -148,6 +151,35 @@ def _render_actions(actions: ActionItems) -> str:
 def _action_line(item: ActionItem) -> str:
     job = item.job
     return f"- [{job.id}] {job.title} ({job.company or 'N/A'}, {job.source})"
+
+
+def _render_reminders(reminders: Reminders) -> str:
+    lines = [
+        "Reminders",
+        "---------",
+        f"Overdue:         {reminders.overdue_count}",
+        f"Due today (UTC): {reminders.due_today_utc_count}",
+        f"Open total:      {reminders.open_total}",
+        "Upcoming (soonest first):",
+    ]
+    if not reminders.upcoming:
+        lines.append("  none")
+    else:
+        for snapshot in reminders.upcoming:
+            reminder = snapshot.reminder
+            job = snapshot.job
+            lines.append(
+                f"  - [{job.id}] {job.title} ({job.company or 'N/A'}, "
+                f"{job.source}): {reminder.kind}, due {reminder.due_at}"
+            )
+            if reminder.message is not None:
+                lines.append(f"      Message: {reminder.message}")
+    lines.append(
+        "Reminder times are stored and compared in UTC. "
+        "Due today (UTC) means within the current UTC calendar day; "
+        "CareerOS does not assume your local timezone."
+    )
+    return "\n".join(lines)
 
 
 def _render_recommendations(recommendations: Recommendations) -> str:
@@ -325,6 +357,19 @@ def _action_dict(item: ActionItem) -> dict[str, Any]:
     }
 
 
+def _reminder_dict(reminder: StoredReminder) -> dict[str, Any]:
+    return {
+        "id": reminder.id,
+        "job_id": reminder.job_id,
+        "kind": reminder.kind,
+        "message": reminder.message,
+        "due_at": reminder.due_at,
+        "completed_at": reminder.completed_at,
+        "created_at": reminder.created_at,
+        "updated_at": reminder.updated_at,
+    }
+
+
 def _ranked_job_dict(ranked: RankedJob) -> dict[str, Any]:
     return {
         "job": _job_dict(ranked.job),
@@ -384,6 +429,18 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
             "interested": [_action_dict(item) for item in actions.interested],
             "awaiting_progress": [
                 _action_dict(item) for item in actions.awaiting_progress
+            ],
+        },
+        "reminders": {
+            "overdue_count": report.reminders.overdue_count,
+            "due_today_utc_count": report.reminders.due_today_utc_count,
+            "open_total": report.reminders.open_total,
+            "upcoming": [
+                {
+                    "reminder": _reminder_dict(snapshot.reminder),
+                    "job": _job_dict(snapshot.job),
+                }
+                for snapshot in report.reminders.upcoming
             ],
         },
         "recommendations": {

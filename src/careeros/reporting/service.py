@@ -17,6 +17,12 @@ from careeros.database.applications import StoredApplication
 from careeros.database.groups import grouping_summary
 from careeros.database.jobs import _SELECT_COLUMNS, _stored_job_from_row
 from careeros.ranking.scorer import CandidateProfile
+from careeros.reminders.service import (
+    count_due_today_reminders,
+    count_open_reminders,
+    count_overdue_reminders,
+    list_upcoming_reminders,
+)
 from careeros.reporting.models import (
     ACTION_ITEM_LABELS,
     ActionItem,
@@ -26,6 +32,8 @@ from careeros.reporting.models import (
     CollectionHealth,
     Overview,
     Recommendations,
+    Reminders,
+    ReminderSnapshot,
     Report,
 )
 from careeros.saved_searches.execution import execute_rank, rank_candidates
@@ -200,6 +208,29 @@ def _build_recommendations(
     )
 
 
+def _build_reminders(
+    connection: sqlite3.Connection,
+    *,
+    now: datetime,
+    limit: int,
+) -> Reminders:
+    """Assemble the reminder section from the read-only reminder service.
+
+    The reminder service owns every query and all time logic; this function
+    only shapes the results into the report model.
+    """
+    entries = list_upcoming_reminders(connection, now=now, limit=limit)
+    snapshots = tuple(
+        ReminderSnapshot(reminder=entry.reminder, job=entry.job) for entry in entries
+    )
+    return Reminders(
+        overdue_count=count_overdue_reminders(connection, now=now),
+        due_today_utc_count=count_due_today_reminders(connection, now=now),
+        open_total=count_open_reminders(connection),
+        upcoming=snapshots,
+    )
+
+
 def build_report(
     connection: sqlite3.Connection,
     *,
@@ -249,6 +280,8 @@ def build_report(
         awaiting_progress=_action_items(tracked, status="applied", limit=limit),
     )
 
+    reminders = _build_reminders(connection, now=now, limit=limit)
+
     recommendations = _build_recommendations(
         connection,
         profile=profile,
@@ -262,6 +295,7 @@ def build_report(
         overview=overview,
         pipeline=pipeline,
         actions=actions,
+        reminders=reminders,
         recommendations=recommendations,
         health=CollectionHealth(per_source=source_snapshots),
     )
