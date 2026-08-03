@@ -46,6 +46,15 @@ commands are mutually exclusive per database via an OS advisory lock, while the
 read-only commands remain available during collection; a lock conflict exits
 with code 75. See `AGENTS.md` for the full command reference.
 
+## Cross-source duplicate detection
+
+CareerOS detects when the same vacancy is listed by several job boards using
+deterministic, stdlib-only normalization (`group regroup` recomputes the
+canonical groups; `group explain` shows them read-only). Grouping is
+non-destructive: the `jobs` table is the source of truth and the derived group
+tables never mutate it. `search --grouped` and `rank --grouped` collapse
+cross-source duplicates into one result per group.
+
 ## Scheduled collection
 
 A periodic run can be installed as a systemd user service and timer from the

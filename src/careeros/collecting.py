@@ -22,6 +22,7 @@ from typing import TypeAlias
 from careeros.collection_policies import SOURCE_POLICIES, SourcePolicy
 from careeros.collectors import COLLECTORS, Collector, CollectorName
 from careeros.database.connection import connect
+from careeros.database.groups import ensure_grouped
 from careeros.database.jobs import save_jobs
 from careeros.database.runs import complete_run, insert_run, last_completed_attempt
 from careeros.database.schema import initialize_schema
@@ -158,6 +159,7 @@ def collect_all(
             limit=limit,
             clock=clock,
         )
+        ensure_grouped(connection)
 
 
 def collect_due(
@@ -202,6 +204,7 @@ def collect_due(
             limit=limit,
             clock=clock,
         )
+        ensure_grouped(connection)
 
 
 def collect_one(
@@ -215,7 +218,7 @@ def collect_one(
     """Run a single-source collection attempt on an open connection."""
     if clock is None:
         clock = _utc_now
-    return next(
+    result = next(
         iter(
             _run_collection(
                 connection,
@@ -226,3 +229,6 @@ def collect_one(
             )
         )
     )
+    if result.succeeded:
+        ensure_grouped(connection)
+    return result

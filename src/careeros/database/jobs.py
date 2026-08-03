@@ -201,3 +201,11 @@ def save_jobs(
 
     connection.commit()
     return SaveResult(inserted=inserted, updated=updated)
+
+
+def list_all_jobs(connection: sqlite3.Connection) -> list[StoredJob]:
+    """Return every stored job in ascending database-id order."""
+    rows = connection.execute(
+        f"SELECT {_SELECT_COLUMNS} FROM jobs ORDER BY id"
+    ).fetchall()
+    return [_stored_job_from_row(row) for row in rows]

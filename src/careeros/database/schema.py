@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -57,6 +57,24 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_collection_runs_source_started
             ON collection_runs(source, started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS job_groups (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS job_group_members (
+            job_id INTEGER PRIMARY KEY
+                REFERENCES jobs(id) ON DELETE CASCADE,
+            group_id TEXT NOT NULL
+                REFERENCES job_groups(id),
+            reason TEXT NOT NULL,
+            remote_sig TEXT,
+            location_sig TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_job_group_members_group
+            ON job_group_members(group_id);
         """
     )
 

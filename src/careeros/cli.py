@@ -21,6 +21,13 @@ from careeros.collecting import (
 )
 from careeros.collectors import COLLECTORS
 from careeros.database.connection import connect
+from careeros.database.groups import (
+    GroupedJob,
+    ensure_grouped,
+    grouping_summary,
+    list_group_infos,
+    search_grouped,
+)
 from careeros.database.jobs import get_job_by_id, search_jobs
 from careeros.database.runs import CollectionRun, list_runs, parse_utc
 from careeros.database.schema import initialize_schema
@@ -332,6 +339,97 @@ def run_collect_history(
     return 0
 
 
+def _sources_line(group: GroupedJob) -> str:
+    """Render a human-readable source list for a grouped result."""
+    if len(group.sources) == 1:
+        return str(group.sources[0])
+    return ", ".join(str(s) for s in group.sources)
+
+
+def _print_grouped_results(results: Sequence[GroupedJob]) -> None:
+    """Print grouped search results with per-group member details."""
+    for i, group in enumerate(results, start=1):
+        rep = group.representative
+        location_part = rep.location or "N/A"
+        if rep.remote_status == "remote":
+            location_part = f"{location_part} (remote)"
+
+        print(f"  {i}. {rep.title}")
+        print(f"     Company:  {rep.company or 'N/A'}")
+        print(f"     Location: {location_part}")
+        print(f"     Source:   {_sources_line(group)}")
+        member_count = len(group.members)
+        if member_count > 1:
+            print(f"     Group:    {member_count} listings grouped")
+        print()
+
+        if member_count > 1:
+            print("     Members:")
+            for member in group.members:
+                print(f"       - [{member.id}] {member.source}: {member.url or 'N/A'}")
+        print()
+
+
+def run_group_regroup(database_path: Path) -> int:
+    """Recompute canonical duplicate groups and persist them."""
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            ensure_grouped(connection)
+            summary = grouping_summary(connection)
+    except (OSError, sqlite3.Error) as error:
+        print(f"Regroup failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print("Regrouping complete")
+    print("-------------------")
+    print(f"Total jobs:      {summary.total_jobs}")
+    print(f"Groups:          {summary.groups}")
+    print(f"Grouped members: {summary.grouped_jobs}")
+
+    return 0
+
+
+def run_group_explain(
+    database_path: Path,
+    *,
+    group_id: str | None,
+    limit: int,
+) -> int:
+    """Show canonical groups (with members) without mutating state."""
+    try:
+        with connect(database_path) as connection:
+            initialize_schema(connection)
+            infos = list_group_infos(
+                connection,
+                group_id=group_id,
+                limit=limit,
+            )
+    except (OSError, sqlite3.Error) as error:
+        print(f"Explain failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    print("Canonical groups")
+    print("----------------")
+
+    if not infos:
+        print()
+        print("No groups found.")
+        return 0
+
+    for info in infos:
+        print()
+        print(f"Group {info.group_id}")
+        print(f"  Reason:    {info.reason}")
+        print(f"  Sources:   {', '.join(str(s) for s in info.sources)}")
+        print(f"  Created:   {info.created_at}")
+        print("  Members:")
+        for member in info.members:
+            print(f"    - [{member.id}] {member.source}: {member.title}")
+
+    return 0
+
+
 def run_search(
     keyword: str,
     database_path: Path,
@@ -340,22 +438,42 @@ def run_search(
     location: str | None = None,
     source: str | None = None,
     limit: int = 20,
+    grouped: bool = False,
 ) -> int:
     """Search jobs in the SQLite database."""
     try:
         with connect(database_path) as connection:
             initialize_schema(connection)
-            results = search_jobs(
-                connection,
-                keyword,
-                remote=remote,
-                location=location,
-                source=source,
-                limit=limit,
-            )
+            if grouped:
+                grouped_results = search_grouped(
+                    connection,
+                    keyword,
+                    remote=remote,
+                    location=location,
+                    source=source,
+                    limit=limit,
+                )
+            else:
+                results = search_jobs(
+                    connection,
+                    keyword,
+                    remote=remote,
+                    location=location,
+                    source=source,
+                    limit=limit,
+                )
     except Exception as error:
         print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
+
+    if grouped:
+        print(
+            f"Found {len(grouped_results)} matching group"
+            f"{'s' if len(grouped_results) != 1 else ''}:"
+        )
+        print()
+        _print_grouped_results(grouped_results)
+        return 0
 
     print(f"Found {len(results)} matching job{'s' if len(results) != 1 else ''}:")
     print()
@@ -479,6 +597,7 @@ def run_rank(
     location: str | None = None,
     source: str | None = None,
     limit: int = 20,
+    grouped: bool = False,
 ) -> int:
     """Search jobs and rank them against a candidate profile."""
     try:
@@ -490,17 +609,68 @@ def run_rank(
     try:
         with connect(database_path) as connection:
             initialize_schema(connection)
-            matches = search_jobs(
-                connection,
-                keyword,
-                remote=remote,
-                location=location,
-                source=source,
-                limit=limit,
-            )
+            if grouped:
+                grouped_results = search_grouped(
+                    connection,
+                    keyword,
+                    remote=remote,
+                    location=location,
+                    source=source,
+                    limit=limit,
+                )
+            else:
+                matches = search_jobs(
+                    connection,
+                    keyword,
+                    remote=remote,
+                    location=location,
+                    source=source,
+                    limit=limit,
+                )
     except (OSError, sqlite3.Error) as error:
         print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
+
+    if grouped:
+        if not grouped_results:
+            print("No matching jobs found.")
+            return 0
+
+        grouped_ranked = [
+            (score_jobs([group.representative], profile)[0], group)
+            for group in grouped_results
+        ]
+        grouped_ranked.sort(
+            key=lambda item: (-item[0].score, item[1].representative.id)
+        )
+
+        print(
+            f"Ranked {len(grouped_ranked)} group"
+            f"{'s' if len(grouped_ranked) != 1 else ''}:"
+        )
+        print()
+
+        for i, (rj, group) in enumerate(grouped_ranked, start=1):
+            location_part = rj.job.location or "N/A"
+            if rj.job.remote_status == "remote":
+                location_part = f"{location_part} (remote)"
+
+            print(f"{i}. [Score {rj.score}] {rj.job.title}")
+            print(f"   ID:       {rj.job.id}")
+            print(f"   Company:  {rj.job.company or 'N/A'}")
+            print(f"   Location: {location_part}")
+            print(f"   Remote:   {rj.job.remote_status or 'N/A'}")
+            print(f"   Source:   {_sources_line(group)}")
+            print(f"   URL:      {rj.job.url or 'N/A'}")
+            member_count = len(group.members)
+            if member_count > 1:
+                print(f"   Group:    {member_count} listings grouped")
+            print("   Reasons:")
+            for reason in rj.reasons:
+                print(f"     {reason}")
+            print()
+
+        return 0
 
     if not matches:
         print("No matching jobs found.")
@@ -643,6 +813,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter by source (e.g. arbeitnow).",
     )
     search_parser.add_argument(
+        "--grouped",
+        action="store_true",
+        help="Collapse cross-source duplicates into one result per group.",
+    )
+    search_parser.add_argument(
         "--limit",
         type=int,
         default=20,
@@ -699,12 +874,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter by source (e.g. arbeitnow).",
     )
     rank_parser.add_argument(
+        "--grouped",
+        action="store_true",
+        help="Collapse cross-source duplicates into one result per group.",
+    )
+    rank_parser.add_argument(
         "--limit",
         type=int,
         default=20,
         help="Maximum results (default: 20).",
     )
     rank_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    group_parser = subparsers.add_parser(
+        "group",
+        help="Manage canonical cross-source duplicate groups.",
+    )
+    group_commands = group_parser.add_subparsers(
+        dest="group_command",
+        required=True,
+    )
+
+    regroup_parser = group_commands.add_parser(
+        "regroup",
+        help="Recompute canonical groups from stored jobs.",
+    )
+    regroup_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
+
+    explain_parser = group_commands.add_parser(
+        "explain",
+        help="Show canonical groups without mutating state.",
+    )
+    explain_parser.add_argument(
+        "--group-id",
+        help="Only show this group.",
+    )
+    explain_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum groups to show (default: 20).",
+    )
+    explain_parser.add_argument(
         "--database",
         type=Path,
         default=DEFAULT_DATABASE_PATH,
@@ -805,6 +1026,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             location=arguments.location,
             source=arguments.source,
             limit=arguments.limit,
+            grouped=arguments.grouped,
         )
 
     if arguments.command == "show":
@@ -827,6 +1049,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             remote=arguments.remote,
             location=arguments.location,
             source=arguments.source,
+            limit=arguments.limit,
+            grouped=arguments.grouped,
+        )
+
+    if arguments.command == "group":
+        if arguments.group_command == "regroup":
+            try:
+                with collection_lock(arguments.database, command="group regroup"):
+                    return run_group_regroup(database_path=arguments.database)
+            except CollectionLockConflict as error:
+                print(_lock_conflict_message(error), file=sys.stderr)
+                return EXIT_TEMP_FAILURE
+            except OSError as error:
+                message = f"Regroup failed: {type(error).__name__}: {error}"
+                print(message, file=sys.stderr)
+                return 1
+
+        if arguments.limit < 1:
+            parser.error("--limit must be at least 1")
+        return run_group_explain(
+            database_path=arguments.database,
+            group_id=arguments.group_id,
             limit=arguments.limit,
         )
 

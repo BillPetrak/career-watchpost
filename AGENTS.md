@@ -27,7 +27,11 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros collect history [--source NAME] [--limit N] [--failed] [--database PATH]` | Show recent collection run history |
 | `uv run careeros search engineer --limit 10` | Search stored jobs |
 | `uv run careeros search engineer --remote --location Berlin` | Search with filters |
+| `uv run careeros search engineer --grouped` | Search, collapsing cross-source duplicates into one result per group |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json` | Rank stored jobs against profile |
+| `uv run careeros rank engineer --profile config/candidate_profile.example.json --grouped` | Rank jobs, one scored result per duplicate group |
+| `uv run careeros group regroup [--database PATH]` | Recompute canonical duplicate groups (write; locks the DB) |
+| `uv run careeros group explain [--database PATH] [--group-id ID] [--limit N]` | Show canonical groups read-only |
 | `uv run python systemd/install.py --dry-run` | Preview systemd user-unit install (writes nothing) |
 | `uv run python systemd/install.py` | Install the systemd user service+timer (not enabled) |
 | `uv run python systemd/install.py --enable` | Install, then enable and start the timer |
@@ -67,6 +71,45 @@ is treated as due). `collect history` lists collection runs newest first
 `--source` filters to one registered source. Both exit 0 on success and 1 on
 database/setup failure.
 
+## Cross-source duplicate grouping
+
+CareerOS detects when two vacancies from different sources are the same
+underlying job. Detection is deterministic, conservative, and stdlib-only:
+
+- **Never mutates jobs** — the `jobs` table is the source of truth; grouping
+  lives only in the derived `job_groups`/`job_group_members` tables.
+- **Equality-only matching** — jobs group only when their normalized company
+  and title signatures are equal. Location and remote status are vetoes, never
+  similarity signals: a remote-class conflict (remote vs onsite/unspecified) or
+  a distinct, incompatible non-generic location splits a group. Location
+  "compatible" means one signature is a token-prefix of the other (so "Berlin"
+  and "Berlin, Germany" group, "Berlin" and "Munich" do not).
+- **Content-addressed group IDs** — each group ID is a truncated SHA-256 of the
+  group's normalized identity, so adding/removing unrelated jobs never
+  renumbers existing groups; only a group whose own identity changes gets a new
+  ID (which happens exactly when matching rules evolve).
+- **Data-driven suffix stripping** — company legal-entity suffixes
+  (`GmbH`, `BV`, `PLC`, `Oy`, `AB`, `SA`, `SAS`, `AG`, `Inc`, `LLC`, `Ltd`,
+  `S.A. de C.V.`, ...) are stripped from the trailing edge of a company name.
+  Add a locale's suffix to `COMPANY_LEGAL_SUFFIXES` in
+  `src/careeros/grouping/normalize.py` and it is picked up with no code change.
+- **Generic locations** ("Remote", "Anywhere") carry no signal; they merge with
+  the sole located cluster, or form their own singleton group when several
+  located clusters exist (ambiguous). Unidentifiable jobs (empty company or
+  title after normalization) never group.
+
+`group regroup` recomputes and rewrites the grouping tables and is **not**
+read-only: it acquires the collection lock and exits 75 on contention (same
+rules as the `collect` family). `group explain` is read-only, takes no lock,
+and shows each canonical group with its members, reason, and sources.
+`search --grouped` and `rank --grouped` collapse duplicates into one result per
+group; filters (`--source`, `--remote`, `--location`) apply to candidate member
+rows *before* grouping, and the displayed representative is the lowest-ID
+matching member. `collect <source>`, `collect all`, and `collect due`
+automatically regroup after each successful collection. Grouping is
+non-destructive and deterministic: `group regroup` is safe to run at any time
+and `group explain` never writes.
+
 ## Collection locking
 
 `collect <source>`, `collect all`, and `collect due` are mutually exclusive per
@@ -93,8 +136,8 @@ any source, does not touch run history or the jobs table, and exits with code
     echo $?
 
 The read-only commands `collect status`, `collect history`, `search`, `show`,
-and `rank` never acquire the collection lock and remain available while a
-collection is running.
+`rank`, and `group explain` never acquire the collection lock and remain
+available while a collection is running.
 
 ## systemd user units
 
@@ -127,6 +170,7 @@ after moving the repository (uninstall first if the old units should go).
 - `src/careeros/` — package root, entrypoint `careeros.cli:main`
 - `src/careeros/collectors/` — job-board API clients
 - `src/careeros/database/` — SQLite layer (schema, connection, persistence)
+- `src/careeros/grouping/` — duplicate detection (normalization, matcher)
 - `src/careeros/{job_hunter,privacy,ranking,reporting}/` — stubs (empty, not implemented)
 - `tests/` — pytest suite, uses `tmp_path` for isolated SQLite databases
 - `config/` — YAML config (settings.example.yaml, candidate_profile.example.yaml)
@@ -138,7 +182,7 @@ after moving the repository (uninstall first if the old units should go).
 - **No external runtime dependencies** — only stdlib + dev tools
 - **SQLite only** — schema managed in `schema.py`, not via migration tooling
 - **No CI/CD**, no pre-commit hooks, no Makefile
-- Module sub-packages beyond `collectors` and `database` are stubs; adding real code there is expected
+- Module sub-packages beyond `collectors`, `database`, and `grouping` are stubs; adding real code there is expected
 - Ruff: `line-length = 88`, selected rules `E F I UP B`
 - `mypy` is strict, scoped to `src/careeros` only (not tests)
 
@@ -146,4 +190,5 @@ after moving the repository (uninstall first if the old units should go).
 
 - All DB tests use `tmp_path` for disposable SQLite files (no fixtures, no external DB)
 - Collector unit tests pass without network (test `normalize_job()` only, not `fetch_jobs()`)
+- Grouping tests use the pure matcher (`assign_groups`) and a seeded `tmp_path` DB (no network)
 - No integration/e2e tests yet
