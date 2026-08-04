@@ -1,15 +1,20 @@
-"""Tests for the JSON candidate profile loader."""
+"""Tests for the JSON and YAML candidate profile loader."""
 
 import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from careeros.ranking.profile import load_profile
 
 
 def _write_profile(path: Path, data: object) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _write_yaml_profile(path: Path, data: object) -> None:
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
 
 def test_valid_minimal_profile(tmp_path: Path) -> None:
@@ -217,3 +222,102 @@ def test_strips_whitespace_from_list_entries(tmp_path: Path) -> None:
     profile = load_profile(profile_path)
 
     assert profile.desired_titles == ("Data Scientist", "Engineer")
+
+
+# --- YAML loading --------------------------------------------------------------
+
+
+def test_valid_yaml_minimal(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.yaml"
+    _write_yaml_profile(profile_path, {})
+
+    profile = load_profile(profile_path)
+
+    assert profile.desired_titles == ()
+    assert profile.skills == ()
+    assert profile.remote_preference is None
+
+
+def test_valid_yaml_all_fields(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.yml"
+    _write_yaml_profile(
+        profile_path,
+        {
+            "desired_titles": ["Data Scientist", "ML Engineer"],
+            "skills": ["Python", "SQL"],
+            "preferred_locations": ["Greece", "Remote"],
+            "remote_preference": "remote",
+            "excluded_terms": ["intern"],
+        },
+    )
+
+    profile = load_profile(profile_path)
+
+    assert profile.desired_titles == ("Data Scientist", "ML Engineer")
+    assert profile.skills == ("Python", "SQL")
+    assert profile.preferred_locations == ("Greece", "Remote")
+    assert profile.remote_preference == "remote"
+    assert profile.excluded_terms == ("intern",)
+
+
+def test_yaml_unknown_fields_ignored(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.yaml"
+    _write_yaml_profile(
+        profile_path, {"desired_titles": ["Engineer"], "unknown_field": 123}
+    )
+
+    profile = load_profile(profile_path)
+
+    assert profile.desired_titles == ("Engineer",)
+    assert profile.skills == ()
+
+
+def test_yaml_rejects_non_list_field(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.yaml"
+    _write_yaml_profile(profile_path, {"desired_titles": "Engineer"})
+
+    with pytest.raises(ValueError, match="must be a list"):
+        load_profile(profile_path)
+
+
+def test_yaml_rejects_malformed(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text("desired_titles: [unclosed\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid YAML"):
+        load_profile(profile_path)
+
+
+def test_yaml_empty_file(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="YAML mapping"):
+        load_profile(profile_path)
+
+
+def test_yaml_non_mapping_root(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.yaml"
+    _write_yaml_profile(profile_path, ["not", "a", "mapping"])
+
+    with pytest.raises(ValueError, match="YAML mapping"):
+        load_profile(profile_path)
+
+
+def test_yaml_scalar_root(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.yaml"
+    _write_yaml_profile(profile_path, "hello")
+
+    with pytest.raises(ValueError, match="YAML mapping"):
+        load_profile(profile_path)
+
+
+# --- extension handling --------------------------------------------------------
+
+
+def test_unsupported_extension_rejected(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.txt"
+    profile_path.write_text('{"desired_titles": ["Engineer"]}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unsupported profile file extension"):
+        load_profile(profile_path)

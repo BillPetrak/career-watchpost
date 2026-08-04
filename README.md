@@ -42,7 +42,8 @@ Current CLI capabilities include multi-source job collection (`collect
 <source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
 persistent run history, read-only collection observability (`collect status`,
 `collect history`), plus `search`, `show`, `rank`, `group`,
-`saved-search`, `application`, `reminder`, a read-only `report` (Career
+`saved-search`, `application`, `reminder`, `profile` (init/show/validate for
+JSON or YAML candidate profiles), a read-only `report` (Career
 Snapshot), and `diagnose`.
 Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
@@ -122,6 +123,57 @@ guesses a timezone. Values are normalized and stored as UTC. `complete` and
 supports deliberate message clearing. The write commands (`add`, `update`,
 `complete`, `reopen`, `delete`) respect the per-database lock and exit 75 on
 contention; the reads (`list`, `show`) never lock.
+
+## Candidate profile
+
+Ranking and the Career Snapshot score jobs against a **candidate profile** — a
+small file describing the roles you are looking for. Profiles may be written in
+**JSON** (`.json`) or **YAML** (`.yaml`/`.yml`); the format is chosen by file
+extension. All fields are optional and unknown top-level fields are silently
+ignored.
+
+Supported fields:
+
+- `desired_titles` — titles to match (e.g. `"Machine Learning Engineer"`)
+- `skills` — preferred skills to look for in the posting
+- `required_skills` — skills that must appear (missing ones are penalized)
+- `preferred_locations` — locations that count as a match
+- `remote_preference` — `"remote"`, `"onsite_or_unspecified"`, or `null`
+- `excluded_terms` — soft-excluded terms (small penalty)
+- `hard_excluded_terms` — hard exclusions that force a score of 0
+- `preferred_employment_types` — e.g. `"Full-time"`
+- `preferred_seniority` — e.g. `"Senior"`
+
+### Private profile
+
+The default profile path is `config/candidate_profile.yaml`. This file is
+**private**: it is listed in `.gitignore` and must never be committed. It holds
+your real job-search preferences, unlike the committed fictional examples
+`config/candidate_profile.example.json` and
+`config/candidate_profile.example.yaml`.
+
+Initialize your private profile safely (refuses to overwrite an existing file):
+
+```bash
+uv run careeros profile init                    # create config/candidate_profile.yaml
+uv run careeros profile init --force            # overwrite an existing profile
+uv run careeros profile init ~/profile.yaml     # create anywhere else (.json also works)
+```
+
+Then validate or inspect it:
+
+```bash
+uv run careeros profile validate                # validate the private profile
+uv run careeros profile validate config/candidate_profile.example.json
+uv run careeros profile show                    # show the private profile
+uv run careeros profile show config/candidate_profile.example.yaml
+```
+
+Exit codes: `0` success, `1` missing/invalid profile (and `init` refusing an
+existing file), `2` usage errors (unsupported file extension). `init` writes a
+starter profile with every field commented or empty; `show` and `validate`
+default to the private path and `--force` is required to overwrite an existing
+file.
 
 ## Saved searches
 

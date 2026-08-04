@@ -30,6 +30,9 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros search engineer --grouped` | Search, collapsing cross-source duplicates into one result per group |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json` | Rank stored jobs against profile |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --grouped` | Rank jobs, one scored result per duplicate group |
+| `uv run careeros profile init [PATH] [--force]` | Create a starter candidate profile (default: private `config/candidate_profile.yaml`; refuses to overwrite without `--force`) |
+| `uv run careeros profile validate [PATH]` | Validate a JSON/YAML candidate profile (default: private path) |
+| `uv run careeros profile show [PATH]` | Show a candidate profile readably (default: private path) |
 | `uv run careeros report [--format {text,json}] [--profile PATH] [--saved-search NAME] [--limit N] [--grouped]` | Read-only Career Snapshot dashboard (default format: text) |
 | `uv run careeros group regroup [--database PATH]` | Recompute canonical duplicate groups (write; locks the DB) |
 | `uv run careeros group explain [--database PATH] [--group-id ID] [--limit N]` | Show canonical groups read-only |
@@ -287,6 +290,37 @@ after its application note, so a job's follow-up context is visible in one
 place. Application status changes never create, complete, reschedule, or delete
 reminders automatically, and grouped `search`/`rank` results are not annotated
 with reminders.
+
+## Candidate profile
+
+`profile` manages the candidate profile file used by `rank` and `report`.
+Profiles are plain JSON (`.json`) or YAML (`.yaml`/`.yml`) files whose format
+is chosen by file extension (`src/careeros/ranking/profile.py`); unknown
+top-level fields are silently ignored. All fields are optional:
+`desired_titles`, `skills`, `required_skills`, `preferred_locations`,
+`remote_preference` (string or null), `excluded_terms`, `hard_excluded_terms`,
+`preferred_employment_types`, `preferred_seniority`.
+
+```bash
+uv run careeros profile init                       # create private config/candidate_profile.yaml
+uv run careeros profile init --force               # overwrite an existing profile
+uv run careeros profile init /tmp/me.json          # JSON starter at an explicit path
+uv run careeros profile validate                   # validate the private profile
+uv run careeros profile validate config/candidate_profile.example.yaml
+uv run careeros profile show config/candidate_profile.example.json
+```
+
+The default path is the **private** `config/candidate_profile.yaml`, which is
+gitignored and must never be committed; `init` refuses to overwrite an existing
+file unless `--force` is passed. The committed fictional examples
+`config/candidate_profile.example.json` and
+`config/candidate_profile.example.yaml` are safe to use in docs, tests, and
+smoke runs — never the private path. `init` writes a commented starter whose
+format follows the target file extension (unsupported extensions exit 2).
+`show` and `validate` default to the private path when none is given. All three
+are file-only commands: they never touch the database and never acquire the
+collection lock. Exit codes: `0` success, `1` missing/invalid profile or an
+existing `init` target, `2` usage errors (unsupported extension).
 
 ## Saved searches
 

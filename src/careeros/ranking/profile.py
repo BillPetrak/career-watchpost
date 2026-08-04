@@ -1,4 +1,4 @@
-"""Candidate profile loader from JSON."""
+"""Candidate profile loader from JSON or YAML."""
 
 from __future__ import annotations
 
@@ -6,11 +6,28 @@ import json
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from careeros.ranking.scorer import CandidateProfile
 
+_YAML_SUFFIXES = {".yaml", ".yml"}
+_JSON_SUFFIXES = {".json"}
+_SUPPORTED_SUFFIXES = _YAML_SUFFIXES | _JSON_SUFFIXES
 
-def _load_json(path: Path) -> dict[str, Any]:
-    """Read and parse a JSON file, returning the root dict."""
+
+def _load_data(path: Path) -> dict[str, Any]:
+    """Read and parse a profile file, returning the root mapping.
+
+    The format is chosen by file extension: ``.yaml``/``.yml`` are parsed
+    as YAML and ``.json`` as JSON. Any other extension is rejected.
+    """
+    suffix = path.suffix.lower()
+    if suffix not in _SUPPORTED_SUFFIXES:
+        raise ValueError(
+            f"Unsupported profile file extension {path.suffix!r}; "
+            f"expected one of {', '.join(sorted(_SUPPORTED_SUFFIXES))}."
+        )
+
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -18,8 +35,20 @@ def _load_json(path: Path) -> dict[str, Any]:
     except OSError as e:
         raise ValueError(f"Failed to read profile file: {e}") from e
 
+    if suffix in _YAML_SUFFIXES:
+        try:
+            data: object = yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            raise ValueError(f"Invalid YAML in profile file: {e}") from e
+
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"Profile must be a YAML mapping, got {type(data).__name__}."
+            )
+        return data
+
     try:
-        data: object = json.loads(text)
+        data = json.loads(text)
     except json.JSONDecodeError as e:
         raise json.JSONDecodeError(
             f"Invalid JSON in profile file: {e.msg}",
@@ -81,13 +110,14 @@ def _load_remote_preference(data: dict[str, Any]) -> str | None:
 
 
 def load_profile(path: Path | str) -> CandidateProfile:
-    """Load a candidate profile from a JSON file.
+    """Load a candidate profile from a JSON or YAML file.
 
-    Unsupported top-level fields are silently ignored.
+    The format is chosen by file extension; unsupported extensions are
+    rejected. Unsupported top-level fields are silently ignored.
     """
     path_obj = path if isinstance(path, Path) else Path(path)
 
-    data = _load_json(path_obj)
+    data = _load_data(path_obj)
 
     return CandidateProfile(
         desired_titles=_load_string_list(data, "desired_titles"),
