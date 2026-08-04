@@ -13,7 +13,7 @@ from careeros.database.connection import connect
 from careeros.database.schema import initialize_schema
 from careeros.locking import collection_lock, lock_path_for
 
-_ORDER = ("arbeitnow", "remoteok", "weworkremotely", "jobicy")
+_ORDER = ("arbeitnow", "remoteok", "weworkremotely", "jobicy", "remotive")
 
 
 def _make_job(source: str, source_job_id: str) -> CollectedJob:

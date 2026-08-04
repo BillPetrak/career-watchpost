@@ -9,6 +9,7 @@ from careeros.collectors.http import DEFAULT_TIMEOUT
 from careeros.collectors.jobicy import fetch_jobs as jobicy_fetch_jobs
 from careeros.collectors.models import CollectedJob
 from careeros.collectors.remoteok import fetch_jobs as remoteok_fetch_jobs
+from careeros.collectors.remotive import fetch_jobs as remotive_fetch_jobs
 from careeros.collectors.weworkremotely import fetch_jobs as weworkremotely_fetch_jobs
 
 
@@ -28,11 +29,12 @@ CollectorName: TypeAlias = str
 
 # Dict preserves insertion order, so the registry order is the stable execution
 # order for multi-source collection (arbeitnow, remoteok, weworkremotely,
-# jobicy). Orchestration derives its order from these keys rather than keeping
-# a separate source of truth.
+# jobicy, remotive). Orchestration derives its order from these keys rather
+# than keeping a separate source of truth.
 COLLECTORS: dict[CollectorName, Collector] = {
     "arbeitnow": arbeitnow_fetch_jobs,
     "remoteok": remoteok_fetch_jobs,
     "weworkremotely": weworkremotely_fetch_jobs,
     "jobicy": jobicy_fetch_jobs,
+    "remotive": remotive_fetch_jobs,
 }

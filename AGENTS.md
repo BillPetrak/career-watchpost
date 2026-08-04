@@ -20,6 +20,7 @@ uv run careeros diagnose      # verify environment
 | `uv run mypy` | Typecheck (strict) |
 | `uv run careeros collect arbeitnow --limit 10` | Collect jobs |
 | `uv run careeros collect arbeitnow --database /tmp/test.db` | Override DB path |
+| `uv run careeros collect remotive --limit 10` | Collect jobs from Remotive |
 | `uv run careeros collect all --limit 25` | Collect from all sources sequentially |
 | `uv run careeros collect all --limit 25 --database /tmp/careeros_all.db` | Collect all sources into a custom DB |
 | `uv run careeros collect due --limit 25` | Collect only sources whose polling interval has expired |
@@ -77,7 +78,8 @@ failure) is older than their polling interval. A source with no completed run
 is due immediately, and a failed run delays the next automatic attempt by
 exactly one interval. Polling intervals live in
 `src/careeros/collection_policies.py` (jobicy: 60 minutes, documented;
-arbeitnow/remoteok/weworkremotely: provisional defaults). Manual
+remotive: 6 hours, documented per Remotive's "no more than four times a day"
+guidance; arbeitnow/remoteok/weworkremotely: provisional defaults). Manual
 `collect <source>` and `collect all` bypass scheduling, but every collection
 attempt is recorded in the `collection_runs` table. `collect due` exits 0 when
 nothing is due or all due sources succeed, 1 when any due source fails or setup

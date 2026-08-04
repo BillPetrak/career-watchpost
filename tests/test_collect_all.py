@@ -11,7 +11,7 @@ from careeros.collectors import COLLECTORS
 from careeros.collectors.models import CollectedJob
 from careeros.database.connection import connect
 
-_EXPECTED_ORDER = ("arbeitnow", "remoteok", "weworkremotely", "jobicy")
+_EXPECTED_ORDER = ("arbeitnow", "remoteok", "weworkremotely", "jobicy", "remotive")
 
 
 def _make_job(source: str, source_job_id: str) -> CollectedJob:
@@ -78,7 +78,13 @@ def _patch_collectors(
 
 
 def test_registry_defines_stable_execution_order() -> None:
-    assert list(COLLECTORS) == ["arbeitnow", "remoteok", "weworkremotely", "jobicy"]
+    assert list(COLLECTORS) == [
+        "arbeitnow",
+        "remoteok",
+        "weworkremotely",
+        "jobicy",
+        "remotive",
+    ]
 
 
 def test_collect_all_executes_sources_in_registry_order(tmp_path: Path) -> None:
@@ -198,8 +204,8 @@ def test_aggregate_totals_equal_sum_of_results(tmp_path: Path) -> None:
 
     assert len(results) == len(_EXPECTED_ORDER)
     assert all(result.succeeded for result in results)
-    assert sum(result.fetched for result in results) == 1 + 1 + 2 + 3
-    assert sum(result.inserted for result in results) == 1 + 1 + 2 + 3
+    assert sum(result.fetched for result in results) == 1 + 1 + 2 + 3 + 1
+    assert sum(result.inserted for result in results) == 1 + 1 + 2 + 3 + 1
     assert sum(result.updated for result in results) == 0
 
 
@@ -218,7 +224,7 @@ def test_failing_first_source_does_not_block_later(tmp_path: Path) -> None:
     assert results[0].source == "arbeitnow"
     assert results[0].succeeded is False
     assert results[0].error == "RuntimeError: boom"
-    assert [result.succeeded for result in results[1:]] == [True, True, True]
+    assert [result.succeeded for result in results[1:]] == [True, True, True, True]
     for source in fakes:
         assert fakes[source].calls == 1
 
@@ -237,7 +243,7 @@ def test_failing_middle_source_does_not_block_later(tmp_path: Path) -> None:
         )
     )
 
-    assert [result.succeeded for result in results] == [True, True, False, True]
+    assert [result.succeeded for result in results] == [True, True, False, True, True]
     assert results[2].source == "weworkremotely"
     assert results[2].error == "RuntimeError: boom"
 
@@ -258,7 +264,12 @@ def test_failed_source_does_not_roll_back_previous_work(tmp_path: Path) -> None:
     with connect(database_path) as connection:
         rows = connection.execute("SELECT source FROM jobs ORDER BY source").fetchall()
 
-    assert [row["source"] for row in rows] == ["arbeitnow", "jobicy", "weworkremotely"]
+    assert [row["source"] for row in rows] == [
+        "arbeitnow",
+        "jobicy",
+        "remotive",
+        "weworkremotely",
+    ]
 
 
 def test_duplicate_source_ids_remain_isolated_by_source(tmp_path: Path) -> None:
@@ -356,8 +367,8 @@ def test_collect_all_success_returns_0(
     for source in _EXPECTED_ORDER:
         assert source in captured.out
     assert "Status:   success" in captured.out
-    assert "Sources attempted: 4" in captured.out
-    assert "Succeeded:         4" in captured.out
+    assert "Sources attempted: 5" in captured.out
+    assert "Succeeded:         5" in captured.out
     assert "Failed:            0" in captured.out
 
 
@@ -379,7 +390,7 @@ def test_one_source_failure_returns_1_and_reports_source(
     assert exit_code == 1
     assert "jobicy" in captured.out
     assert "Error:  RuntimeError: boom" in captured.out
-    assert "Succeeded:         3" in captured.out
+    assert "Succeeded:         4" in captured.out
     assert "Failed:            1" in captured.out
     assert "jobicy collection failed: RuntimeError: boom" in captured.err
 
@@ -401,7 +412,7 @@ def test_collect_all_empty_source_is_success(
 
     assert exit_code == 0
     assert "Fetched:  0" in captured.out
-    assert "Succeeded:         4" in captured.out
+    assert "Succeeded:         5" in captured.out
     assert "Failed:            0" in captured.out
 
 
@@ -456,5 +467,6 @@ def test_single_source_collection_unchanged(
     assert fakes["remoteok"].calls == 0
     assert fakes["weworkremotely"].calls == 0
     assert fakes["jobicy"].calls == 0
+    assert fakes["remotive"].calls == 0
     assert "Collection complete" in captured.out
     assert "Fetched:  1" in captured.out

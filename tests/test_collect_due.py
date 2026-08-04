@@ -14,7 +14,7 @@ from careeros.database.runs import complete_run, insert_run
 from careeros.database.schema import initialize_schema
 
 _EPOCH = datetime.fromisoformat("2026-08-03T12:00:00+00:00")
-_ORDER = ("arbeitnow", "remoteok", "weworkremotely", "jobicy")
+_ORDER = ("arbeitnow", "remoteok", "weworkremotely", "jobicy", "remotive")
 
 
 def _make_job(source: str, source_job_id: str) -> CollectedJob:
@@ -149,6 +149,7 @@ def test_collect_due_skips_recent_sources(tmp_path: Path) -> None:
         "arbeitnow",
         "remoteok",
         "weworkremotely",
+        "remotive",
     ]
     assert fakes["jobicy"].calls == 0
     assert all(fakes[result.source].calls == 1 for result in results)
@@ -294,8 +295,8 @@ def test_collect_due_cli_all_due_success(
 
     assert exit_code == 0
     assert "Due-source collection complete" in captured.out
-    assert "Sources attempted: 4" in captured.out
-    assert "Succeeded:         4" in captured.out
+    assert "Sources attempted: 5" in captured.out
+    assert "Succeeded:         5" in captured.out
     assert "Status:   success" in captured.out
     for source in _ORDER:
         assert fakes[source].calls == 1

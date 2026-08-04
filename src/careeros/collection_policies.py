@@ -28,13 +28,15 @@ class SourcePolicy:
     documented: bool = False
 
 
-# Jobicy's 60-minute minimum interval is a documented fair-use requirement.
-# The intervals for arbeitnow, remoteok, and weworkremotely are PROVISIONAL
-# defaults, not implied production values; they are deliberately conservative
-# and can be tuned per source.
+# Jobicy's 60-minute minimum interval is a documented fair-use requirement,
+# and Remotive's 6-hour minimum honors its "no more than four times a day"
+# guidance. The intervals for arbeitnow, remoteok, and weworkremotely are
+# PROVISIONAL defaults, not implied production values; they are deliberately
+# conservative and can be tuned per source.
 SOURCE_POLICIES: dict[CollectorName, SourcePolicy] = {
     "arbeitnow": SourcePolicy("arbeitnow", timedelta(hours=6)),
     "remoteok": SourcePolicy("remoteok", timedelta(hours=4)),
     "weworkremotely": SourcePolicy("weworkremotely", timedelta(hours=6)),
     "jobicy": SourcePolicy("jobicy", timedelta(minutes=60), documented=True),
+    "remotive": SourcePolicy("remotive", timedelta(hours=6), documented=True),
 }

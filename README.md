@@ -49,6 +49,26 @@ Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
 
+## Job sources
+
+CareerOS collects from the following public job feeds, each fetched with a
+plain HTTPS request through the shared collector framework (stdlib `urllib`
+only, no API keys, no browser automation):
+
+| Source | Feed | Polling floor |
+|---|---|---|
+| Arbeitnow | `https://www.arbeitnow.com/api/job-board-api` (JSON) | 6 hours (provisional) |
+| Remote OK | `https://remoteok.com/api` (JSON) | 4 hours (provisional) |
+| We Work Remotely | `https://weworkremotely.com/remote-jobs.rss` (RSS) | 6 hours (provisional) |
+| Jobicy | `https://jobicy.com/api/v2/remote-jobs` (JSON) | 1 hour (documented) |
+| Remotive | `https://remotive.com/api/remote-jobs` (JSON) | 6 hours (documented) |
+
+Remotive's terms require attributing listings with a link back to the original
+URL and allow polling at most four times a day; its listings are published with
+a 24-hour delay. Jobicy requires similar credit. CareerOS always stores each
+job's original URL and labels its source, and `collect due` enforces the
+polling floors above.
+
 ## Cross-source duplicate detection
 
 CareerOS detects when the same vacancy is listed by several job boards using

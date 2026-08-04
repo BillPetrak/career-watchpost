@@ -15,13 +15,29 @@ def test_jobicy_interval_is_documented() -> None:
     assert SOURCE_POLICIES["jobicy"].documented is True
 
 
+def test_remotive_minimum_interval_is_six_hours() -> None:
+    assert SOURCE_POLICIES["remotive"] == SourcePolicy(
+        "remotive", timedelta(hours=6), documented=True
+    )
+
+
+def test_remotive_interval_is_documented() -> None:
+    assert SOURCE_POLICIES["remotive"].documented is True
+
+
 def test_other_intervals_are_provisional() -> None:
     for source in ("arbeitnow", "remoteok", "weworkremotely"):
         assert SOURCE_POLICIES[source].documented is False
 
 
 def test_every_registered_source_has_a_policy() -> None:
-    assert set(SOURCE_POLICIES) == {"arbeitnow", "jobicy", "remoteok", "weworkremotely"}
+    assert set(SOURCE_POLICIES) == {
+        "arbeitnow",
+        "jobicy",
+        "remoteok",
+        "remotive",
+        "weworkremotely",
+    }
 
 
 def test_all_intervals_are_positive() -> None:
