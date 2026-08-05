@@ -33,10 +33,12 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros search engineer --grouped` | Search, collapsing cross-source duplicates into one result per group |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json` | Rank stored jobs against profile |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --grouped` | Rank jobs, one scored result per duplicate group |
+| `uv run careeros rank engineer --profile config/candidate_profile.example.json --format json` | Rank results as JSON with a `score_components` breakdown per result |
+| `uv run careeros rank engineer --profile config/candidate_profile.example.json --no-feedback` | Rank without review-feedback adjustments |
 | `uv run careeros profile init [PATH] [--force]` | Create a starter candidate profile (default: private `config/candidate_profile.yaml`; refuses to overwrite without `--force`) |
 | `uv run careeros profile validate [PATH]` | Validate a JSON/YAML candidate profile (default: private path) |
 | `uv run careeros profile show [PATH]` | Show a candidate profile readably (default: private path) |
-| `uv run careeros report [--format {text,json}] [--profile PATH] [--saved-search NAME] [--limit N] [--grouped]` | Read-only Career Snapshot dashboard (default format: text) |
+| `uv run careeros report [--format {text,json}] [--profile PATH] [--saved-search NAME] [--limit N] [--grouped] [--no-feedback]` | Read-only Career Snapshot dashboard (default format: text) |
 | `uv run careeros group regroup [--database PATH]` | Recompute canonical duplicate groups (write; locks the DB) |
 | `uv run careeros group explain [--database PATH] [--group-id ID] [--limit N]` | Show canonical groups read-only |
 | `uv run careeros application set JOB_ID STATUS [--note TEXT] [--database PATH]` | Set/update a job's application status (write; locks the DB) |
@@ -66,7 +68,7 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros review show JOB_ID [--database PATH]` | Show the current review decision for one job (read-only) |
 | `uv run careeros review list [--decision D] [--limit N] [--database PATH]` | List review decisions, optionally filtered (read-only) |
 | `uv run careeros review history JOB_ID [--limit N] [--database PATH]` | Show the decision history for one job (read-only) |
-| `uv run careeros review next --profile PATH [--state S] [--min-score N] [--include-tracked] [--source S] [--location L] [--remote] [--grouped\|--no-grouped] [--limit N] [--format {text,json}] [--database PATH]` | Rank the personalized daily review queue (read-only) |
+| `uv run careeros review next --profile PATH [--state S] [--min-score N] [--include-tracked] [--source S] [--location L] [--remote] [--grouped\|--no-grouped] [--limit N] [--format {text,json}] [--no-feedback] [--database PATH]` | Rank the personalized daily review queue (read-only) |
 | `uv run python systemd/install.py --dry-run` | Preview systemd user-unit install (writes nothing) |
 | `uv run python systemd/install.py` | Install the systemd user service+timer (not enabled) |
 | `uv run python systemd/install.py --enable` | Install, then enable and start the timer |
@@ -360,6 +362,58 @@ contents beyond idempotent schema initialization. Exit codes: `0` success,
 `1` unknown job or database failure, `2` validation/usage error, `75` lock
 contention. The `report` Career Snapshot renders the review queue and its
 Overview counters using the shared review service (see below).
+
+## Review feedback
+
+`rank`, rank-mode `saved-search run`, `review next`, and the `report`
+recommendations/review-queue sections apply a conservative, bounded score
+adjustment derived from stored review decisions, so past judgments influence
+future recommendations without ever overriding the profile match. Feedback is
+**local workflow state only** and never contacts any external service.
+
+Fixed weights (documented constants in `src/careeros/ranking/feedback.py`,
+never candidate-profile fields):
+
+- `shortlist` contributes `+5`
+- `dismiss` contributes `-5`
+- `review_later` contributes `0` and never occupies a slot
+- at most **2** reviewed sources contribute, so the total adjustment is capped
+  at `+10` / `-10`
+
+Similarity is deliberately conservative and mirrors the duplicate-grouping
+primitives in `src/careeros/grouping/normalize.py` without modifying them:
+
+- normalized title compatibility is required (equal signature, or one a
+  token-prefix of the other);
+- company anchors similarity: equal companies are similar on compatible titles;
+  with different companies only sufficiently specific (two-or-more-token)
+  compatible titles count;
+- an explicit remote-status conflict vetoes similarity;
+- incompatible non-empty locations veto similarity;
+- explicitly disjoint employment types veto similarity;
+- skills are never used as a feedback-similarity channel;
+- a candidate never receives feedback from itself;
+- feedback never hard-excludes a candidate and can never bypass an existing
+  hard-exclusion veto (it only adds/subtracts bounded points from the raw
+  score).
+
+Sources are resolved per canonical duplicate group: cross-source duplicates
+contribute exactly once, represented by the lowest decided `jobs.id` (the same
+deterministic rule the review queue uses). The read-only adapter
+`src/careeros/review/feedback.py` builds the set once per command/report
+operation; nothing is written and no lock is taken.
+
+Opt-out: `rank`, `review next`, and `report` accept `--no-feedback`
+(feedback is on by default). There is no stored feedback table and no schema
+change; decisions stay anchored to `jobs.id`.
+
+Structured output: `rank --format {text,json}` (default text). JSON output
+exposes a `score_components` list per result (objects with `kind`, `label`,
+`points`, `is_veto`) plus the existing `score`/`match_score`/`reasons` keys.
+The default text output keeps the existing layout and adds a `Feedback:` line
+only when a non-zero feedback adjustment applies; it never shows the full
+component breakdown. `review next --format json` and `report --format json`
+carry the same `score_components` data.
 
 ## Candidate profile
 

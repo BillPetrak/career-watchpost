@@ -183,6 +183,17 @@ def test_search_respects_limit(tmp_path: Path) -> None:
     assert len(results) == 1
 
 
+def test_search_ties_break_deterministically_by_id(tmp_path: Path) -> None:
+    database_path = tmp_path / "careeros.sqlite3"
+
+    with connect(database_path) as connection:
+        initialize_schema(connection)
+        _seed_jobs(connection)
+        results = search_jobs(connection, "Python", limit=2)
+
+    assert [job.id for job in results] == [1, 2]
+
+
 def test_search_empty_database(tmp_path: Path) -> None:
     database_path = tmp_path / "careeros.sqlite3"
 

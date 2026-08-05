@@ -18,7 +18,8 @@ from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.reminders import StoredReminder
 from careeros.notifications.models import NotificationSummary
-from careeros.ranking.scorer import RankedGroup, RankedJob
+from careeros.ranking.feedback import FeedbackAdjustment
+from careeros.ranking.scorer import RankedGroup, RankedJob, ScoreComponent
 from careeros.source_stats.models import SourceStats
 from careeros.status import SourceStatus
 
@@ -99,6 +100,8 @@ class ReviewQueueItem:
     group: GroupedJob
     match_score: int
     reasons: tuple[str, ...]
+    components: tuple[ScoreComponent, ...] = ()
+    feedback: FeedbackAdjustment | None = None
 
 
 @dataclass(frozen=True)

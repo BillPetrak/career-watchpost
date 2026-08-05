@@ -17,7 +17,13 @@ from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.reminders import StoredReminder
 from careeros.notifications.models import NotificationSummary
-from careeros.ranking.scorer import RankedGroup, RankedJob
+from careeros.ranking.feedback import FeedbackAdjustment
+from careeros.ranking.scorer import (
+    RankedGroup,
+    RankedJob,
+    component_to_dict,
+    feedback_summary,
+)
 from careeros.reporting.models import (
     ACTION_ITEM_LABELS,
     ActionItem,
@@ -295,6 +301,7 @@ def _render_review(review: ReviewQueue) -> str:
         lines.append(f"     Source:   {', '.join(group.sources)}")
         if len(group.members) > 1:
             lines.append(f"     Group:    {len(group.members)} listings grouped")
+        lines.extend(_feedback_lines(item.feedback))
         lines.extend(_reason_lines(item.reasons))
     return "\n".join(lines)
 
@@ -354,6 +361,7 @@ def _ranked_job_lines(index: int, ranked: RankedJob) -> list[str]:
         f"     Location: {_location_display(job.location, job.remote_status)}",
         f"     Source:   {job.source}",
     ]
+    lines.extend(_feedback_lines(ranked.result.feedback))
     lines.extend(_reason_lines(ranked.reasons))
     return lines
 
@@ -369,6 +377,7 @@ def _ranked_group_lines(index: int, ranked: RankedGroup) -> list[str]:
     ]
     if len(group.members) > 1:
         lines.append(f"     Group:    {len(group.members)} listings grouped")
+    lines.extend(_feedback_lines(ranked.result.feedback))
     lines.extend(_reason_lines(ranked.reasons))
     return lines
 
@@ -380,6 +389,13 @@ def _reason_lines(reasons: tuple[str, ...]) -> list[str]:
     else:
         lines.append("       none")
     return lines
+
+
+def _feedback_lines(feedback: FeedbackAdjustment | None) -> list[str]:
+    """Return the text ``Feedback:`` line for an adjustment, or nothing."""
+    if feedback is None or feedback.points == 0:
+        return []
+    return [f"Feedback: {feedback_summary(feedback)}"]
 
 
 def _location_display(location: str | None, remote_status: str | None) -> str:
@@ -521,6 +537,9 @@ def _ranked_job_dict(ranked: RankedJob) -> dict[str, Any]:
         "match_score": ranked.match_score,
         "score": ranked.score,
         "reasons": list(ranked.reasons),
+        "score_components": [
+            component_to_dict(component) for component in ranked.result.components
+        ],
     }
 
 
@@ -540,6 +559,9 @@ def _ranked_group_dict(ranked: RankedGroup) -> dict[str, Any]:
         "match_score": ranked.match_score,
         "score": ranked.score,
         "reasons": list(ranked.reasons),
+        "score_components": [
+            component_to_dict(component) for component in ranked.result.components
+        ],
     }
 
 
@@ -625,6 +647,9 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
                     "group": _group_dict(item.group),
                     "match_score": item.match_score,
                     "reasons": list(item.reasons),
+                    "score_components": [
+                        component_to_dict(component) for component in item.components
+                    ],
                 }
                 for item in review.items
             ],

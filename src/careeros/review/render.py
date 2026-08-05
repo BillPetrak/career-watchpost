@@ -16,6 +16,8 @@ from typing import Any
 from careeros.applications.service import GroupTrackingInfo
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
+from careeros.ranking.feedback import FeedbackAdjustment
+from careeros.ranking.scorer import component_to_dict, feedback_summary
 from careeros.review.service import GroupDecision, QueueItem, QueueOutcome
 
 
@@ -106,11 +108,19 @@ def _queue_item_lines(index: int, item: QueueItem) -> list[str]:
     member_count = len(group.members)
     if member_count > 1:
         lines.append(f"   Group:    {member_count} listings grouped")
+    lines.extend(_feedback_lines(item.ranked.result.feedback))
     lines.append("   Reasons:")
     for reason in item.ranked.reasons:
         lines.append(f"     {reason}")
     lines.append("")
     return lines
+
+
+def _feedback_lines(feedback: FeedbackAdjustment | None) -> list[str]:
+    """Return the text ``Feedback:`` line for an adjustment, or nothing."""
+    if feedback is None or feedback.points == 0:
+        return []
+    return [f"   Feedback: {feedback_summary(feedback)}"]
 
 
 def _job_dict(job: StoredJob) -> dict[str, Any]:
@@ -154,6 +164,9 @@ def _queue_item_dict(item: QueueItem) -> dict[str, Any]:
         "match_score": item.ranked.match_score,
         "score": item.ranked.score,
         "reasons": list(item.ranked.reasons),
+        "score_components": [
+            component_to_dict(component) for component in item.ranked.result.components
+        ],
         "group": _group_dict(item.group),
         "application_status": item.application.status,
         "application_owner": (

@@ -69,6 +69,8 @@ from careeros.ranking.scorer import (
     MatchResult,
     RankedGroup,
     RankedJob,
+    component_to_dict,
+    feedback_summary,
 )
 from careeros.reminders.models import (
     REMINDER_KINDS,
@@ -95,6 +97,7 @@ from careeros.reminders.service import (
 from careeros.reporting.models import Report
 from careeros.reporting.render import render_report, render_report_json
 from careeros.reporting.service import build_report
+from careeros.review.feedback import build_feedback_set
 from careeros.review.models import (
     DECISION_VALUES,
     QUEUE_STATES,
@@ -115,6 +118,7 @@ from careeros.review.service import (
     set_decision,
 )
 from careeros.saved_searches.execution import (
+    RankOutcome,
     execute_rank,
     execute_search,
     rank_candidates,
@@ -571,6 +575,7 @@ def _render_rank_flat(
                 f"{_format_application_status(tracking_statuses.get(job.job.id))}"
             )
         _print_match_sections(job.result)
+        _print_feedback_line(job.result)
         print("   Reasons:")
         for reason in job.reasons:
             print(f"     {reason}")
@@ -623,10 +628,89 @@ def _render_rank_grouped(
         if member_count > 1:
             print(f"   Group:    {member_count} listings grouped")
         _print_match_sections(ranked_group.result)
+        _print_feedback_line(ranked_group.result)
         print("   Reasons:")
         for reason in ranked_group.reasons:
             print(f"     {reason}")
         print()
+
+
+def render_rank_json(outcome: RankOutcome) -> str:
+    """Render rank results as deterministic JSON carrying the same data.
+
+    The JSON always exposes the ``score_components`` breakdown for every result,
+    so the structured output is strictly more detailed than the default text
+    renderer (which keeps the existing human-readable layout).
+    """
+    return json.dumps(_rank_outcome_dict(outcome), indent=2, sort_keys=True) + "\n"
+
+
+def _job_dict(job: StoredJob) -> dict[str, object]:
+    """Serialize a stored job with the stable CareerOS job keys."""
+    return {
+        "id": job.id,
+        "source": job.source,
+        "source_job_id": job.source_job_id,
+        "title": job.title,
+        "company": job.company,
+        "location": job.location,
+        "remote_status": job.remote_status,
+        "employment_type": job.employment_type,
+        "published_at": job.published_at,
+        "url": job.url,
+    }
+
+
+def _group_dict(group: GroupedJob) -> dict[str, object]:
+    """Serialize a canonical group with the stable CareerOS group keys."""
+    return {
+        "group_id": group.group_id,
+        "representative": _job_dict(group.representative),
+        "members": [_job_dict(member) for member in group.members],
+        "sources": list(group.sources),
+        "urls": list(group.urls),
+    }
+
+
+def _ranked_job_dict(ranked: RankedJob) -> dict[str, object]:
+    """Serialize one scored flat result with its component breakdown."""
+    return {
+        "job": _job_dict(ranked.job),
+        "match_score": ranked.match_score,
+        "score": ranked.score,
+        "reasons": list(ranked.reasons),
+        "score_components": [
+            component_to_dict(component) for component in ranked.result.components
+        ],
+    }
+
+
+def _ranked_group_dict(ranked: RankedGroup) -> dict[str, object]:
+    """Serialize one scored grouped result with its component breakdown."""
+    return {
+        "group": _group_dict(ranked.group),
+        "match_score": ranked.match_score,
+        "score": ranked.score,
+        "reasons": list(ranked.reasons),
+        "score_components": [
+            component_to_dict(component) for component in ranked.result.components
+        ],
+    }
+
+
+def _rank_outcome_dict(outcome: RankOutcome) -> dict[str, object]:
+    """Serialize a rank outcome (flat or grouped) as one JSON object."""
+    return {
+        "grouped": outcome.grouped,
+        "candidate_count": (
+            outcome.grouped_candidate_count
+            if outcome.grouped
+            else outcome.flat_candidate_count
+        ),
+        "jobs": [_ranked_job_dict(ranked) for ranked in outcome.flat_ranked],
+        "groups": [_ranked_group_dict(ranked) for ranked in outcome.grouped_ranked],
+        "tracking_statuses": outcome.tracking_statuses,
+    }
 
 
 def run_group_regroup(database_path: Path) -> int:
@@ -1549,6 +1633,7 @@ def run_review_next(
     limit: int,
     grouped: bool,
     output_format: str,
+    use_feedback: bool = True,
 ) -> int:
     """Rank a personalized daily review queue (read-only, no lock)."""
     try:
@@ -1560,6 +1645,7 @@ def run_review_next(
     try:
         with connect(database_path) as connection:
             initialize_schema(connection)
+            feedback = build_feedback_set(connection) if use_feedback else None
             outcome = build_queue(
                 connection,
                 profile=profile,
@@ -1571,6 +1657,7 @@ def run_review_next(
                 remote=remote,
                 limit=limit,
                 grouped=grouped,
+                feedback=feedback,
             )
     except ReviewValidationError as error:
         print(str(error), file=sys.stderr)
@@ -1662,6 +1749,13 @@ def run_show(job_id: int, database_path: Path) -> int:
 _PREFERRED_MISSING_DISPLAY_CAP = 8
 
 
+def _print_feedback_line(result: MatchResult) -> None:
+    """Print the ``Feedback:`` line when a non-zero feedback adjustment applies."""
+    if result.feedback is None or result.feedback.points == 0:
+        return
+    print(f"   Feedback: {feedback_summary(result.feedback)}")
+
+
 def _print_match_sections(result: MatchResult) -> None:
     """Print the Matched / Missing or unmatched summary for a scored result."""
     print("     Matched:")
@@ -1737,6 +1831,8 @@ def run_rank(
     untracked: bool = False,
     include_statuses: Sequence[str] = (),
     exclude_statuses: Sequence[str] = (),
+    output_format: str = "text",
+    use_feedback: bool = True,
 ) -> int:
     """Search jobs and rank them against a candidate profile."""
     try:
@@ -1748,6 +1844,7 @@ def run_rank(
     try:
         with connect(database_path) as connection:
             initialize_schema(connection)
+            feedback = build_feedback_set(connection) if use_feedback else None
             outcome = rank_candidates(
                 connection,
                 query=keyword,
@@ -1761,10 +1858,15 @@ def run_rank(
                 untracked=untracked,
                 include_statuses=tuple(include_statuses),
                 exclude_statuses=tuple(exclude_statuses),
+                feedback=feedback,
             )
     except (OSError, sqlite3.Error) as error:
         print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
+
+    if output_format == "json":
+        print(render_rank_json(outcome), end="")
+        return 0
 
     if outcome.grouped:
         _render_rank_grouped(
@@ -1972,6 +2074,11 @@ def run_report(
                 saved_search=saved_search,
                 limit=arguments.limit,
                 grouped=arguments.grouped,
+                feedback=(
+                    build_feedback_set(connection)
+                    if not arguments.no_feedback
+                    else None
+                ),
             )
     except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
         print(f"Failed to load profile: {error}", file=sys.stderr)
@@ -2365,6 +2472,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only show results with a match score of at least N (0-100).",
     )
     rank_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: text).",
+    )
+    rank_parser.add_argument(
+        "--no-feedback",
+        action="store_true",
+        help="Disable review-feedback adjustments to match scores.",
+    )
+    rank_parser.add_argument(
         "--database",
         type=Path,
         default=DEFAULT_DATABASE_PATH,
@@ -2473,6 +2591,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("text", "json"),
         default="text",
         help="Output format (default: text).",
+    )
+    report_parser.add_argument(
+        "--no-feedback",
+        action="store_true",
+        help="Disable review-feedback adjustments to recommended scores.",
     )
 
     source_parser = subparsers.add_parser(
@@ -2706,6 +2829,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("text", "json"),
         default="text",
         help="Output format (default: text).",
+    )
+    next_parser.add_argument(
+        "--no-feedback",
+        action="store_true",
+        help="Disable review-feedback adjustments to queue scores.",
     )
     next_parser.add_argument(
         "--database",
@@ -3573,7 +3701,12 @@ def _run_saved_search_run(arguments: argparse.Namespace) -> int:
                     )
                     return 1
                 profile = load_profile(Path(search.profile_path))
-                rank_outcome = execute_rank(connection, search, profile=profile)
+                rank_outcome = execute_rank(
+                    connection,
+                    search,
+                    profile=profile,
+                    feedback=build_feedback_set(connection),
+                )
             else:
                 search_outcome = execute_search(connection, search)
     except FileNotFoundError as error:
@@ -3782,6 +3915,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             untracked=arguments.untracked,
             include_statuses=arguments.status or (),
             exclude_statuses=arguments.exclude_status or (),
+            output_format=arguments.format,
+            use_feedback=not arguments.no_feedback,
         )
 
     if arguments.command == "profile":
@@ -3877,6 +4012,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             limit=arguments.limit,
             grouped=arguments.grouped,
             output_format=arguments.format,
+            use_feedback=not arguments.no_feedback,
         )
 
     if arguments.command == "saved-search":

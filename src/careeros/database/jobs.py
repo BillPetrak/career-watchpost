@@ -105,7 +105,7 @@ def search_jobs(
         SELECT {_SELECT_COLUMNS}
         FROM jobs
         WHERE {" AND ".join(conditions)}
-        ORDER BY published_at DESC NULLS LAST
+        ORDER BY published_at DESC NULLS LAST, id ASC
         LIMIT ?
         """,
         params,

@@ -61,6 +61,7 @@ from careeros.database.review import (
 from careeros.database.review import (
     list_decisions as _list_decisions,
 )
+from careeros.ranking.feedback import FeedbackSet
 from careeros.ranking.scorer import CandidateProfile, RankedGroup, score_groups
 from careeros.review.models import (
     UnknownJobError,
@@ -414,6 +415,7 @@ def build_queue(
     remote: bool | None = None,
     limit: int = 20,
     grouped: bool = True,
+    feedback: FeedbackSet | None = None,
 ) -> QueueOutcome:
     """Build a ranked review queue (read-only).
 
@@ -423,6 +425,11 @@ def build_queue(
     the shared scorer; ``min_score`` trims the ranked list; only then is the
     final ``limit`` applied. This guarantees the ordering is identical to the
     existing rank/report scorer ordering.
+
+    ``feedback`` carries the review-feedback set (built once by the caller);
+    None disables review feedback. Since the default ``state`` excludes
+    already-reviewed opportunities, candidates never receive feedback from
+    their own decisions.
     """
     validate_queue_state(state)
     if limit < 1:
@@ -472,6 +479,7 @@ def build_queue(
     ranked: Sequence[RankedGroup] = score_groups(
         [entry[0] for entry in eligible],
         profile,
+        feedback=feedback,
     )
     if min_score > 0:
         ranked = [entry for entry in ranked if entry.match_score >= min_score]

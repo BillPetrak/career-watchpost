@@ -17,6 +17,7 @@ from careeros.database.applications import StoredApplication
 from careeros.database.groups import grouping_summary
 from careeros.database.jobs import _SELECT_COLUMNS, _stored_job_from_row
 from careeros.notifications.service import notification_summary
+from careeros.ranking.feedback import FeedbackSet
 from careeros.ranking.scorer import CandidateProfile
 from careeros.reminders.service import (
     count_due_today_reminders,
@@ -136,17 +137,21 @@ def _build_recommendations(
     saved_search: SavedSearch | None,
     limit: int,
     grouped: bool,
+    feedback: FeedbackSet | None,
 ) -> Recommendations:
     """Score opportunities for the report using the shared ranking engine.
 
     A saved rank search governs its own query, filters, min score, and result
     limit (the report's ``limit`` only ever trims afterwards). Without a saved
     search, ``--profile`` ranks every untracked job. Without either, the
-    section is honestly skipped with a note.
+    section is honestly skipped with a note. ``feedback`` is shared with the
+    review queue so the database is queried once per report.
     """
     if saved_search is not None:
         assert profile is not None
-        outcome = execute_rank(connection, saved_search, profile=profile)
+        outcome = execute_rank(
+            connection, saved_search, profile=profile, feedback=feedback
+        )
         min_score = saved_search.min_score or 0
         if outcome.grouped:
             return Recommendations(
@@ -178,6 +183,7 @@ def _build_recommendations(
             grouped=grouped,
             untracked=True,
             limit=limit,
+            feedback=feedback,
         )
         if outcome.grouped:
             return Recommendations(
@@ -244,6 +250,7 @@ def _build_review_queue(
     saved_search: SavedSearch | None,
     limit: int,
     grouped: bool,
+    feedback: FeedbackSet | None,
 ) -> ReviewQueue:
     """Rank the daily review queue for the report (read-only).
 
@@ -252,7 +259,8 @@ def _build_review_queue(
     applications excluded, scored with the report's effective profile. A saved
     search supplies the profile but not its query/filters, keeping the queue a
     pure personalized daily feed rather than a stored-workflow rerun. Without a
-    profile the section is honestly skipped with a note.
+    profile the section is honestly skipped with a note. ``feedback`` is shared
+    with the recommendations so the database is queried once per report.
     """
     if profile is None:
         return ReviewQueue(
@@ -272,6 +280,7 @@ def _build_review_queue(
         include_tracked=False,
         limit=limit,
         grouped=grouped,
+        feedback=feedback,
     )
 
     if saved_search is not None:
@@ -288,6 +297,8 @@ def _build_review_queue(
                 group=item.group,
                 match_score=item.ranked.match_score,
                 reasons=item.ranked.reasons,
+                components=item.ranked.result.components,
+                feedback=item.ranked.result.feedback,
             )
             for item in outcome.items
         ),
@@ -304,11 +315,14 @@ def build_report(
     saved_search: SavedSearch | None = None,
     limit: int = 10,
     grouped: bool = False,
+    feedback: FeedbackSet | None = None,
 ) -> Report:
     """Build a complete Career Snapshot from stored state (read-only).
 
     ``now`` is captured once by the caller and used for every collection
-    status and due calculation in the report.
+    status and due calculation in the report. ``feedback`` carries the
+    review-feedback set shared by the review queue and the recommendations
+    (built once by the caller); None disables review feedback.
     """
     source_snapshots = tuple(build_statuses(connection, now=now))
     due_sources = tuple(status.source for status in source_snapshots if status.due)
@@ -361,6 +375,7 @@ def build_report(
         saved_search=saved_search,
         limit=limit,
         grouped=grouped,
+        feedback=feedback,
     )
 
     recommendations = _build_recommendations(
@@ -369,6 +384,7 @@ def build_report(
         saved_search=saved_search,
         limit=limit,
         grouped=grouped,
+        feedback=feedback,
     )
 
     return Report(

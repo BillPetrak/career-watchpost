@@ -24,6 +24,7 @@ from careeros.applications.service import (
 )
 from careeros.database.groups import GroupedJob, search_grouped
 from careeros.database.jobs import StoredJob, search_jobs
+from careeros.ranking.feedback import FeedbackSet
 from careeros.ranking.scorer import (
     CandidateProfile,
     RankedGroup,
@@ -185,8 +186,15 @@ def rank_candidates(
     untracked: bool = False,
     include_statuses: tuple[str, ...] = (),
     exclude_statuses: tuple[str, ...] = (),
+    feedback: FeedbackSet | None = None,
 ) -> RankOutcome:
-    """Run the shared flat/grouped rank pipeline (search + score + min filter)."""
+    """Run the shared flat/grouped rank pipeline (search + score + min filter).
+
+    ``feedback`` carries the review-feedback set, built once by the caller for
+    the whole command/report operation; None disables review feedback entirely.
+    The set is shared by every candidate so the database is queried exactly
+    once per command.
+    """
     outcome = search_candidates(
         connection,
         query=query,
@@ -202,7 +210,9 @@ def rank_candidates(
 
     if grouped:
         candidate_count = len(outcome.groups)
-        ranked_groups: Sequence[RankedGroup] = score_groups(outcome.groups, profile)
+        ranked_groups: Sequence[RankedGroup] = score_groups(
+            outcome.groups, profile, feedback=feedback
+        )
         if min_score > 0:
             ranked_groups = [
                 item for item in ranked_groups if item.match_score >= min_score
@@ -217,7 +227,9 @@ def rank_candidates(
         )
 
     candidate_count = len(outcome.flat)
-    ranked_jobs: Sequence[RankedJob] = score_jobs(outcome.flat, profile)
+    ranked_jobs: Sequence[RankedJob] = score_jobs(
+        outcome.flat, profile, feedback=feedback
+    )
     if min_score > 0:
         ranked_jobs = [item for item in ranked_jobs if item.match_score >= min_score]
     return RankOutcome(
@@ -254,6 +266,7 @@ def execute_rank(
     definition: SavedSearch,
     *,
     profile: CandidateProfile,
+    feedback: FeedbackSet | None = None,
 ) -> RankOutcome:
     """Run a stored saved search in rank mode (thin definition adapter)."""
     return rank_candidates(
@@ -269,4 +282,5 @@ def execute_rank(
         untracked=definition.untracked,
         include_statuses=definition.include_statuses,
         exclude_statuses=definition.exclude_statuses,
+        feedback=feedback,
     )

@@ -9,6 +9,13 @@ renders those results; it never reimplements scoring logic.
 Scoring is a deterministic heuristic, not a probability of receiving an offer
 and not an assessment of a person's overall suitability. Every component and
 penalty below is applied identically for the same inputs.
+
+Every scoring decision is recorded as a :class:`ScoreComponent` on the
+:class:`MatchResult`; ``reasons`` is derived from those components so the
+displayed explanation always matches the computed score. Optional review
+feedback (:mod:`careeros.ranking.feedback`) is applied conservatively as a
+bounded additive adjustment and exposed both as a ``feedback`` component and as
+the ``MatchResult.feedback`` value.
 """
 
 from __future__ import annotations
@@ -20,6 +27,14 @@ from dataclasses import dataclass
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.runs import parse_utc
+from careeros.ranking.feedback import (
+    CandidateJob,
+    FeedbackAdjustment,
+    FeedbackSet,
+    compute_feedback_adjustment,
+    feedback_label,
+    source_points,
+)
 from careeros.ranking.lexicon import term_matches
 from careeros.text import clean_description, has_phrase
 
@@ -96,6 +111,24 @@ class MatchFacts:
 
 
 @dataclass(frozen=True)
+class ScoreComponent:
+    """One explainable additive (or veto) component of a match score.
+
+    ``kind`` is a stable machine key (``title``, ``skill``, ``location``,
+    ``remote``, ``employment``, ``seniority``, ``excluded``,
+    ``missing_required``, ``feedback``, ``hard_excluded``). ``label`` is the
+    human-readable line shown to users. ``points`` is the signed contribution to
+    the raw score (``0`` for a veto). ``is_veto`` marks hard exclusions, which
+    force the displayed score to 0 while leaving the raw score untouched.
+    """
+
+    kind: str
+    label: str
+    points: int
+    is_veto: bool = False
+
+
+@dataclass(frozen=True)
 class MatchResult:
     """The outcome of scoring one job/group, with explainable facts.
 
@@ -103,10 +136,14 @@ class MatchResult:
     exceed 100; ``match_score`` is the user-facing 0-100 value. The raw score is
     retained for future extensibility; current display and ordering use
     ``match_score``.
+
+    ``components`` is the ordered, single source of truth for every explanation
+    (including any review feedback adjustment); ``reasons`` is derived from it.
+    ``feedback`` holds the applied review-feedback adjustment, or None when no
+    non-zero feedback applied.
     """
 
     score: int
-    reasons: tuple[str, ...]
     matched_titles: tuple[str, ...]
     matched_skills: tuple[str, ...]
     missing_required_skills: tuple[str, ...]
@@ -120,6 +157,22 @@ class MatchResult:
     excluded_terms: tuple[str, ...]
     hard_excluded_terms: tuple[str, ...]
     description_unavailable: bool
+    components: tuple[ScoreComponent, ...] = ()
+    feedback: FeedbackAdjustment | None = None
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        """Ordered human-readable explanation lines.
+
+        Review-feedback components are excluded here because they are surfaced
+        separately (the ``Feedback:`` line in text, ``score_components`` in
+        JSON); every other component's label is shown verbatim.
+        """
+        return tuple(
+            component.label
+            for component in self.components
+            if component.kind != "feedback"
+        )
 
     @property
     def match_score(self) -> int:
@@ -237,14 +290,96 @@ def _detect_seniority(titles: tuple[str, ...]) -> list[str]:
     return detected
 
 
-def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
+def feedback_summary(adjustment: FeedbackAdjustment) -> str:
+    """A human-readable description of one feedback adjustment.
+
+    Joins every contributing reviewed opportunity (``review_later`` sources are
+    never included) with its signed points, e.g. ``similar to shortlisted job 3
+    (Senior Engineer, Acme) (+5)``.
+    """
+    parts = [
+        f"{feedback_label(source)} ({source_points(source):+d})"
+        for source in adjustment.sources
+    ]
+    return "; ".join(parts)
+
+
+def component_to_dict(component: ScoreComponent) -> dict[str, object]:
+    """Serialize one score component for structured JSON output."""
+    return {
+        "kind": component.kind,
+        "label": component.label,
+        "points": component.points,
+        "is_veto": component.is_veto,
+    }
+
+
+def _candidate_from_job(job: StoredJob) -> CandidateJob:
+    """Build feedback-similarity evidence for one stored job."""
+    return CandidateJob(
+        job_ids=frozenset({job.id}),
+        titles=(job.title,),
+        company=job.company,
+        location=job.location,
+        remote_status=job.remote_status,
+        employment_type=job.employment_type,
+    )
+
+
+def _candidate_from_group(group: GroupedJob) -> CandidateJob:
+    """Build feedback-similarity evidence for a canonical group.
+
+    Mirrors ``_facts_from_group``: every member contributes titles so a
+    compatible title is found even when a source spells it differently, and the
+    remaining evidence uses the first non-empty member value with the same
+    remote/employment unioning the group scorer applies.
+    """
+    members = group.members or (group.representative,)
+    return CandidateJob(
+        job_ids=frozenset(member.id for member in members),
+        titles=tuple(dict.fromkeys(member.title for member in members)),
+        company=next(
+            (member.company for member in members if member.company),
+            None,
+        ),
+        location=next(
+            (member.location for member in members if member.location),
+            group.representative.location,
+        ),
+        remote_status=(
+            "remote"
+            if any(member.remote_status == "remote" for member in members)
+            else group.representative.remote_status
+        ),
+        employment_type=", ".join(
+            dict.fromkeys(
+                member.employment_type for member in members if member.employment_type
+            )
+        )
+        or None,
+    )
+
+
+def score_facts(
+    facts: MatchFacts,
+    profile: CandidateProfile,
+    *,
+    feedback: FeedbackSet | None = None,
+    candidate: CandidateJob | None = None,
+) -> MatchResult:
     """Score one job/group's facts against a profile (deterministic).
 
     Missing job data is neutral: absent description, location, remote status,
     employment type, or seniority simply contributes no points and no penalty.
     Hard exclusions are the only thing that forces the displayed score to 0.
+
+    When ``feedback`` is given, a conservative review-feedback adjustment is
+    applied on top of the raw score (see :mod:`careeros.ranking.feedback`);
+    ``candidate`` supplies the similarity evidence (single job or group). The
+    feedback adjustment never hard-excludes and can never bypass a hard
+    exclusion.
     """
-    reasons: list[str] = []
+    components: list[ScoreComponent] = []
     score = 0
 
     cleaned_description = _description_text(facts.description)
@@ -265,7 +400,13 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
                 break
     for desired in matched_titles:
         score += _TITLE_POINTS
-        reasons.append(f"Title matches '{desired}' (+{_TITLE_POINTS})")
+        components.append(
+            ScoreComponent(
+                kind="title",
+                label=f"Title matches '{desired}' (+{_TITLE_POINTS})",
+                points=_TITLE_POINTS,
+            )
+        )
 
     # Skill match: the union of preferred and required skills, each counted once
     # no matter how often a source (or several group members) mentions it.
@@ -282,7 +423,13 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
                 break
     for skill in matched_skills:
         score += _SKILL_POINTS
-        reasons.append(f"Has skill '{skill}' (+{_SKILL_POINTS})")
+        components.append(
+            ScoreComponent(
+                kind="skill",
+                label=f"Has skill '{skill}' (+{_SKILL_POINTS})",
+                points=_SKILL_POINTS,
+            )
+        )
 
     # Missing required skills: penalized only when the posting has usable
     # description text, so an absent description reads as "unavailable", never
@@ -297,8 +444,15 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
         if not description_unavailable:
             for skill in missing_required[:_MISSING_REQUIRED_CAP]:
                 score += _MISSING_REQUIRED_PENALTY
-                reasons.append(
-                    f"Missing required skill '{skill}' ({_MISSING_REQUIRED_PENALTY})"
+                components.append(
+                    ScoreComponent(
+                        kind="missing_required",
+                        label=(
+                            f"Missing required skill '{skill}' "
+                            f"({_MISSING_REQUIRED_PENALTY})"
+                        ),
+                        points=_MISSING_REQUIRED_PENALTY,
+                    )
                 )
 
     # Location match (single, token-subset, first preferred location wins).
@@ -307,7 +461,13 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
         if _location_matches(facts.location, preferred):
             location_matched = preferred
             score += _LOCATION_POINTS
-            reasons.append(f"Location matches '{preferred}' (+{_LOCATION_POINTS})")
+            components.append(
+                ScoreComponent(
+                    kind="location",
+                    label=f"Location matches '{preferred}' (+{_LOCATION_POINTS})",
+                    points=_LOCATION_POINTS,
+                )
+            )
             break
 
     # Remote preference: exact match awards points; a conflict is neutral. The
@@ -320,7 +480,13 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
     )
     if remote_matched:
         score += _REMOTE_POINTS
-        reasons.append(f"Remote position (+{_REMOTE_POINTS})")
+        components.append(
+            ScoreComponent(
+                kind="remote",
+                label=f"Remote position (+{_REMOTE_POINTS})",
+                points=_REMOTE_POINTS,
+            )
+        )
 
     # Employment type: +5 on match, -5 only on an explicit disjoint type, and
     # neutral when the job does not state an employment type.
@@ -344,16 +510,28 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
             if hit is not None:
                 employment_matched = hit
                 score += _EMPLOYMENT_POINTS
-                reasons.append(
-                    f"Employment type matches '{hit}' (+{_EMPLOYMENT_POINTS})"
+                components.append(
+                    ScoreComponent(
+                        kind="employment",
+                        label=(
+                            f"Employment type matches '{hit}' (+{_EMPLOYMENT_POINTS})"
+                        ),
+                        points=_EMPLOYMENT_POINTS,
+                    )
                 )
             else:
                 employment_mismatch = True
                 score -= _EMPLOYMENT_POINTS
-                reasons.append(
-                    f"Employment type mismatch (prefers "
-                    f"{', '.join(profile.preferred_employment_types)}) "
-                    f"(-{_EMPLOYMENT_POINTS})"
+                components.append(
+                    ScoreComponent(
+                        kind="employment",
+                        label=(
+                            f"Employment type mismatch (prefers "
+                            f"{', '.join(profile.preferred_employment_types)}) "
+                            f"(-{_EMPLOYMENT_POINTS})"
+                        ),
+                        points=-_EMPLOYMENT_POINTS,
+                    )
                 )
 
     # Seniority: +5 on an accepted level, -5 only on an explicit conflicting
@@ -381,13 +559,26 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
         if hit is not None:
             seniority_matched = hit
             score += _SENIORITY_POINTS
-            reasons.append(f"Seniority matches '{hit}' (+{_SENIORITY_POINTS})")
+            components.append(
+                ScoreComponent(
+                    kind="seniority",
+                    label=f"Seniority matches '{hit}' (+{_SENIORITY_POINTS})",
+                    points=_SENIORITY_POINTS,
+                )
+            )
         elif detected:
             seniority_mismatch = True
             score -= _SENIORITY_POINTS
-            reasons.append(
-                f"Seniority mismatch (posting is '{detected[0]}', profile prefers "
-                f"{', '.join(profile.preferred_seniority)}) (-{_SENIORITY_POINTS})"
+            components.append(
+                ScoreComponent(
+                    kind="seniority",
+                    label=(
+                        f"Seniority mismatch (posting is '{detected[0]}', profile "
+                        f"prefers {', '.join(profile.preferred_seniority)}) "
+                        f"(-{_SENIORITY_POINTS})"
+                    ),
+                    points=-_SENIORITY_POINTS,
+                )
             )
 
     # Soft excluded terms: a bounded penalty, matching the previous milestone.
@@ -403,7 +594,13 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
                 break
     for term in matched_excluded:
         score += _EXCLUDED_PENALTY
-        reasons.append(f"Contains excluded term '{term}' ({_EXCLUDED_PENALTY})")
+        components.append(
+            ScoreComponent(
+                kind="excluded",
+                label=f"Contains excluded term '{term}' ({_EXCLUDED_PENALTY})",
+                points=_EXCLUDED_PENALTY,
+            )
+        )
 
     # Hard exclusions: explicit profile terms that force the displayed score to
     # 0. The raw score is kept as computed for future extensibility.
@@ -411,9 +608,15 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
     for term in profile.hard_excluded_terms:
         if term not in matched_hard and term_matches(term, haystack):
             matched_hard.append(term)
-    if matched_hard:
-        for term in matched_hard:
-            reasons.append(f"Hard excluded: contains '{term}'")
+    for term in matched_hard:
+        components.append(
+            ScoreComponent(
+                kind="hard_excluded",
+                label=f"Hard excluded: contains '{term}'",
+                points=0,
+                is_veto=True,
+            )
+        )
 
     required_set = set(profile.required_skills)
     preferred_not_observed = [
@@ -422,9 +625,28 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
         if skill not in matched_skill_set and skill not in required_set
     ]
 
+    # Review feedback: a conservative bounded adjustment from decided groups.
+    # Never a veto; only applied when at least one similar source contributes
+    # non-zero points. The candidate's own decisions are excluded inside
+    # ``compute_feedback_adjustment``.
+    feedback_adjustment: FeedbackAdjustment | None = None
+    if feedback is not None:
+        if candidate is None:
+            raise ValueError("feedback requires candidate evidence")
+        adjustment = compute_feedback_adjustment(candidate, feedback.sources)
+        if adjustment.points != 0:
+            score += adjustment.points
+            components.append(
+                ScoreComponent(
+                    kind="feedback",
+                    label=feedback_summary(adjustment),
+                    points=adjustment.points,
+                )
+            )
+            feedback_adjustment = adjustment
+
     return MatchResult(
         score=score,
-        reasons=tuple(reasons),
         matched_titles=tuple(matched_titles),
         matched_skills=tuple(matched_skills),
         missing_required_skills=tuple(missing_required),
@@ -438,6 +660,8 @@ def score_facts(facts: MatchFacts, profile: CandidateProfile) -> MatchResult:
         excluded_terms=tuple(matched_excluded),
         hard_excluded_terms=tuple(matched_hard),
         description_unavailable=description_unavailable,
+        components=tuple(components),
+        feedback=feedback_adjustment,
     )
 
 
@@ -453,9 +677,22 @@ def _facts_from_job(job: StoredJob) -> MatchFacts:
     )
 
 
-def score_job(job: StoredJob, profile: CandidateProfile) -> RankedJob:
+def score_job(
+    job: StoredJob,
+    profile: CandidateProfile,
+    *,
+    feedback: FeedbackSet | None = None,
+) -> RankedJob:
     """Score a single job against a candidate profile."""
-    return RankedJob(job=job, result=score_facts(_facts_from_job(job), profile))
+    return RankedJob(
+        job=job,
+        result=score_facts(
+            _facts_from_job(job),
+            profile,
+            feedback=feedback,
+            candidate=_candidate_from_job(job),
+        ),
+    )
 
 
 def _publish_key(published_at: str | None) -> tuple[int, int]:
@@ -471,13 +708,15 @@ def _publish_key(published_at: str | None) -> tuple[int, int]:
 def score_jobs(
     jobs: Iterable[StoredJob],
     profile: CandidateProfile,
+    *,
+    feedback: FeedbackSet | None = None,
 ) -> list[RankedJob]:
     """Score multiple jobs, sorted deterministically.
 
     Ordering: descending match score, then publication time (newest first,
     unknown last), then ascending job ID.
     """
-    ranked = [score_job(job, profile) for job in jobs]
+    ranked = [score_job(job, profile, feedback=feedback) for job in jobs]
     ranked.sort(
         key=lambda rj: (
             -rj.match_score,
@@ -540,22 +779,37 @@ def _newest_published(members: tuple[StoredJob, ...]) -> str | None:
     return best_value
 
 
-def score_group(group: GroupedJob, profile: CandidateProfile) -> RankedGroup:
+def score_group(
+    group: GroupedJob,
+    profile: CandidateProfile,
+    *,
+    feedback: FeedbackSet | None = None,
+) -> RankedGroup:
     """Score a canonical group against a candidate profile using all members."""
     facts = _facts_from_group(group)
-    return RankedGroup(group=group, result=score_facts(facts, profile))
+    return RankedGroup(
+        group=group,
+        result=score_facts(
+            facts,
+            profile,
+            feedback=feedback,
+            candidate=_candidate_from_group(group),
+        ),
+    )
 
 
 def score_groups(
     groups: Iterable[GroupedJob],
     profile: CandidateProfile,
+    *,
+    feedback: FeedbackSet | None = None,
 ) -> list[RankedGroup]:
     """Score multiple groups, sorted deterministically.
 
     Ordering mirrors flat ranking: descending match score, then newest member
     publication time, then the representative's (lowest) job ID.
     """
-    ranked = [score_group(group, profile) for group in groups]
+    ranked = [score_group(group, profile, feedback=feedback) for group in groups]
     ranked.sort(
         key=lambda rg: (
             -rg.match_score,
