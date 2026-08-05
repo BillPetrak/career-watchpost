@@ -18,6 +18,7 @@ _EXPECTED_ORDER = (
     "jobicy",
     "remotive",
     "workingnomads",
+    "himalayas",
 )
 
 
@@ -92,6 +93,7 @@ def test_registry_defines_stable_execution_order() -> None:
         "jobicy",
         "remotive",
         "workingnomads",
+        "himalayas",
     ]
 
 
@@ -212,8 +214,8 @@ def test_aggregate_totals_equal_sum_of_results(tmp_path: Path) -> None:
 
     assert len(results) == len(_EXPECTED_ORDER)
     assert all(result.succeeded for result in results)
-    assert sum(result.fetched for result in results) == 1 + 1 + 2 + 3 + 1 + 1
-    assert sum(result.inserted for result in results) == 1 + 1 + 2 + 3 + 1 + 1
+    assert sum(result.fetched for result in results) == 1 + 1 + 2 + 3 + 1 + 1 + 1
+    assert sum(result.inserted for result in results) == 1 + 1 + 2 + 3 + 1 + 1 + 1
     assert sum(result.updated for result in results) == 0
 
 
@@ -233,6 +235,7 @@ def test_failing_first_source_does_not_block_later(tmp_path: Path) -> None:
     assert results[0].succeeded is False
     assert results[0].error == "RuntimeError: boom"
     assert [result.succeeded for result in results[1:]] == [
+        True,
         True,
         True,
         True,
@@ -264,6 +267,7 @@ def test_failing_middle_source_does_not_block_later(tmp_path: Path) -> None:
         True,
         True,
         True,
+        True,
     ]
     assert results[2].source == "weworkremotely"
     assert results[2].error == "RuntimeError: boom"
@@ -287,6 +291,7 @@ def test_failed_source_does_not_roll_back_previous_work(tmp_path: Path) -> None:
 
     assert [row["source"] for row in rows] == [
         "arbeitnow",
+        "himalayas",
         "jobicy",
         "remotive",
         "weworkremotely",
@@ -389,8 +394,8 @@ def test_collect_all_success_returns_0(
     for source in _EXPECTED_ORDER:
         assert source in captured.out
     assert "Status:   success" in captured.out
-    assert "Sources attempted: 6" in captured.out
-    assert "Succeeded:         6" in captured.out
+    assert "Sources attempted: 7" in captured.out
+    assert "Succeeded:         7" in captured.out
     assert "Failed:            0" in captured.out
 
 
@@ -412,7 +417,7 @@ def test_one_source_failure_returns_1_and_reports_source(
     assert exit_code == 1
     assert "jobicy" in captured.out
     assert "Error:  RuntimeError: boom" in captured.out
-    assert "Succeeded:         5" in captured.out
+    assert "Succeeded:         6" in captured.out
     assert "Failed:            1" in captured.out
     assert "jobicy collection failed: RuntimeError: boom" in captured.err
 
@@ -434,7 +439,7 @@ def test_collect_all_empty_source_is_success(
 
     assert exit_code == 0
     assert "Fetched:  0" in captured.out
-    assert "Succeeded:         6" in captured.out
+    assert "Succeeded:         7" in captured.out
     assert "Failed:            0" in captured.out
 
 

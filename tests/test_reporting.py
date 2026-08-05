@@ -183,7 +183,7 @@ def test_empty_database_report(tmp_path: Path) -> None:
     assert report.actions.awaiting_progress == ()
     assert report.recommendations.source == "none"
     assert report.recommendations.note is not None
-    assert len(report.health.per_source) == 6
+    assert len(report.health.per_source) == 7
 
 
 def test_overview_counts(tmp_path: Path) -> None:
@@ -362,6 +362,7 @@ def test_collection_health_reports_success_and_due(tmp_path: Path) -> None:
         "weworkremotely",
         "remotive",
         "workingnomads",
+        "himalayas",
     )
 
 
@@ -617,7 +618,7 @@ def test_render_json_matches_text_data(tmp_path: Path) -> None:
     assert payload["application_pipeline"]["status_counts"]["interview"] == 1
     assert payload["action_items"]["interview"][0]["status"] == "interview"
     assert payload["recommendations"]["source"] == "none"
-    assert len(payload["collection_health"]["sources"]) == 6
+    assert len(payload["collection_health"]["sources"]) == 7
 
 
 def test_render_text_mentions_career_snapshot(tmp_path: Path) -> None:

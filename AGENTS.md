@@ -22,6 +22,7 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros collect arbeitnow --database /tmp/test.db` | Override DB path |
 | `uv run careeros collect remotive --limit 10` | Collect jobs from Remotive |
 | `uv run careeros collect workingnomads --limit 10` | Collect jobs from Working Nomads |
+| `uv run careeros collect himalayas --limit 10` | Collect jobs from Himalayas |
 | `uv run careeros collect all --limit 25` | Collect from all sources sequentially |
 | `uv run careeros collect all --limit 25 --database /tmp/careeros_all.db` | Collect all sources into a custom DB |
 | `uv run careeros collect due --limit 25` | Collect only sources whose polling interval has expired |
@@ -72,7 +73,7 @@ Run order: **lint → mypy → test** (all independent; can run in parallel).
 `collect all` runs each registered source sequentially, once per invocation, in
 registry order, and applies `--limit` per source. Respect provider polling
 limits — do not run repeated all-source collections more often than the most
-restrictive source permits (Jobicy: at most once per hour).
+restrictive source permits (Himalayas: at most once per day).
 
 `collect due` collects only sources whose last completed run (success or
 failure) is older than their polling interval. A source with no completed run
@@ -80,7 +81,9 @@ is due immediately, and a failed run delays the next automatic attempt by
 exactly one interval. Polling intervals live in
 `src/careeros/collection_policies.py` (jobicy: 60 minutes, documented;
 remotive: 6 hours, documented per Remotive's "no more than four times a day"
-guidance; arbeitnow/remoteok/weworkremotely/workingnomads: provisional
+guidance; himalayas: 24 hours, documented because the feed refreshes every 24
+hours and the provider states there is no benefit to polling more than once
+per day; arbeitnow/remoteok/weworkremotely/workingnomads: provisional
 defaults). The workingnomads collector targets an undocumented internal
 Elasticsearch search endpoint (`POST https://www.workingnomads.com/jobsapi/_search`)
 that powers the public listing pages; it may change without notice, and its

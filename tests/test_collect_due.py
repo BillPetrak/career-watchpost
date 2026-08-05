@@ -21,6 +21,7 @@ _ORDER = (
     "jobicy",
     "remotive",
     "workingnomads",
+    "himalayas",
 )
 
 
@@ -158,6 +159,7 @@ def test_collect_due_skips_recent_sources(tmp_path: Path) -> None:
         "weworkremotely",
         "remotive",
         "workingnomads",
+        "himalayas",
     ]
     assert fakes["jobicy"].calls == 0
     assert all(fakes[result.source].calls == 1 for result in results)
@@ -303,8 +305,8 @@ def test_collect_due_cli_all_due_success(
 
     assert exit_code == 0
     assert "Due-source collection complete" in captured.out
-    assert "Sources attempted: 6" in captured.out
-    assert "Succeeded:         6" in captured.out
+    assert "Sources attempted: 7" in captured.out
+    assert "Succeeded:         7" in captured.out
     assert "Status:   success" in captured.out
     for source in _ORDER:
         assert fakes[source].calls == 1

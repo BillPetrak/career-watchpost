@@ -63,6 +63,7 @@ only, no API keys, no browser automation):
 | Jobicy | `https://jobicy.com/api/v2/remote-jobs` (JSON) | 1 hour (documented) |
 | Remotive | `https://remotive.com/api/remote-jobs` (JSON) | 6 hours (documented) |
 | Working Nomads | `POST https://www.workingnomads.com/jobsapi/_search` (JSON) | 6 hours (provisional) |
+| Himalayas | `https://himalayas.app/jobs/api` (JSON) | 24 hours (documented) |
 
 Remotive's terms require attributing listings with a link back to the original
 URL and allow polling at most four times a day; its listings are published with
@@ -75,6 +76,12 @@ API: its collector targets the same internal Elasticsearch search endpoint that
 powers the public listing pages, so the endpoint is undocumented and may change
 without notice. CareerOS sends only a minimal bounded request and treats any
 malformed response as a collection failure rather than an empty result.
+
+Himalayas publishes a free, documented public JSON API that requires no API
+key or authentication. Its browse endpoint returns at most 20 jobs per request,
+and the feed is cached and refreshed every 24 hours, so CareerOS enforces a
+documented 24-hour polling floor; the API rate-limits excessive volume with
+HTTP 429.
 
 ## Cross-source duplicate detection
 

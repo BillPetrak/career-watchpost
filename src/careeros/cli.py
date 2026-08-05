@@ -148,6 +148,7 @@ def print_diagnostics() -> int:
 
 _SOURCE_LABELS = {
     "arbeitnow": "Arbeitnow",
+    "himalayas": "Himalayas",
     "jobicy": "Jobicy",
     "remoteok": "Remote OK",
     "remotive": "Remotive",
@@ -1742,8 +1743,8 @@ def build_parser() -> argparse.ArgumentParser:
             "called once. For 'due', only sources whose last completed run is "
             "older than their polling interval are collected. Do not run "
             "repeated all-source collections more often than the most "
-            "restrictive source permits (Jobicy allows at most one poll per "
-            "hour)."
+            "restrictive source permits (Himalayas allows at most one poll "
+            "per day)."
         ),
     )
     collect_commands = collect_parser.add_subparsers(

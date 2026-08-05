@@ -25,6 +25,16 @@ def test_remotive_interval_is_documented() -> None:
     assert SOURCE_POLICIES["remotive"].documented is True
 
 
+def test_himalayas_minimum_interval_is_one_day() -> None:
+    assert SOURCE_POLICIES["himalayas"] == SourcePolicy(
+        "himalayas", timedelta(days=1), documented=True
+    )
+
+
+def test_himalayas_interval_is_documented() -> None:
+    assert SOURCE_POLICIES["himalayas"].documented is True
+
+
 def test_other_intervals_are_provisional() -> None:
     for source in ("arbeitnow", "remoteok", "weworkremotely", "workingnomads"):
         assert SOURCE_POLICIES[source].documented is False
@@ -33,6 +43,7 @@ def test_other_intervals_are_provisional() -> None:
 def test_every_registered_source_has_a_policy() -> None:
     assert set(SOURCE_POLICIES) == {
         "arbeitnow",
+        "himalayas",
         "jobicy",
         "remoteok",
         "remotive",
