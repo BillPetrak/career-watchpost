@@ -78,6 +78,64 @@ def test_v1_database_upgrades_with_jobs_intact(tmp_path: Path) -> None:
     assert runs_table is not None
 
 
+def test_v7_database_upgrades_to_v8_with_review_tables(tmp_path: Path) -> None:
+    """A v7 database gains the review tables without losing stored jobs."""
+    database_path = tmp_path / "careeros.sqlite3"
+    with connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                source_job_id TEXT,
+                title TEXT NOT NULL,
+                company TEXT,
+                location TEXT,
+                description TEXT,
+                url TEXT,
+                employment_type TEXT,
+                remote_status TEXT,
+                published_at TEXT,
+                collected_at TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source, source_job_id)
+            );
+            INSERT INTO schema_metadata(key, value) VALUES ('schema_version', '7');
+            INSERT INTO jobs (source, source_job_id, title, collected_at)
+            VALUES ('arbeitnow', 'slug-1', 'Python Engineer',
+                    '2026-08-01T08:00:00+00:00');
+            """
+        )
+        connection.commit()
+
+        initialize_schema(connection)
+
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+        ).fetchone()
+        review_decisions = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'review_decisions'"
+        ).fetchone()
+        review_events = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'review_events'"
+        ).fetchone()
+        job = connection.execute(
+            "SELECT source_job_id, title FROM jobs WHERE source_job_id = 'slug-1'"
+        ).fetchone()
+
+    assert version["value"] == str(SCHEMA_VERSION)
+    assert review_decisions is not None
+    assert review_events is not None
+    assert job["title"] == "Python Engineer"
+
+
 def test_collection_runs_index_exists(tmp_path: Path) -> None:
     database_path = tmp_path / "careeros.sqlite3"
     with connect(database_path) as connection:

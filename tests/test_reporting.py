@@ -19,6 +19,7 @@ from careeros.ranking.profile import load_profile
 from careeros.reporting.models import ACTION_ITEM_LABELS, Report
 from careeros.reporting.render import render_report, render_report_json
 from careeros.reporting.service import build_report
+from careeros.review.service import set_decision
 from careeros.saved_searches.models import SavedSearch, SavedSearchFields
 from careeros.saved_searches.service import create_search
 
@@ -163,6 +164,11 @@ def test_empty_database_report(tmp_path: Path) -> None:
     assert report.overview.distinct_opportunities == 0
     assert report.overview.tracked_applications == 0
     assert report.overview.saved_searches == 0
+    assert report.overview.reviewed_groups == 0
+    assert report.overview.unreviewed_groups == 0
+    assert report.overview.shortlisted_groups == 0
+    assert report.overview.dismissed_groups == 0
+    assert report.overview.review_later_groups == 0
     assert all(status.due for status in report.overview.source_snapshots)
     assert tuple(report.overview.due_sources) == tuple(
         status.source for status in report.overview.source_snapshots
@@ -181,6 +187,8 @@ def test_empty_database_report(tmp_path: Path) -> None:
     assert report.actions.offer == ()
     assert report.actions.interested == ()
     assert report.actions.awaiting_progress == ()
+    assert report.review.source == "none"
+    assert report.review.note is not None
     assert report.recommendations.source == "none"
     assert report.recommendations.note is not None
     assert len(report.health.per_source) == 7
@@ -204,6 +212,95 @@ def test_overview_counts(tmp_path: Path) -> None:
     assert report.overview.distinct_opportunities == 3
     assert report.overview.tracked_applications == 2
     assert report.overview.saved_searches == 1
+
+
+def test_overview_review_counters(tmp_path: Path) -> None:
+    with _open(tmp_path) as connection:
+        job_ids = _seed_jobs(connection)
+        set_decision(
+            connection, job_id=job_ids["a-1"], decision="shortlist", now=_EPOCH
+        )
+        set_decision(connection, job_id=job_ids["r-1"], decision="dismiss", now=_EPOCH)
+        ensure_grouped(connection)
+
+    report = _build(tmp_path)
+    assert report.overview.reviewed_groups == 2
+    assert report.overview.unreviewed_groups == 1
+    assert report.overview.shortlisted_groups == 1
+    assert report.overview.dismissed_groups == 1
+    assert report.overview.review_later_groups == 0
+
+
+def test_review_queue_section_ranks_unreviewed_groups(tmp_path: Path) -> None:
+    profile = _seed_profile(tmp_path)
+    with _open(tmp_path) as connection:
+        job_ids = _seed_jobs(connection)
+        set_decision(
+            connection, job_id=job_ids["a-1"], decision="shortlist", now=_EPOCH
+        )
+        ensure_grouped(connection)
+
+    report = _build(tmp_path, profile=load_profile(profile), grouped=True)
+    assert report.review.source == "profile"
+    assert report.review.grouped is True
+    assert report.review.candidate_count == 2
+    assert len(report.review.items) == 2
+    assert all(item.match_score > 0 for item in report.review.items)
+    text = render_report(report)
+    assert "Review queue" in text
+    assert "Ranked 2 unreviewed groups:" in text
+    assert "Profile: command-line --profile" in text
+
+
+def test_review_queue_excludes_tracked_applications(tmp_path: Path) -> None:
+    profile = _seed_profile(tmp_path)
+    with _open(tmp_path) as connection:
+        job_ids = _seed_jobs(connection)
+        _track(connection, job_ids, {"a-1": "applied"})
+
+    report = _build(tmp_path, profile=load_profile(profile), grouped=False)
+    assert all(
+        item.group.representative.id != job_ids["a-1"] for item in report.review.items
+    )
+
+
+def test_review_queue_flat_mode(tmp_path: Path) -> None:
+    profile = _seed_profile(tmp_path)
+    with _open(tmp_path) as connection:
+        _seed_jobs(connection)
+
+    report = _build(tmp_path, profile=load_profile(profile), grouped=False)
+    assert report.review.grouped is False
+    text = render_report(report)
+    assert "Mode:    flat" in text
+    assert "Ranked 4 unreviewed jobs:" in text
+
+
+def test_review_queue_source_saved_search(tmp_path: Path) -> None:
+    profile = _seed_profile(tmp_path)
+    with _open(tmp_path) as connection:
+        _seed_jobs(connection)
+        saved = _create_rank_search(tmp_path, connection, profile_path=profile)
+
+    report = _build(tmp_path, saved_search=saved, profile=load_profile(profile))
+    assert report.review.source == "saved-search"
+    assert report.review.source_name == "top-roles"
+    assert "Profile: saved search 'top-roles'" in render_report(report)
+
+
+def test_review_queue_none_without_profile(tmp_path: Path) -> None:
+    with _open(tmp_path) as connection:
+        _seed_jobs(connection)
+
+    report = _build(tmp_path)
+    assert report.review.source == "none"
+    assert report.review.candidate_count == 0
+    text = render_report(report)
+    assert "Review queue" in text
+    assert "No profile or saved search provided; no review queue computed." in text
+    payload = json.loads(render_report_json(report))
+    assert payload["review_queue"]["source"] == "none"
+    assert payload["review_queue"]["note"] is not None
 
 
 def test_pipeline_status_counts_are_zero_filled(tmp_path: Path) -> None:
@@ -579,6 +676,8 @@ def test_report_does_not_mutate_database(tmp_path: Path) -> None:
             "job_group_members",
             "collection_runs",
             "saved_searches",
+            "review_decisions",
+            "review_events",
         ]
         before = {table: _snapshot(table) for table in tables}
 
@@ -615,8 +714,11 @@ def test_render_json_matches_text_data(tmp_path: Path) -> None:
     assert payload["as_of"] == _EPOCH.isoformat()
     assert payload["overview"]["total_jobs"] == 4
     assert payload["overview"]["tracked_applications"] == 1
+    assert payload["overview"]["reviewed_groups"] == 0
+    assert payload["overview"]["unreviewed_groups"] == 4
     assert payload["application_pipeline"]["status_counts"]["interview"] == 1
     assert payload["action_items"]["interview"][0]["status"] == "interview"
+    assert payload["review_queue"]["source"] == "none"
     assert payload["recommendations"]["source"] == "none"
     assert len(payload["collection_health"]["sources"]) == 7
 

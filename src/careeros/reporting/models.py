@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from careeros.database.applications import StoredApplication
+from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.reminders import StoredReminder
 from careeros.notifications.models import NotificationSummary
@@ -41,6 +42,11 @@ class Overview:
     distinct_opportunities: int
     tracked_applications: int
     saved_searches: int
+    reviewed_groups: int
+    unreviewed_groups: int
+    shortlisted_groups: int
+    dismissed_groups: int
+    review_later_groups: int
     source_snapshots: tuple[SourceStatus, ...]
     due_sources: tuple[str, ...]
 
@@ -82,6 +88,32 @@ class ActionItems:
     offer: tuple[ActionItem, ...]
     interested: tuple[ActionItem, ...]
     awaiting_progress: tuple[ActionItem, ...]
+
+
+@dataclass(frozen=True)
+class ReviewQueueItem:
+    """One ranked daily-review-queue entry for the report."""
+
+    group: GroupedJob
+    match_score: int
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReviewQueue:
+    """Ranked daily review queue section for the report.
+
+    ``source`` is ``"profile"`` (command-line ``--profile``), ``"saved-search"``
+    (a rank-mode saved search's profile), or ``"none"``. ``note`` carries a
+    human message when no queue could be computed.
+    """
+
+    grouped: bool
+    source: str
+    source_name: str | None
+    items: tuple[ReviewQueueItem, ...]
+    candidate_count: int
+    note: str | None
 
 
 @dataclass(frozen=True)
@@ -147,5 +179,6 @@ class Report:
     pipeline: ApplicationPipeline
     actions: ActionItems
     reminders: Reminders
+    review: ReviewQueue
     recommendations: Recommendations
     health: CollectionHealth

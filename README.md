@@ -42,8 +42,8 @@ Current CLI capabilities include multi-source job collection (`collect
 <source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
 persistent run history, read-only collection observability (`collect status`,
 `collect history`), plus `search`, `show`, `rank`, `group`,
-`saved-search`, `application`, `reminder`, `profile` (init/show/validate for
-JSON or YAML candidate profiles), a read-only `report` (Career
+`saved-search`, `application`, `reminder`, `review`, `profile` (init/show/
+validate for JSON or YAML candidate profiles), a read-only `report` (Career
 Snapshot), and `diagnose`.
 Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
@@ -158,6 +158,56 @@ supports deliberate message clearing. The write commands (`add`, `update`,
 `complete`, `reopen`, `delete`) respect the per-database lock and exit 75 on
 contention; the reads (`list`, `show`) never lock.
 
+## Daily review queue
+
+CareerOS gives you a **personalized daily review queue** for deciding what to do
+with each new opportunity. For every stored job you can record a lightweight,
+private review decision:
+
+- `shortlist` — worth pursuing; keep it on your radar.
+- `dismiss` — not a fit; hide it from future queues.
+- `review_later` — revisit it later without committing either way.
+
+Decisions are **local workflow state only** — CareerOS never shares them, never
+contacts employers, and never submits applications. Each decision is stored per
+job (keyed by the stable `jobs.id`) with an append-only history of every
+transition, so `group regroup` can never delete or orphan your reviews. Clearing
+a decision returns the job to the unreviewed pool.
+
+```bash
+uv run careeros review set 12 shortlist --note "top pick"   # decide + note
+uv run careeros review set 12 dismiss                       # change your mind
+uv run careeros review show 12                              # current decision
+uv run careeros review list --decision shortlist            # filtered list
+uv run careeros review history 12                           # decision history
+uv run careeros review clear 12                             # back to unreviewed
+```
+
+`review next` ranks today's queue against your candidate profile. It shows
+**unreviewed** opportunities by default, collapsed into one entry per canonical
+duplicate group (**grouped by default**; use `--no-grouped` for one entry per
+job). Every eligible opportunity is scored with the shared ranking engine and
+the queue is ordered best-first:
+
+```bash
+uv run careeros review next --profile config/candidate_profile.example.json
+uv run careeros review next --profile ... --state shortlist --min-score 60
+uv run careeros review next --profile ... --include-tracked
+uv run careeros review next --profile ... --no-grouped --format json
+```
+
+- `--state` picks the queue filter (`unreviewed`, `shortlist`, `dismiss`,
+  `review_later`, or `any`); the default is `unreviewed`.
+- `--min-score` trims results below a match-score threshold after ranking.
+- By default, opportunities that already have an application record are hidden;
+  `--include-tracked` brings them back (annotated with their application
+  status).
+- `--format text` (default) and `--format json` render the same ranked queue.
+
+`review next`, `show`, `list`, and `history` are read-only and never lock. The
+write commands `review set` and `review clear` respect the per-database lock and
+exit 75 on contention, matching the rest of the suite.
+
 ## Candidate profile
 
 Ranking and the Career Snapshot score jobs against a **candidate profile** — a
@@ -261,11 +311,12 @@ uv run careeros report --limit 5 --grouped               # cap + collapse duplic
 
 `--format text` (default) and `--format json` are two renderers over the same
 immutable report model built by the same read-only reporting service, so both
-carry identical data. The text output has six sections:
+carry identical data. The text output has seven sections:
 
 - **Overview** — stored jobs, canonical groups, distinct opportunities,
-  tracked applications, saved searches, per-source last-run summary, and which
-  sources are currently due.
+  tracked applications, saved searches, review-decision counters (reviewed,
+  unreviewed, shortlisted, dismissed, review-later groups), per-source last-run
+  summary, and which sources are currently due.
 - **Application pipeline** — one count per status (including `rejected` and
   `withdrawn`) plus the most recently changed applications (newest first,
   capped by `--limit`).
@@ -278,6 +329,10 @@ carry identical data. The text output has six sections:
   open reminders (soonest first, capped by `--limit`). "Due today (UTC)" means
   within the current UTC calendar day: CareerOS stores and compares reminder
   times in UTC and never assumes your local timezone.
+- **Review queue** — a ranked, personalized daily queue of unreviewed
+  opportunities (grouped by default, tracked applications excluded), scored
+  against the report's profile. Without `--profile` or `--saved-search` the
+  section is honestly skipped with a note.
 - **Recommended opportunities** — profile-ranked jobs using the shared ranking
   engine. Without `--profile` or `--saved-search` the section is honestly
   skipped with a note. Tracked jobs are excluded (recommendations only propose

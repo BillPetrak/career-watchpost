@@ -28,6 +28,7 @@ from careeros.reporting.models import (
     Recommendations,
     Reminders,
     Report,
+    ReviewQueue,
 )
 from careeros.status import SourceStatus
 
@@ -46,6 +47,7 @@ def render_report(report: Report) -> str:
         _render_pipeline(report.pipeline),
         _render_actions(report.actions),
         _render_reminders(report.reminders),
+        _render_review(report.review),
         _render_recommendations(report.recommendations),
         _render_health(report.health),
     ]
@@ -77,6 +79,13 @@ def _render_overview(overview: Overview) -> str:
         f"Distinct opportunities: {overview.distinct_opportunities}",
         f"Tracked applications:   {overview.tracked_applications}",
         f"Saved searches:         {overview.saved_searches}",
+        "",
+        "Review queue:",
+        f"  Reviewed groups:      {overview.reviewed_groups}",
+        f"  Unreviewed groups:    {overview.unreviewed_groups}",
+        f"  Shortlisted:          {overview.shortlisted_groups}",
+        f"  Dismissed:            {overview.dismissed_groups}",
+        f"  Review later:         {overview.review_later_groups}",
         "",
         "Sources:",
     ]
@@ -187,6 +196,47 @@ def _render_reminders(reminders: Reminders) -> str:
         "Due today (UTC) means within the current UTC calendar day; "
         "CareerOS does not assume your local timezone."
     )
+    return "\n".join(lines)
+
+
+def _render_review(review: ReviewQueue) -> str:
+    lines = [
+        "Review queue",
+        "------------",
+    ]
+    if review.source == "none":
+        lines.append(review.note or "No review queue computed.")
+        return "\n".join(lines)
+
+    if review.source == "saved-search":
+        lines.append(f"Profile: saved search {review.source_name!r}")
+    else:
+        lines.append("Profile: command-line --profile")
+    lines.append(f"Mode:    {'grouped' if review.grouped else 'flat'}")
+
+    if review.candidate_count == 0:
+        lines.append("No unreviewed opportunities.")
+        return "\n".join(lines)
+
+    if not review.items:
+        lines.append("No unreviewed opportunities found.")
+        return "\n".join(lines)
+
+    noun = "group" if review.grouped else "job"
+    plural = "s" if len(review.items) != 1 else ""
+    lines.append(f"Ranked {len(review.items)} unreviewed {noun}{plural}:")
+    for index, item in enumerate(review.items, start=1):
+        group = item.group
+        rep = group.representative
+        lines.append(f"  {index}. [Score {item.match_score}/100] {rep.title}")
+        lines.append(f"     Company:  {rep.company or 'N/A'}")
+        lines.append(
+            f"     Location: {_location_display(rep.location, rep.remote_status)}"
+        )
+        lines.append(f"     Source:   {', '.join(group.sources)}")
+        if len(group.members) > 1:
+            lines.append(f"     Group:    {len(group.members)} listings grouped")
+        lines.extend(_reason_lines(item.reasons))
     return "\n".join(lines)
 
 
@@ -420,6 +470,7 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
     overview = report.overview
     pipeline = report.pipeline
     actions = report.actions
+    review = report.review
     recommendations = report.recommendations
     return {
         "as_of": report.now.isoformat(),
@@ -430,6 +481,11 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
             "distinct_opportunities": overview.distinct_opportunities,
             "tracked_applications": overview.tracked_applications,
             "saved_searches": overview.saved_searches,
+            "reviewed_groups": overview.reviewed_groups,
+            "unreviewed_groups": overview.unreviewed_groups,
+            "shortlisted_groups": overview.shortlisted_groups,
+            "dismissed_groups": overview.dismissed_groups,
+            "review_later_groups": overview.review_later_groups,
             "sources": [
                 _source_status_dict(status) for status in overview.source_snapshots
             ],
@@ -476,6 +532,21 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
             ],
             "ranked_groups": [
                 _ranked_group_dict(ranked) for ranked in recommendations.ranked_groups
+            ],
+        },
+        "review_queue": {
+            "grouped": review.grouped,
+            "source": review.source,
+            "source_name": review.source_name,
+            "candidate_count": review.candidate_count,
+            "note": review.note,
+            "items": [
+                {
+                    "group": _group_dict(item.group),
+                    "match_score": item.match_score,
+                    "reasons": list(item.reasons),
+                }
+                for item in review.items
             ],
         },
         "collection_health": {

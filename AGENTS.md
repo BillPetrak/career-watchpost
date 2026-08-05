@@ -61,6 +61,12 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros saved-search update NAME [--query TEXT] [--grouped/--no-grouped] [--untracked/--no-untracked] [--status S] [--exclude-status S] [--source S] [--location S] [--remote] [--min-score N] [--limit N] [--profile PATH] [--clear-*]` | Change a saved workflow (write; locks the DB) |
 | `uv run careeros saved-search rename NAME NEW_NAME [--database PATH]` | Rename a saved workflow (write; locks the DB) |
 | `uv run careeros saved-search delete NAME [--database PATH]` | Delete a saved workflow (write; locks the DB) |
+| `uv run careeros review set JOB_ID DECISION [--note TEXT] [--database PATH]` | Set/update a job's review decision (write; locks the DB) |
+| `uv run careeros review clear JOB_ID [--database PATH]` | Clear a job's review decision (write; locks the DB) |
+| `uv run careeros review show JOB_ID [--database PATH]` | Show the current review decision for one job (read-only) |
+| `uv run careeros review list [--decision D] [--limit N] [--database PATH]` | List review decisions, optionally filtered (read-only) |
+| `uv run careeros review history JOB_ID [--limit N] [--database PATH]` | Show the decision history for one job (read-only) |
+| `uv run careeros review next --profile PATH [--state S] [--min-score N] [--include-tracked] [--source S] [--location L] [--remote] [--grouped\|--no-grouped] [--limit N] [--format {text,json}] [--database PATH]` | Rank the personalized daily review queue (read-only) |
 | `uv run python systemd/install.py --dry-run` | Preview systemd user-unit install (writes nothing) |
 | `uv run python systemd/install.py` | Install the systemd user service+timer (not enabled) |
 | `uv run python systemd/install.py --enable` | Install, then enable and start the timer |
@@ -175,7 +181,8 @@ any source, does not touch run history or the jobs table, and exits with code
 The read-only commands `collect status`, `collect history`, `search`, `show`,
 `rank`, `group explain`, `application show`, `application list`,
 `application history`, `reminder list`, `reminder show`, `saved-search list`,
-`saved-search show`, `saved-search run`, and `report` never acquire the
+`saved-search show`, `saved-search run`, `review next`, `review show`,
+`review list`, `review history`, and `report` never acquire the
 collection lock and remain available
 while a collection is running.
 
@@ -302,6 +309,58 @@ place. Application status changes never create, complete, reschedule, or delete
 reminders automatically, and grouped `search`/`rank` results are not annotated
 with reminders.
 
+## Daily review queue
+
+`review` manages a personalized daily review queue over stored jobs so the day's
+candidates can be triaged in one ranked pass. Review state is **local workflow
+state only**: CareerOS records your decision locally and never submits
+applications, contacts employers, or infers deadlines. Decisions live in the
+`review_decisions` table (schema v8) anchored to the stable `jobs.id` — **never**
+to the derived grouping tables — so `group regroup` (which deletes and rebuilds
+`job_groups`/`job_group_members`) can never delete or orphan them. Each
+transition is recorded in the append-only `review_events` table, and both tables
+use `ON DELETE RESTRICT` on `jobs.id`.
+
+Supported decisions (validated centrally in `src/careeros/review/models.py` and
+exposed as argparse choices):
+
+- `shortlist` — worth pursuing now
+- `dismiss` — not worth pursuing now
+- `review_later` — maybe, revisit later
+
+`review set JOB_ID DECISION [--note TEXT]` rules:
+
+- The job must already exist (unknown job exits with code 1).
+- Repeating the identical decision with **no** note is an idempotent no-op.
+- Repeating the identical decision **with** a note appends a same-decision
+  event, supporting "note without a decision change".
+- Repeating a different decision is a real transition that updates the current
+  decision and appends an event (the full decision history is preserved).
+- `review clear JOB_ID` removes the current decision and appends a clearing
+  event; clearing an untracked job is an idempotent no-op.
+
+`review next` ranks the daily review queue: it scores the current unreviewed
+jobs (`--state unreviewed` by default; also `shortlist`, `dismiss`,
+`review_later`, `any`) against the required `--profile`, optionally excluding
+tracked applications (`--include-tracked` re-includes them) and filtering by
+`--source`, `--location`, `--remote`. Results are **grouped by default**
+(`--grouped` on, `--no-grouped` disables), collapsed cross-source duplicates
+into one result per canonical group. `--min-score` drops low-scoring results and
+`--limit` caps the queue; a queue with no matching jobs exits 0 with a clean
+message. Output is text by default (`--format json` renders the same data).
+`review show`, `review list [--decision D]`, and `review history JOB_ID` are
+read-only views of the current decision, all decisions (newest first), and one
+job's decision history.
+
+Every write (`set`, `clear`) is transactional and commits in one transaction,
+rolling back completely on failure. Write commands acquire the per-database
+collection lock and exit 75 on contention with no database change; the read-only
+`next`, `show`, `list`, and `history` never lock and never change database
+contents beyond idempotent schema initialization. Exit codes: `0` success,
+`1` unknown job or database failure, `2` validation/usage error, `75` lock
+contention. The `report` Career Snapshot renders the review queue and its
+Overview counters using the shared review service (see below).
+
 ## Candidate profile
 
 `profile` manages the candidate profile file used by `rank` and `report`.
@@ -405,7 +464,9 @@ Sections and semantics:
 
 - **Overview** — stored jobs, canonical groups, grouped members, distinct
   opportunities (`total_jobs - grouped_members + groups`), tracked applications,
-  saved searches, a per-source last-run summary, and due sources.
+  saved searches, review-queue counters (reviewed/unreviewed/shortlisted/
+  dismissed/review-later groups), a per-source last-run summary, and due
+  sources.
 - **Application pipeline** — one count per status in `APPLICATION_STATUSES`
   order (zero-filled), and the most recently changed applications newest first
   (`updated_at DESC, id DESC`), capped by `--limit`. Each entry shows the latest
@@ -422,6 +483,14 @@ Sections and semantics:
   compared in UTC and CareerOS does not assume your local timezone. All
   reminder data comes from the shared reminder service; the report never
   duplicates its logic.
+- **Review queue** — the ranked daily review queue for the current unreviewed
+  jobs, built by the shared review service (`build_queue` with
+  `state="unreviewed"`, `min_score=0`, tracked applications excluded) against
+  the report's effective profile. A profile or rank-mode `--saved-search` is
+  required to produce ranked results; without one the section says skipped and
+  the review counters still render from the shared review service. Results are
+  grouped per canonical group, capped by `--limit`, and scored with the same
+  engine as `review next`.
 - **Recommended opportunities** — profile-ranked jobs from the shared ranking
   engine. Tracked jobs are excluded (`untracked=True`), so the section only
   proposes new opportunities. `--grouped` collapses cross-source duplicates
@@ -476,6 +545,7 @@ after moving the repository (uninstall first if the old units should go).
 - `src/careeros/grouping/` — duplicate detection (normalization, matcher)
 - `src/careeros/saved_searches/` — saved workflow definitions and shared execution
 - `src/careeros/reminders/` — local follow-up reminders (models, service)
+- `src/careeros/review/` — daily review queue (models, service, render)
 - `src/careeros/reporting/` — Career Snapshot dashboard (models, service, renderers)
 - `src/careeros/{job_hunter,privacy,ranking}/` — stubs (empty, not implemented)
 - `tests/` — pytest suite, uses `tmp_path` for isolated SQLite databases

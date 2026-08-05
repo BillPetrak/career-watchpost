@@ -267,6 +267,68 @@ def test_cli_report_profile_flag_overrides_saved_search(
     assert "Profile: saved search 'top-roles'" in captured.out
 
 
+def test_cli_report_renders_review_queue_without_profile(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    database_path = _seed(tmp_path, profile=False)
+    exit_code = cli.main(["report", "--database", str(database_path)])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Review queue" in captured.out
+    assert "Unreviewed groups:" in captured.out
+    assert (
+        "No profile or saved search provided; no review queue computed." in captured.out
+    )
+
+
+def test_cli_report_renders_review_queue_with_profile(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    database_path = _seed(tmp_path)
+    exit_code = cli.main(
+        [
+            "report",
+            "--database",
+            str(database_path),
+            "--profile",
+            str(tmp_path / "profile.json"),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Review queue" in captured.out
+    assert "Profile: command-line --profile" in captured.out
+    assert "Ranked 4 unreviewed jobs:" in captured.out
+
+
+def test_cli_report_review_queue_in_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    database_path = _seed(tmp_path)
+    exit_code = cli.main(
+        [
+            "report",
+            "--database",
+            str(database_path),
+            "--profile",
+            str(tmp_path / "profile.json"),
+            "--format",
+            "json",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    payload = json.loads(captured.out)
+    assert payload["review_queue"]["source"] == "profile"
+    assert payload["review_queue"]["candidate_count"] == 4
+    assert len(payload["review_queue"]["items"]) == 4
+    assert "reviewed_groups" in payload["overview"]
+    assert "unreviewed_groups" in payload["overview"]
+
+
 def test_cli_report_no_recommendations_note(
     tmp_path: Path,
     capsys: pytest.CaptureFixture,

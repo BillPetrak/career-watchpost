@@ -36,7 +36,10 @@ from careeros.reporting.models import (
     Reminders,
     ReminderSnapshot,
     Report,
+    ReviewQueue,
+    ReviewQueueItem,
 )
+from careeros.review.service import build_queue, review_group_summary
 from careeros.saved_searches.execution import execute_rank, rank_candidates
 from careeros.saved_searches.models import SavedSearch
 from careeros.saved_searches.service import list_searches
@@ -233,6 +236,65 @@ def _build_reminders(
     )
 
 
+def _build_review_queue(
+    connection: sqlite3.Connection,
+    *,
+    profile: CandidateProfile | None,
+    saved_search: SavedSearch | None,
+    limit: int,
+    grouped: bool,
+) -> ReviewQueue:
+    """Rank the daily review queue for the report (read-only).
+
+    The queue reuses the shared review ``build_queue`` service with the same
+    defaults as ``careeros review next``: unreviewed opportunities only, tracked
+    applications excluded, scored with the report's effective profile. A saved
+    search supplies the profile but not its query/filters, keeping the queue a
+    pure personalized daily feed rather than a stored-workflow rerun. Without a
+    profile the section is honestly skipped with a note.
+    """
+    if profile is None:
+        return ReviewQueue(
+            grouped=grouped,
+            source="none",
+            source_name=None,
+            items=(),
+            candidate_count=0,
+            note="No profile or saved search provided; no review queue computed.",
+        )
+
+    outcome = build_queue(
+        connection,
+        profile=profile,
+        state="unreviewed",
+        min_score=0,
+        include_tracked=False,
+        limit=limit,
+        grouped=grouped,
+    )
+
+    if saved_search is not None:
+        source, source_name = "saved-search", saved_search.name
+    else:
+        source, source_name = "profile", None
+
+    return ReviewQueue(
+        grouped=grouped,
+        source=source,
+        source_name=source_name,
+        items=tuple(
+            ReviewQueueItem(
+                group=item.group,
+                match_score=item.ranked.match_score,
+                reasons=item.ranked.reasons,
+            )
+            for item in outcome.items
+        ),
+        candidate_count=outcome.candidate_count,
+        note=None,
+    )
+
+
 def build_report(
     connection: sqlite3.Connection,
     *,
@@ -256,6 +318,7 @@ def build_report(
     tracked = _list_tracked(connection)
     counts = _counts_by_status(connection)
     searches = list_searches(connection)
+    review_summary = review_group_summary(connection)
 
     overview = Overview(
         total_jobs=summary.total_jobs,
@@ -264,6 +327,11 @@ def build_report(
         distinct_opportunities=distinct_opportunities,
         tracked_applications=len(tracked),
         saved_searches=len(searches),
+        reviewed_groups=review_summary.reviewed_groups,
+        unreviewed_groups=review_summary.unreviewed_groups,
+        shortlisted_groups=review_summary.shortlisted_groups,
+        dismissed_groups=review_summary.dismissed_groups,
+        review_later_groups=review_summary.review_later_groups,
         source_snapshots=source_snapshots,
         due_sources=due_sources,
     )
@@ -284,6 +352,14 @@ def build_report(
 
     reminders = _build_reminders(connection, now=now, limit=limit)
 
+    review = _build_review_queue(
+        connection,
+        profile=profile,
+        saved_search=saved_search,
+        limit=limit,
+        grouped=grouped,
+    )
+
     recommendations = _build_recommendations(
         connection,
         profile=profile,
@@ -298,6 +374,7 @@ def build_report(
         pipeline=pipeline,
         actions=actions,
         reminders=reminders,
+        review=review,
         recommendations=recommendations,
         health=CollectionHealth(per_source=source_snapshots),
     )

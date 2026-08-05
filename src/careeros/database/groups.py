@@ -201,6 +201,83 @@ def _publish_sort_key(job: StoredJob) -> tuple[int, int, int]:
     return (0, -int(parsed.timestamp()), job.id)
 
 
+def list_all_groups(
+    connection: sqlite3.Connection,
+    *,
+    remote: bool | None = None,
+    location: str | None = None,
+    source: str | None = None,
+) -> list[GroupedJob]:
+    """Return every distinct opportunity as a GroupedJob.
+
+    Jobs with a stored group are collapsed into one result per canonical group;
+    ungrouped jobs behave as single-member groups. Optional ``remote``/
+    ``location``/``source`` filters apply to the candidate member rows BEFORE
+    grouping, so a group only appears when at least one of its members passes
+    every filter (matching the grouped-search semantics). Results are ordered
+    by ascending representative (lowest member) job ID, which is deterministic
+    regardless of grouping state.
+    """
+    conditions: list[str] = []
+    params: list[str] = []
+
+    if remote:
+        conditions.append("j.remote_status = 'remote'")
+
+    if location is not None:
+        conditions.append("j.location LIKE ?")
+        params.append(f"%{location}%")
+
+    if source is not None:
+        conditions.append("j.source = ?")
+        params.append(source)
+
+    where_clause = ""
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
+
+    rows = connection.execute(
+        f"""
+        SELECT {", ".join(f"j.{column}" for column in _JOB_COLUMNS)},
+               m.group_id AS group_id
+        FROM jobs j
+        LEFT JOIN job_group_members m ON m.job_id = j.id
+        {where_clause}
+        ORDER BY j.id
+        """,
+        params,
+    ).fetchall()
+
+    buckets: dict[str, list[StoredJob]] = {}
+    order: list[str] = []
+    for row in rows:
+        job = _stored_job_from_row(row)
+        group_id = row["group_id"]
+        key = group_id if group_id is not None else f"__single__:{job.id}"
+        if key not in buckets:
+            buckets[key] = []
+            order.append(key)
+        buckets[key].append(job)
+
+    results: list[GroupedJob] = []
+    for key in order:
+        members = tuple(sorted(buckets[key], key=lambda job: job.id))
+        sources, urls = _sources_and_urls(members)
+        group_id = key if not key.startswith("__single__:") else None
+        results.append(
+            GroupedJob(
+                group_id=group_id,
+                representative=members[0],
+                members=members,
+                sources=sources,
+                urls=urls,
+            )
+        )
+
+    results.sort(key=lambda group: group.representative.id)
+    return results
+
+
 def list_group_infos(
     connection: sqlite3.Connection,
     *,
