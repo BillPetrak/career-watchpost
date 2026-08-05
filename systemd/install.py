@@ -68,7 +68,11 @@ def render_unit(name: str, uv_bin: Path, project_dir: Path) -> str:
     )
 
 
-def rendered_units(uv_bin: Path, project_dir: Path, units: tuple[str, ...]) -> dict[str, str]:
+def rendered_units(
+    uv_bin: Path,
+    project_dir: Path,
+    units: tuple[str, ...],
+) -> dict[str, str]:
     return {name: render_unit(name, uv_bin, project_dir) for name in units}
 
 

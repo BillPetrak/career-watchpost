@@ -22,7 +22,11 @@ from install import (
 )
 
 
-def _render_units(uv_bin: Path, project_dir: Path, unit_names: tuple[str, ...]) -> dict[str, str]:
+def _render_units(
+    uv_bin: Path,
+    project_dir: Path,
+    unit_names: tuple[str, ...],
+) -> dict[str, str]:
     return {name: render_unit(name, uv_bin, project_dir) for name in unit_names}
 
 
@@ -127,7 +131,10 @@ def main(argv: list[str] | None = None) -> int:
                 print("Running: " + shlex.join(command))
                 disable_returncode = subprocess.run(command).returncode
                 if disable_returncode != 0:
-                    print(f"systemctl --user disable failed for {timer}.", file=sys.stderr)
+                    print(
+                        f"systemctl --user disable failed for {timer}.",
+                        file=sys.stderr,
+                    )
 
     for path in removable:
         path.unlink()
