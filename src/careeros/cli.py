@@ -137,6 +137,16 @@ from careeros.saved_searches.service import (
     rename_search,
     update_search,
 )
+from careeros.source_stats.models import (
+    MISSING_FIELD_COLUMNS,
+    FieldCoverage,
+    SourceStats,
+)
+from careeros.source_stats.render import (
+    render_source_stats_json,
+    render_source_stats_text,
+)
+from careeros.source_stats.service import compute_source_stats
 from careeros.status import build_statuses
 from careeros.text import clean_description
 
@@ -1978,6 +1988,63 @@ def run_report(
     return 0
 
 
+def _empty_source_stats() -> tuple[SourceStats, ...]:
+    """Build zero-count statistics for every registered source.
+
+    Used when the database file does not exist so the read-only command can
+    report a deterministically empty database without ever creating the file.
+    """
+    fields = tuple(
+        FieldCoverage(
+            field=column,
+            missing_count=0,
+            provided_count=0,
+            coverage_pct=None,
+        )
+        for column in MISSING_FIELD_COLUMNS
+    )
+    return tuple(
+        SourceStats(
+            source=source,
+            total_jobs=0,
+            fields=fields,
+            never_groupable_jobs=0,
+        )
+        for source in COLLECTORS
+    )
+
+
+def run_source_stats(
+    *,
+    source: str | None,
+    database_path: Path,
+    output_format: str,
+) -> int:
+    """Show unified per-source statistics (read-only, no lock, no writes).
+
+    A missing database file is reported as an empty database without being
+    created; an existing database is only ever read.
+    """
+    try:
+        if database_path.exists():
+            with connect(database_path) as connection:
+                stats = compute_source_stats(connection)
+        else:
+            stats = _empty_source_stats()
+    except (OSError, sqlite3.Error) as error:
+        print(f"Source stats failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+
+    if source is not None:
+        stats = tuple(entry for entry in stats if entry.source == source)
+
+    if output_format == "json":
+        print(render_source_stats_json(stats), end="")
+    else:
+        print(render_source_stats_text(stats), end="")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CareerOS command-line parser."""
     parser = argparse.ArgumentParser(
@@ -2406,6 +2473,37 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("text", "json"),
         default="text",
         help="Output format (default: text).",
+    )
+
+    source_parser = subparsers.add_parser(
+        "source",
+        help="Show unified per-source statistics and source-quality diagnostics.",
+    )
+    source_commands = source_parser.add_subparsers(
+        dest="source_command",
+        required=True,
+    )
+
+    stats_parser = source_commands.add_parser(
+        "stats",
+        help="Show per-source statistics (read-only).",
+    )
+    stats_parser.add_argument(
+        "--source",
+        choices=[*COLLECTORS],
+        help="Only show statistics for this source.",
+    )
+    stats_parser.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: text).",
+    )
+    stats_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
     )
 
     group_parser = subparsers.add_parser(
@@ -3695,6 +3793,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if arguments.command == "report":
         return run_report(arguments, parser)
+
+    if arguments.command == "source":
+        return run_source_stats(
+            source=arguments.source,
+            database_path=arguments.database,
+            output_format=arguments.format,
+        )
 
     if arguments.command == "group":
         if arguments.group_command == "regroup":

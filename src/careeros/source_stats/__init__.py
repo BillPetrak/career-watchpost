@@ -12,6 +12,10 @@ from careeros.source_stats.models import (
     FieldCoverage,
     SourceStats,
 )
+from careeros.source_stats.render import (
+    render_source_stats_json,
+    render_source_stats_text,
+)
 from careeros.source_stats.service import compute_source_stats
 
 __all__ = [
@@ -20,4 +24,6 @@ __all__ = [
     "FieldCoverage",
     "SourceStats",
     "compute_source_stats",
+    "render_source_stats_json",
+    "render_source_stats_text",
 ]
