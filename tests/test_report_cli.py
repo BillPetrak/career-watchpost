@@ -405,3 +405,43 @@ def test_cli_report_rejects_unknown_format(
         cli.main(["report", "--database", str(database_path), "--format", "xml"])
     assert exc_info.value.code == 2
     capsys.readouterr()
+
+
+def test_cli_report_text_includes_source_quality(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = _seed(tmp_path)
+    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    exit_code = cli.main(["report", "--database", str(database_path)])
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Source quality (fields not provided by source):" in captured.out
+    assert "arbeitnow: 1 jobs, never groupable: 0, no fields missing" in captured.out
+    assert "himalayas: 0 jobs" in captured.out
+
+
+def test_cli_report_json_includes_source_stats(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = _seed(tmp_path)
+    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    exit_code = cli.main(
+        ["report", "--database", str(database_path), "--format", "json"]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    payload = json.loads(captured.out)
+    source_stats = payload["overview"]["source_stats"]
+    assert len(source_stats) == 7
+    by_source = {entry["source"]: entry for entry in source_stats}
+    arbeitnow = by_source["arbeitnow"]
+    assert arbeitnow["total_jobs"] == 1
+    assert arbeitnow["never_groupable_jobs"] == 0
+    assert len(arbeitnow["fields"]) == 8
+    company = next(f for f in arbeitnow["fields"] if f["field"] == "company")
+    assert company["missing_count"] == 0
+    assert company["coverage_pct"] == 100

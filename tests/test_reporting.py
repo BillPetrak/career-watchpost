@@ -41,6 +41,7 @@ def _make_job(
     location: str = "Berlin",
     remote_status: str = "remote",
     description: str = "Build things with Python.",
+    url: str | None = None,
 ) -> CollectedJob:
     return CollectedJob(
         source=source,
@@ -49,7 +50,7 @@ def _make_job(
         company=company,
         location=location,
         description=description,
-        url=f"https://example.com/{source}/{source_job_id}",
+        url=url or f"https://example.com/{source}/{source_job_id}",
         employment_type="Full-time",
         remote_status=remote_status,
         published_at="2026-07-29T10:00:00Z",
@@ -535,9 +536,9 @@ def test_recommendations_from_saved_search(tmp_path: Path) -> None:
             [
                 _make_job(
                     source="arbeitnow",
-                    source_job_id="a-1",
+                    source_job_id="a-2",
                     title="Python Engineer",
-                    description="Write Python services.",
+                    location="Munich",
                 ),
                 _make_job(
                     source="remoteok",
@@ -727,3 +728,159 @@ def test_render_text_mentions_career_snapshot(tmp_path: Path) -> None:
     text = render_report(_build(tmp_path))
     assert text.startswith("Career Snapshot")
     assert "CareerOS never infers deadlines or follow-up dates from text." in text
+
+
+def test_overview_source_stats_include_all_registered_sources(
+    tmp_path: Path,
+) -> None:
+    from careeros.collectors import COLLECTORS
+
+    with _open(tmp_path) as connection:
+        _seed_jobs(connection)
+
+    report = _build(tmp_path)
+    stats = report.overview.source_stats
+    assert tuple(entry.source for entry in stats) == tuple(COLLECTORS)
+    for entry in stats:
+        assert len(entry.fields) == 8
+
+
+def test_overview_source_stats_count_missing_fields(tmp_path: Path) -> None:
+    with _open(tmp_path) as connection:
+        save_jobs(
+            connection,
+            [
+                _make_job(
+                    source="arbeitnow",
+                    source_job_id="a-1",
+                    title="Python Engineer",
+                    location=None,
+                    description=None,
+                ),
+                _make_job(
+                    source="arbeitnow",
+                    source_job_id="a-2",
+                    title="Python Engineer",
+                    location="Munich",
+                ),
+                _make_job(
+                    source="jobicy", source_job_id="j-1", title="Frontend Engineer"
+                ),
+            ],
+        )
+
+    report = _build(tmp_path)
+    by_source = {entry.source: entry for entry in report.overview.source_stats}
+    arbeitnow = by_source["arbeitnow"]
+    assert arbeitnow.total_jobs == 2
+    location = next(f for f in arbeitnow.fields if f.field == "location")
+    assert location.missing_count == 1
+    assert location.provided_count == 1
+    assert location.coverage_pct == 50
+    description = next(f for f in arbeitnow.fields if f.field == "description")
+    assert description.missing_count == 1
+    assert description.coverage_pct == 50
+    assert by_source["jobicy"].total_jobs == 1
+
+
+def test_source_stats_include_never_groupable_in_overview(tmp_path: Path) -> None:
+    with _open(tmp_path) as connection:
+        save_jobs(
+            connection,
+            [
+                _make_job(
+                    source="remoteok",
+                    source_job_id="r-1",
+                    title="Rust Engineer",
+                    company=None,
+                ),
+                _make_job(
+                    source="remoteok", source_job_id="r-2", title="Rust Engineer"
+                ),
+            ],
+        )
+
+    report = _build(tmp_path)
+    by_source = {entry.source: entry for entry in report.overview.source_stats}
+    assert by_source["remoteok"].never_groupable_jobs == 1
+
+
+def test_source_stats_text_section_shows_missing_and_coverage(
+    tmp_path: Path,
+) -> None:
+    with _open(tmp_path) as connection:
+        save_jobs(
+            connection,
+            [
+                _make_job(
+                    source="arbeitnow",
+                    source_job_id="a-1",
+                    title="Python Engineer",
+                    location=None,
+                ),
+                _make_job(
+                    source="arbeitnow",
+                    source_job_id="a-2",
+                    title="Python Engineer",
+                    location="Berlin",
+                ),
+            ],
+        )
+
+    report = _build(tmp_path)
+    text = render_report(report)
+    assert "Source quality (fields not provided by source):" in text
+    assert "arbeitnow: 2 jobs, never groupable: 0" in text
+    assert "location 1" in text
+    assert "location 50%" in text
+    assert "company 100%" in text
+
+
+def test_source_stats_text_compact_when_nothing_missing(tmp_path: Path) -> None:
+    with _open(tmp_path) as connection:
+        _seed_jobs(connection)
+
+    text = render_report(_build(tmp_path))
+    assert "Source quality (fields not provided by source):" in text
+    for source in ("arbeitnow", "remoteok", "weworkremotely", "jobicy"):
+        assert f"{source}: 1 jobs, never groupable: 0, no fields missing" in text
+
+
+def test_source_stats_text_empty_database_compact(tmp_path: Path) -> None:
+    text = render_report(_build(tmp_path))
+    assert "Source quality (fields not provided by source):" in text
+    assert "arbeitnow: 0 jobs" in text
+
+
+def test_source_stats_json_carries_full_counts_and_coverage(tmp_path: Path) -> None:
+    with _open(tmp_path) as connection:
+        save_jobs(
+            connection,
+            [
+                _make_job(
+                    source="jobicy",
+                    source_job_id="j-1",
+                    title="Frontend Engineer",
+                    location=None,
+                ),
+                _make_job(
+                    source="jobicy", source_job_id="j-2", title="Frontend Engineer"
+                ),
+            ],
+        )
+
+    payload = json.loads(render_report_json(_build(tmp_path)))
+    source_stats = payload["overview"]["source_stats"]
+    assert len(source_stats) == 7
+    by_source = {entry["source"]: entry for entry in source_stats}
+    jobicy = by_source["jobicy"]
+    assert jobicy["total_jobs"] == 2
+    assert jobicy["never_groupable_jobs"] == 0
+    location = next(f for f in jobicy["fields"] if f["field"] == "location")
+    assert location["missing_count"] == 1
+    assert location["provided_count"] == 1
+    assert location["coverage_pct"] == 50
+    company = next(f for f in jobicy["fields"] if f["field"] == "company")
+    assert company["missing_count"] == 0
+    assert company["provided_count"] == 2
+    assert company["coverage_pct"] == 100

@@ -19,6 +19,7 @@ from careeros.database.jobs import StoredJob
 from careeros.database.reminders import StoredReminder
 from careeros.notifications.models import NotificationSummary
 from careeros.ranking.scorer import RankedGroup, RankedJob
+from careeros.source_stats.models import SourceStats
 from careeros.status import SourceStatus
 
 # User-facing headings for the active application-pipeline categories, shared
@@ -49,6 +50,7 @@ class Overview:
     review_later_groups: int
     source_snapshots: tuple[SourceStatus, ...]
     due_sources: tuple[str, ...]
+    source_stats: tuple[SourceStats, ...]
 
 
 @dataclass(frozen=True)

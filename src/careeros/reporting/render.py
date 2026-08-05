@@ -9,6 +9,7 @@ sorted-key and independently deterministic.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -29,6 +30,11 @@ from careeros.reporting.models import (
     Reminders,
     Report,
     ReviewQueue,
+)
+from careeros.source_stats.models import (
+    MISSING_FIELD_WORDING,
+    FieldCoverage,
+    SourceStats,
 )
 from careeros.status import SourceStatus
 
@@ -95,6 +101,10 @@ def _render_overview(overview: Overview) -> str:
     lines.append("")
     due = ", ".join(overview.due_sources) if overview.due_sources else "none"
     lines.append(f"Sources due: {due}")
+    lines.append("")
+    lines.append(f"Source quality (fields {MISSING_FIELD_WORDING}):")
+    for stats in overview.source_stats:
+        lines.extend(_source_quality_lines(stats))
     return "\n".join(lines)
 
 
@@ -104,6 +114,55 @@ def _source_summary(status: SourceStatus, width: int) -> str:
         return f"{name}  never run"
     outcome = _SOURCE_OUTCOMES.get(status.last_succeeded, "unknown")
     return f"{name}  last run {status.last_attempt.isoformat()}  {outcome}"
+
+
+def _wrap_items(
+    prefix: str,
+    items: Sequence[str],
+    *,
+    width: int = 78,
+    continuation: str = "      ",
+) -> list[str]:
+    """Wrap ``prefix`` plus comma-separated ``items`` across terminal lines.
+
+    The first line starts with ``prefix``; when the running line would exceed
+    ``width`` the remainder continues under ``continuation`` so wrapped output
+    stays aligned and deterministic.
+    """
+    lines: list[str] = [prefix]
+    for item in items:
+        candidate = f"{lines[-1]}, {item}" if lines[-1] != prefix else f"{prefix}{item}"
+        if len(candidate) > width and lines[-1] != prefix:
+            lines.append(f"{continuation}{item}")
+        else:
+            lines[-1] = candidate
+    return lines
+
+
+def _source_quality_lines(stats: SourceStats) -> list[str]:
+    """Render one source's quality summary (compact when nothing is missing)."""
+    header = f"  {stats.source}: {stats.total_jobs} jobs"
+    if stats.total_jobs == 0:
+        return [header]
+    if all(field.missing_count == 0 for field in stats.fields):
+        return [
+            f"{header}, never groupable: {stats.never_groupable_jobs}, "
+            "no fields missing"
+        ]
+
+    lines = [f"{header}, never groupable: {stats.never_groupable_jobs}"]
+    missing_items = [f"{field.field} {field.missing_count}" for field in stats.fields]
+    lines.extend(_wrap_items(f"    {MISSING_FIELD_WORDING}: ", missing_items))
+    coverage_items = [
+        (
+            f"{field.field} {field.coverage_pct}%"
+            if field.coverage_pct is not None
+            else f"{field.field} -"
+        )
+        for field in stats.fields
+    ]
+    lines.extend(_wrap_items("    coverage: ", coverage_items))
+    return lines
 
 
 def _render_pipeline(pipeline: ApplicationPipeline) -> str:
@@ -394,6 +453,24 @@ def _source_status_dict(status: SourceStatus) -> dict[str, Any]:
     }
 
 
+def _field_coverage_dict(field: FieldCoverage) -> dict[str, Any]:
+    return {
+        "field": field.field,
+        "missing_count": field.missing_count,
+        "provided_count": field.provided_count,
+        "coverage_pct": field.coverage_pct,
+    }
+
+
+def _source_stats_dict(stats: SourceStats) -> dict[str, Any]:
+    return {
+        "source": stats.source,
+        "total_jobs": stats.total_jobs,
+        "never_groupable_jobs": stats.never_groupable_jobs,
+        "fields": [_field_coverage_dict(field) for field in stats.fields],
+    }
+
+
 def _snapshot_dict(snapshot: ApplicationSnapshot) -> dict[str, Any]:
     return {
         "job": _job_dict(snapshot.job),
@@ -490,6 +567,9 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
                 _source_status_dict(status) for status in overview.source_snapshots
             ],
             "due_sources": list(overview.due_sources),
+            "source_stats": [
+                _source_stats_dict(stats) for stats in overview.source_stats
+            ],
         },
         "application_pipeline": {
             "status_counts": dict(pipeline.status_counts),

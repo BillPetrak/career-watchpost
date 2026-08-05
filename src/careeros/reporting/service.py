@@ -43,6 +43,7 @@ from careeros.review.service import build_queue, review_group_summary
 from careeros.saved_searches.execution import execute_rank, rank_candidates
 from careeros.saved_searches.models import SavedSearch
 from careeros.saved_searches.service import list_searches
+from careeros.source_stats.service import compute_source_stats
 from careeros.status import build_statuses
 
 _JOB_COLUMNS: tuple[str, ...] = tuple(_SELECT_COLUMNS.split(", "))
@@ -311,6 +312,7 @@ def build_report(
     """
     source_snapshots = tuple(build_statuses(connection, now=now))
     due_sources = tuple(status.source for status in source_snapshots if status.due)
+    source_stats = compute_source_stats(connection)
 
     summary = grouping_summary(connection)
     distinct_opportunities = summary.total_jobs - summary.grouped_jobs + summary.groups
@@ -334,6 +336,7 @@ def build_report(
         review_later_groups=review_summary.review_later_groups,
         source_snapshots=source_snapshots,
         due_sources=due_sources,
+        source_stats=source_stats,
     )
 
     pipeline = ApplicationPipeline(

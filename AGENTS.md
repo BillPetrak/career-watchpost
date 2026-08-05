@@ -465,8 +465,18 @@ Sections and semantics:
 - **Overview** — stored jobs, canonical groups, grouped members, distinct
   opportunities (`total_jobs - grouped_members + groups`), tracked applications,
   saved searches, review-queue counters (reviewed/unreviewed/shortlisted/
-  dismissed/review-later groups), a per-source last-run summary, and due
-  sources.
+  dismissed/review-later groups), a per-source last-run summary, due sources,
+  and a **source quality** summary computed by the shared source-statistics
+  service (`src/careeros/source_stats/`). Source quality reports, per registered
+  source in registry order: stored-job counts, eight missing-field statistics
+  (`source_job_id`, `company`, `location`, `description`, `url`,
+  `employment_type`, `remote_status`, `published_at` — a field counts as
+  "not provided by source" when it is NULL or an empty string), field-coverage
+  percentages derived from those counts, and `never_groupable_jobs` (stored
+  rows whose normalized company or title signature is empty, so they can never
+  participate in duplicate grouping). The text renderer summarizes a source in
+  one line when nothing is missing; the JSON always carries the full counts and
+  coverage for all eight fields.
 - **Application pipeline** — one count per status in `APPLICATION_STATUSES`
   order (zero-filled), and the most recently changed applications newest first
   (`updated_at DESC, id DESC`), capped by `--limit`. Each entry shows the latest
@@ -546,6 +556,7 @@ after moving the repository (uninstall first if the old units should go).
 - `src/careeros/saved_searches/` — saved workflow definitions and shared execution
 - `src/careeros/reminders/` — local follow-up reminders (models, service)
 - `src/careeros/review/` — daily review queue (models, service, render)
+- `src/careeros/source_stats/` — unified per-source statistics and quality diagnostics
 - `src/careeros/reporting/` — Career Snapshot dashboard (models, service, renderers)
 - `src/careeros/{job_hunter,privacy,ranking}/` — stubs (empty, not implemented)
 - `tests/` — pytest suite, uses `tmp_path` for isolated SQLite databases
