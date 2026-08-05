@@ -152,6 +152,7 @@ _SOURCE_LABELS = {
     "remoteok": "Remote OK",
     "remotive": "Remotive",
     "weworkremotely": "We Work Remotely",
+    "workingnomads": "Working Nomads",
 }
 
 

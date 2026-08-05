@@ -26,7 +26,7 @@ def test_remotive_interval_is_documented() -> None:
 
 
 def test_other_intervals_are_provisional() -> None:
-    for source in ("arbeitnow", "remoteok", "weworkremotely"):
+    for source in ("arbeitnow", "remoteok", "weworkremotely", "workingnomads"):
         assert SOURCE_POLICIES[source].documented is False
 
 
@@ -37,7 +37,18 @@ def test_every_registered_source_has_a_policy() -> None:
         "remoteok",
         "remotive",
         "weworkremotely",
+        "workingnomads",
     }
+
+
+def test_workingnomads_minimum_interval_is_six_hours() -> None:
+    assert SOURCE_POLICIES["workingnomads"] == SourcePolicy(
+        "workingnomads", timedelta(hours=6)
+    )
+
+
+def test_workingnomads_interval_is_provisional() -> None:
+    assert SOURCE_POLICIES["workingnomads"].documented is False
 
 
 def test_all_intervals_are_positive() -> None:

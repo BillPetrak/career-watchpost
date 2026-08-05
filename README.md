@@ -62,12 +62,19 @@ only, no API keys, no browser automation):
 | We Work Remotely | `https://weworkremotely.com/remote-jobs.rss` (RSS) | 6 hours (provisional) |
 | Jobicy | `https://jobicy.com/api/v2/remote-jobs` (JSON) | 1 hour (documented) |
 | Remotive | `https://remotive.com/api/remote-jobs` (JSON) | 6 hours (documented) |
+| Working Nomads | `POST https://www.workingnomads.com/jobsapi/_search` (JSON) | 6 hours (provisional) |
 
 Remotive's terms require attributing listings with a link back to the original
 URL and allow polling at most four times a day; its listings are published with
 a 24-hour delay. Jobicy requires similar credit. CareerOS always stores each
 job's original URL and labels its source, and `collect due` enforces the
 polling floors above.
+
+Working Nomads is a remote-only board and does not publish a documented public
+API: its collector targets the same internal Elasticsearch search endpoint that
+powers the public listing pages, so the endpoint is undocumented and may change
+without notice. CareerOS sends only a minimal bounded request and treats any
+malformed response as a collection failure rather than an empty result.
 
 ## Cross-source duplicate detection
 

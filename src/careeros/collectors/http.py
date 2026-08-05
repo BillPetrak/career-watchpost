@@ -31,3 +31,24 @@ def fetch_bytes(
 def fetch_json(url: str, *, timeout: float = DEFAULT_TIMEOUT) -> object:
     """Fetch a URL and parse its response body as JSON."""
     return json.loads(fetch_bytes(url, timeout=timeout, accept="application/json"))
+
+
+def fetch_json_post(
+    url: str,
+    payload: object,
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> object:
+    """POST a JSON payload to a URL and parse the response body as JSON."""
+    request = Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(bytes(response.read()))

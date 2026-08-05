@@ -11,6 +11,7 @@ from careeros.collectors.models import CollectedJob
 from careeros.collectors.remoteok import fetch_jobs as remoteok_fetch_jobs
 from careeros.collectors.remotive import fetch_jobs as remotive_fetch_jobs
 from careeros.collectors.weworkremotely import fetch_jobs as weworkremotely_fetch_jobs
+from careeros.collectors.workingnomads import fetch_jobs as workingnomads_fetch_jobs
 
 
 class Collector(Protocol):
@@ -29,12 +30,13 @@ CollectorName: TypeAlias = str
 
 # Dict preserves insertion order, so the registry order is the stable execution
 # order for multi-source collection (arbeitnow, remoteok, weworkremotely,
-# jobicy, remotive). Orchestration derives its order from these keys rather
-# than keeping a separate source of truth.
+# jobicy, remotive, workingnomads). Orchestration derives its order from these
+# keys rather than keeping a separate source of truth.
 COLLECTORS: dict[CollectorName, Collector] = {
     "arbeitnow": arbeitnow_fetch_jobs,
     "remoteok": remoteok_fetch_jobs,
     "weworkremotely": weworkremotely_fetch_jobs,
     "jobicy": jobicy_fetch_jobs,
     "remotive": remotive_fetch_jobs,
+    "workingnomads": workingnomads_fetch_jobs,
 }
