@@ -348,6 +348,65 @@ own grouping), and a search-mode saved search is rejected. Exit codes: `0`
 success (including an empty database), `1` unknown saved search or
 profile/database failure, `2` invalid flags.
 
+## Deterministic exports
+
+CareerOS can project its stored state into portable files with `careeros
+export`. Exports are **deterministic and read-only**: the same database and
+flags always produce byte-identical output, and exporting never fetches jobs,
+never writes to the database, never acquires the collection lock (it runs while
+a collection is in progress), and never contacts an external service. A missing
+database path yields a valid empty export without creating the file.
+
+```bash
+uv run careeros export jobs                                          # JSON to stdout
+uv run careeros export jobs --grouped --format csv                   # grouped CSV
+uv run careeros export ranked --query engineer \
+  --profile config/candidate_profile.example.json                    # scored ranking
+uv run careeros export review \
+  --profile config/candidate_profile.example.json                    # review queue
+uv run careeros export source-stats --format jsonl                   # per-source stats
+uv run careeros export collection-history --output runs.csv          # to a file
+```
+
+Subcommands and their key flags:
+
+- **`jobs`** — stored vacancies. Filters: `--query`, `--remote`, `--location`,
+  `--source`, `--employment-type`, `--grouped` (one record per canonical
+  duplicate group), `--clean-descriptions`.
+- **`ranked`** — jobs scored against a profile (requires `--query` and
+  `--profile`). Adds `--grouped`, `--min-score`, and `--no-feedback`.
+- **`review`** — the ranked daily review queue (requires `--profile`). Supports
+  `--state`, `--min-score`, `--include-tracked`, `--grouped`/`--no-grouped`
+  (grouped by default), and `--no-feedback`, mirroring `review next`.
+- **`source-stats`** — unified per-source statistics in registry order, with
+  `--source` to select one.
+- **`collection-history`** — collection runs newest first, with `--source` and
+  `--failed`.
+
+All subcommands share `--format {json,jsonl,csv}` (default `json`), `--limit N`
+(default 20; `0` means no cap, hard-capped at 1,000,000 records), `--output
+PATH` (default stdout), `--overwrite` (required to replace an existing
+`--output` file), and `--database`.
+
+Format contract:
+
+- **JSON** — a single document `{"records": [...], "total": N, "truncated":
+  bool}`. Record keys are in a fixed canonical order; nested values (`reasons`,
+  `score_components`, grouped `members`/`sources`/`urls`) are native
+  structures.
+- **JSONL** — one compact JSON record per line, in the same order.
+- **CSV** — a header row of the canonical column names followed by one row per
+  record; nested values render as stable JSON strings and empty cells are
+  blank.
+
+`total` always reports how many records matched before the cap, so truncation
+is always explicit (`truncated: true` when some records were dropped).
+Ranked and review exports carry `score`, `match_score`, `reasons`, and
+`score_components` per record (matching the JSON output of the rank and review
+commands), and flat job/ranked records include the canonical `group_id` when the
+job belongs to a group. Exporting into a closed pipe (e.g. `| head`) exits 0.
+Exit codes: `0` success, `1` output/profile/database failure, `2` usage errors.
+
 ## Scheduled collection
 
 A periodic run can be installed as a systemd user service and timer from the

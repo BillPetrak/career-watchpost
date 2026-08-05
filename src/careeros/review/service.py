@@ -413,6 +413,7 @@ def build_queue(
     source: str | None = None,
     location: str | None = None,
     remote: bool | None = None,
+    employment_type: str | None = None,
     limit: int = 20,
     grouped: bool = True,
     feedback: FeedbackSet | None = None,
@@ -420,11 +421,11 @@ def build_queue(
     """Build a ranked review queue (read-only).
 
     Flow: candidate member rows are filtered by ``source``/``location``/
-    ``remote`` BEFORE grouping; the state filter and the default application
-    exclusion are applied before scoring; every eligible group is ranked with
-    the shared scorer; ``min_score`` trims the ranked list; only then is the
-    final ``limit`` applied. This guarantees the ordering is identical to the
-    existing rank/report scorer ordering.
+    ``remote``/``employment_type`` BEFORE grouping; the state filter and the
+    default application exclusion are applied before scoring; every eligible
+    group is ranked with the shared scorer; ``min_score`` trims the ranked
+    list; only then is the final ``limit`` applied. This guarantees the
+    ordering is identical to the existing rank/report scorer ordering.
 
     ``feedback`` carries the review-feedback set (built once by the caller);
     None disables review feedback. Since the default ``state`` excludes
@@ -442,6 +443,7 @@ def build_queue(
         remote=remote,
         location=location,
         source=source,
+        employment_type=employment_type,
     )
     if not grouped:
         expanded: list[GroupedJob] = []

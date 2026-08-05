@@ -39,6 +39,10 @@ from careeros.database.jobs import StoredJob, get_job_by_id
 from careeros.database.review import latest_event_note as review_latest_event_note
 from careeros.database.runs import CollectionRun, list_runs, parse_utc
 from careeros.database.schema import initialize_schema
+from careeros.export.models import ExportError, ExportFormat, ExportRequest
+from careeros.export.serializers import render_export
+from careeros.export.service import build_records
+from careeros.export.writer import open_output, stdout_stream, write_export
 from careeros.locking import (
     CollectionLockConflict,
     LockConflict,
@@ -141,16 +145,12 @@ from careeros.saved_searches.service import (
     rename_search,
     update_search,
 )
-from careeros.source_stats.models import (
-    MISSING_FIELD_COLUMNS,
-    FieldCoverage,
-    SourceStats,
-)
+from careeros.source_stats.models import SourceStats
 from careeros.source_stats.render import (
     render_source_stats_json,
     render_source_stats_text,
 )
-from careeros.source_stats.service import compute_source_stats
+from careeros.source_stats.service import compute_source_stats, empty_source_stats
 from careeros.status import build_statuses
 from careeros.text import clean_description
 
@@ -2095,30 +2095,82 @@ def run_report(
     return 0
 
 
+def run_export(
+    arguments: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    """Export deterministic stored state (read-only, no lock, no writes).
+
+    A missing database file yields a valid empty export without ever creating
+    the file. Output goes to stdout by default; ``--output`` writes a file and
+    refuses to clobber it unless ``--overwrite`` is given. A broken pipe (e.g.
+    ``careeros export jobs | head``) is not an error.
+    """
+    command = arguments.export_command
+
+    if arguments.limit < 0:
+        parser.error("--limit must be 0 (no cap) or a positive integer")
+    if command == "ranked" and arguments.query is None:
+        parser.error("export ranked requires --query")
+    if command in ("ranked", "review") and arguments.profile is None:
+        parser.error(f"export {command} requires --profile")
+
+    export_format = ExportFormat(arguments.format)
+    request = ExportRequest(
+        format=export_format,
+        output=arguments.output,
+        limit=arguments.limit,
+        overwrite=arguments.overwrite,
+        grouped=getattr(arguments, "grouped", False),
+        clean_descriptions=getattr(arguments, "clean_descriptions", False),
+        query=getattr(arguments, "query", None),
+        profile=getattr(arguments, "profile", None),
+        remote=getattr(arguments, "remote", False) or None,
+        location=getattr(arguments, "location", None),
+        source=getattr(arguments, "source", None),
+        employment_type=getattr(arguments, "employment_type", None),
+        min_score=getattr(arguments, "min_score", 0),
+        state=getattr(arguments, "state", "unreviewed"),
+        include_tracked=getattr(arguments, "include_tracked", False),
+        use_feedback=not getattr(arguments, "no_feedback", False),
+        failed_only=getattr(arguments, "failed", False),
+    )
+
+    connection: sqlite3.Connection | None = None
+    try:
+        if arguments.database.exists():
+            connection = connect(arguments.database)
+        result = build_records(connection, command, request)
+    except (OSError, ValueError, sqlite3.Error) as error:
+        print(f"Export failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+    finally:
+        if connection is not None:
+            connection.close()
+
+    text = render_export(result, export_format)
+    if arguments.output is not None:
+        try:
+            stream = open_output(arguments.output, overwrite=arguments.overwrite)
+        except ExportError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        try:
+            return write_export(text, stream)
+        finally:
+            stream.close()
+
+    return write_export(text, stdout_stream())
+
+
 def _empty_source_stats() -> tuple[SourceStats, ...]:
     """Build zero-count statistics for every registered source.
 
     Used when the database file does not exist so the read-only command can
     report a deterministically empty database without ever creating the file.
+    Delegates to the shared source-stats service helper.
     """
-    fields = tuple(
-        FieldCoverage(
-            field=column,
-            missing_count=0,
-            provided_count=0,
-            coverage_pct=None,
-        )
-        for column in MISSING_FIELD_COLUMNS
-    )
-    return tuple(
-        SourceStats(
-            source=source,
-            total_jobs=0,
-            fields=fields,
-            never_groupable_jobs=0,
-        )
-        for source in COLLECTORS
-    )
+    return empty_source_stats()
 
 
 def run_source_stats(
@@ -3224,7 +3276,203 @@ def build_parser() -> argparse.ArgumentParser:
         help="SQLite database path.",
     )
 
+    export_parser = subparsers.add_parser(
+        "export",
+        help=(
+            "Write deterministic JSON/JSONL/CSV exports of stored jobs, "
+            "rankings, the review queue, source statistics, or collection "
+            "history (read-only)."
+        ),
+    )
+    export_commands = export_parser.add_subparsers(
+        dest="export_command",
+        required=True,
+    )
+
+    jobs_parser = export_commands.add_parser(
+        "jobs",
+        help="Export stored jobs (flat or grouped).",
+    )
+    jobs_parser.add_argument("--query", help="Only export jobs matching this keyword.")
+    _add_export_filter_flags(jobs_parser)
+    jobs_parser.add_argument(
+        "--grouped",
+        action="store_true",
+        help="Collapse cross-source duplicates into one record per group.",
+    )
+    _add_export_common_flags(jobs_parser)
+
+    ranked_parser = export_commands.add_parser(
+        "ranked",
+        help="Export profile-ranked jobs with scores and reasons.",
+    )
+    ranked_parser.add_argument(
+        "--query",
+        required=True,
+        help="Search keyword for the jobs to rank.",
+    )
+    ranked_parser.add_argument(
+        "--profile",
+        type=Path,
+        required=True,
+        help="Path to a candidate profile JSON/YAML file.",
+    )
+    _add_export_filter_flags(ranked_parser)
+    ranked_parser.add_argument(
+        "--grouped",
+        action="store_true",
+        help="Collapse cross-source duplicates into one record per group.",
+    )
+    ranked_parser.add_argument(
+        "--min-score",
+        type=int,
+        default=0,
+        help="Only export results with a match score of at least N (0-100).",
+    )
+    ranked_parser.add_argument(
+        "--no-feedback",
+        action="store_true",
+        help="Disable review-feedback adjustments to exported scores.",
+    )
+    _add_export_common_flags(ranked_parser)
+
+    review_parser = export_commands.add_parser(
+        "review",
+        help="Export the personalized daily review queue (ranked).",
+    )
+    review_parser.add_argument(
+        "--profile",
+        type=Path,
+        required=True,
+        help="Path to a candidate profile JSON/YAML file.",
+    )
+    review_parser.add_argument(
+        "--state",
+        choices=QUEUE_STATES,
+        default="unreviewed",
+        help="Which queue state to export (default: unreviewed).",
+    )
+    review_parser.add_argument(
+        "--min-score",
+        type=int,
+        default=0,
+        help="Only export results with a match score of at least N (0-100).",
+    )
+    review_parser.add_argument(
+        "--include-tracked",
+        action="store_true",
+        help="Include opportunities that already have an application record.",
+    )
+    review_parser.add_argument(
+        "--no-feedback",
+        action="store_true",
+        help="Disable review-feedback adjustments to exported scores.",
+    )
+    _add_export_filter_flags(review_parser)
+    review_grouped = review_parser.add_mutually_exclusive_group()
+    review_grouped.add_argument(
+        "--grouped",
+        dest="grouped",
+        action="store_true",
+        default=True,
+        help="Collapse cross-source duplicates into one record per group (default).",
+    )
+    review_grouped.add_argument(
+        "--no-grouped",
+        dest="grouped",
+        action="store_false",
+        help="Export every job individually without collapsing duplicates.",
+    )
+    _add_export_common_flags(review_parser)
+
+    source_stats_parser = export_commands.add_parser(
+        "source-stats",
+        help="Export unified per-source statistics.",
+    )
+    source_stats_parser.add_argument(
+        "--source",
+        choices=[*COLLECTORS],
+        help="Only export statistics for this source.",
+    )
+    _add_export_common_flags(source_stats_parser)
+
+    history_parser = export_commands.add_parser(
+        "collection-history",
+        help="Export collection run history.",
+    )
+    history_parser.add_argument(
+        "--source",
+        choices=[*COLLECTORS],
+        help="Only export runs for this source.",
+    )
+    history_parser.add_argument(
+        "--failed",
+        action="store_true",
+        help="Only export completed failed runs.",
+    )
+    _add_export_common_flags(history_parser)
+
     return parser
+
+
+def _add_export_filter_flags(parser: argparse.ArgumentParser) -> None:
+    """Add the job filters shared by the job-bearing export subcommands."""
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="Only export remote jobs.",
+    )
+    parser.add_argument(
+        "--location",
+        help="Only export jobs matching this location (partial match).",
+    )
+    parser.add_argument(
+        "--source",
+        choices=[*COLLECTORS],
+        help="Only export jobs from this source.",
+    )
+    parser.add_argument(
+        "--employment-type",
+        help="Only export jobs with this employment type (partial match).",
+    )
+    parser.add_argument(
+        "--clean-descriptions",
+        action="store_true",
+        help="Normalize descriptions to readable text in the export.",
+    )
+
+
+def _add_export_common_flags(parser: argparse.ArgumentParser) -> None:
+    """Add the flags shared by every export subcommand."""
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum records (default: 20; 0 means no cap).",
+    )
+    parser.add_argument(
+        "--format",
+        choices=("json", "jsonl", "csv"),
+        default="json",
+        help="Output format (default: json).",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Write to this file instead of stdout.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow overwriting an existing --output file.",
+    )
+    parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help="SQLite database path.",
+    )
 
 
 def _add_saved_search_filter_flags(parser: argparse.ArgumentParser) -> None:
@@ -4097,6 +4345,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
         return run_reminder_delete(arguments.reminder_id, arguments.database)
+
+    if arguments.command == "export":
+        return run_export(arguments, parser)
 
     parser.error("Unsupported command.")
     return 2

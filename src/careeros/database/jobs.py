@@ -75,11 +75,14 @@ def search_jobs(
     remote: bool | None = None,
     location: str | None = None,
     source: str | None = None,
-    limit: int = 20,
+    employment_type: str | None = None,
+    limit: int | None = 20,
 ) -> list[StoredJob]:
     """Search jobs by keyword across title, company, and description.
 
-    Optional filters narrow results by remote status, location, or source.
+    Optional filters narrow results by remote status, location, source, or
+    employment type (partial match). ``limit`` caps the returned rows; None
+    returns every match.
     """
     pattern = f"%{keyword}%"
     conditions: list[str] = [
@@ -98,19 +101,69 @@ def search_jobs(
         conditions.append("source = ?")
         params.append(source)
 
-    params.append(limit)
+    if employment_type is not None:
+        conditions.append("employment_type LIKE ?")
+        params.append(f"%{employment_type}%")
+
+    sql = f"""
+        SELECT {_SELECT_COLUMNS}
+        FROM jobs
+        WHERE {" AND ".join(conditions)}
+        ORDER BY published_at DESC NULLS LAST, id ASC
+    """
+    if limit is None:
+        rows = connection.execute(sql, params).fetchall()
+    else:
+        rows = connection.execute(sql + " LIMIT ?", [*params, limit]).fetchall()
+
+    return [_stored_job_from_row(row) for row in rows]
+
+
+def list_jobs(
+    connection: sqlite3.Connection,
+    *,
+    remote: bool | None = None,
+    location: str | None = None,
+    source: str | None = None,
+    employment_type: str | None = None,
+) -> list[StoredJob]:
+    """Return stored jobs with optional filters, in canonical search order.
+
+    Mirrors ``search_jobs`` without a keyword so an export can list every
+    stored job deterministically (``published_at DESC NULLS LAST, id ASC``)
+    with the same filters applied.
+    """
+    conditions: list[str] = []
+    params: list[str] = []
+
+    if remote:
+        conditions.append("remote_status = 'remote'")
+
+    if location is not None:
+        conditions.append("location LIKE ?")
+        params.append(f"%{location}%")
+
+    if source is not None:
+        conditions.append("source = ?")
+        params.append(source)
+
+    if employment_type is not None:
+        conditions.append("employment_type LIKE ?")
+        params.append(f"%{employment_type}%")
+
+    where_clause = ""
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
 
     rows = connection.execute(
         f"""
         SELECT {_SELECT_COLUMNS}
         FROM jobs
-        WHERE {" AND ".join(conditions)}
+        {where_clause}
         ORDER BY published_at DESC NULLS LAST, id ASC
-        LIMIT ?
         """,
         params,
     ).fetchall()
-
     return [_stored_job_from_row(row) for row in rows]
 
 

@@ -119,7 +119,8 @@ def search_candidates(
     remote: bool | None = None,
     location: str | None = None,
     source: str | None = None,
-    limit: int = 20,
+    employment_type: str | None = None,
+    limit: int | None = 20,
     grouped: bool = False,
     untracked: bool = False,
     include_statuses: tuple[str, ...] = (),
@@ -137,6 +138,7 @@ def search_candidates(
                 remote=remote,
                 location=location,
                 source=source,
+                employment_type=employment_type,
                 limit=limit,
             )
         )
@@ -148,6 +150,7 @@ def search_candidates(
                 remote=remote,
                 location=location,
                 source=source,
+                employment_type=employment_type,
                 limit=limit,
             )
         )
@@ -180,7 +183,8 @@ def rank_candidates(
     remote: bool | None = None,
     location: str | None = None,
     source: str | None = None,
-    limit: int = 20,
+    employment_type: str | None = None,
+    limit: int | None = 20,
     grouped: bool = False,
     min_score: int = 0,
     untracked: bool = False,
@@ -201,6 +205,7 @@ def rank_candidates(
         remote=remote,
         location=location,
         source=source,
+        employment_type=employment_type,
         limit=limit,
         grouped=grouped,
         untracked=untracked,

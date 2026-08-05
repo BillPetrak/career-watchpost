@@ -8,6 +8,7 @@ search results and diagnostics. Job rows are never modified here.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from careeros.database.jobs import (
@@ -122,15 +123,17 @@ def search_grouped(
     remote: bool | None = None,
     location: str | None = None,
     source: str | None = None,
-    limit: int = 20,
+    employment_type: str | None = None,
+    limit: int | None = 20,
 ) -> list[GroupedJob]:
     """Search jobs and collapse matches into one result per canonical group.
 
     Filtering is applied to the candidate member rows BEFORE grouping, so
-    ``source``/``remote``/``location`` narrow which listings participate and a
-    group only appears when at least one of its matching members passes every
-    filter. Jobs with no stored group behave as single-member groups, keeping
-    results backward compatible for ungrouped databases.
+    ``source``/``remote``/``location``/``employment_type`` narrow which listings
+    participate and a group only appears when at least one of its matching
+    members passes every filter. Jobs with no stored group behave as
+    single-member groups, keeping results backward compatible for ungrouped
+    databases. ``limit`` caps the returned groups; None returns every group.
     """
     pattern = f"%{keyword}%"
     conditions: list[str] = [
@@ -148,6 +151,10 @@ def search_grouped(
     if source is not None:
         conditions.append("j.source = ?")
         params.append(source)
+
+    if employment_type is not None:
+        conditions.append("j.employment_type LIKE ?")
+        params.append(f"%{employment_type}%")
 
     rows = connection.execute(
         f"""
@@ -188,7 +195,7 @@ def search_grouped(
         )
 
     results.sort(key=lambda group: _publish_sort_key(group.representative))
-    return results[:limit]
+    return results[:limit] if limit is not None else results
 
 
 def _publish_sort_key(job: StoredJob) -> tuple[int, int, int]:
@@ -207,16 +214,17 @@ def list_all_groups(
     remote: bool | None = None,
     location: str | None = None,
     source: str | None = None,
+    employment_type: str | None = None,
 ) -> list[GroupedJob]:
     """Return every distinct opportunity as a GroupedJob.
 
     Jobs with a stored group are collapsed into one result per canonical group;
     ungrouped jobs behave as single-member groups. Optional ``remote``/
-    ``location``/``source`` filters apply to the candidate member rows BEFORE
-    grouping, so a group only appears when at least one of its members passes
-    every filter (matching the grouped-search semantics). Results are ordered
-    by ascending representative (lowest member) job ID, which is deterministic
-    regardless of grouping state.
+    ``location``/``source``/``employment_type`` filters apply to the candidate
+    member rows BEFORE grouping, so a group only appears when at least one of
+    its members passes every filter (matching the grouped-search semantics).
+    Results are ordered by ascending representative (lowest member) job ID,
+    which is deterministic regardless of grouping state.
     """
     conditions: list[str] = []
     params: list[str] = []
@@ -231,6 +239,10 @@ def list_all_groups(
     if source is not None:
         conditions.append("j.source = ?")
         params.append(source)
+
+    if employment_type is not None:
+        conditions.append("j.employment_type LIKE ?")
+        params.append(f"%{employment_type}%")
 
     where_clause = ""
     if conditions:
@@ -336,3 +348,32 @@ def grouping_summary(connection: sqlite3.Connection) -> GroupingSummary:
         groups=int(groups),
         grouped_jobs=int(grouped_jobs),
     )
+
+
+def group_ids_for_jobs(
+    connection: sqlite3.Connection,
+    job_ids: Iterable[int],
+) -> dict[int, str | None]:
+    """Map job IDs to their canonical group ID (or None when ungrouped).
+
+    Batch lookup for exporting: every input ID is represented in the returned
+    dict so callers never need to default individual keys. The result is
+    deterministic and never writes.
+    """
+    ids = list(job_ids)
+    mapping: dict[int, str | None] = {job_id: None for job_id in ids}
+    if not ids:
+        return mapping
+
+    placeholders = ", ".join("?" for _ in ids)
+    rows = connection.execute(
+        f"""
+        SELECT job_id, group_id
+        FROM job_group_members
+        WHERE job_id IN ({placeholders})
+        """,
+        ids,
+    ).fetchall()
+    for row in rows:
+        mapping[int(row["job_id"])] = row["group_id"]
+    return mapping

@@ -39,6 +39,11 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros profile validate [PATH]` | Validate a JSON/YAML candidate profile (default: private path) |
 | `uv run careeros profile show [PATH]` | Show a candidate profile readably (default: private path) |
 | `uv run careeros report [--format {text,json}] [--profile PATH] [--saved-search NAME] [--limit N] [--grouped] [--no-feedback]` | Read-only Career Snapshot dashboard (default format: text) |
+| `uv run careeros export jobs [--query Q] [--grouped] [--remote] [--location L] [--source S] [--employment-type ET] [--clean-descriptions] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of stored jobs (read-only) |
+| `uv run careeros export ranked --query Q --profile PATH [--grouped] [--min-score N] [--no-feedback] [--remote] [--location L] [--source S] [--employment-type ET] [--clean-descriptions] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of profile-ranked jobs (read-only) |
+| `uv run careeros export review --profile PATH [--state S] [--min-score N] [--include-tracked] [--grouped\|--no-grouped] [--no-feedback] [--remote] [--location L] [--source S] [--employment-type ET] [--clean-descriptions] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of the review queue (read-only) |
+| `uv run careeros export source-stats [--source S] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of unified per-source statistics (read-only) |
+| `uv run careeros export collection-history [--source S] [--failed] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of collection run history (read-only) |
 | `uv run careeros group regroup [--database PATH]` | Recompute canonical duplicate groups (write; locks the DB) |
 | `uv run careeros group explain [--database PATH] [--group-id ID] [--limit N]` | Show canonical groups read-only |
 | `uv run careeros application set JOB_ID STATUS [--note TEXT] [--database PATH]` | Set/update a job's application status (write; locks the DB) |
@@ -184,7 +189,8 @@ The read-only commands `collect status`, `collect history`, `search`, `show`,
 `rank`, `group explain`, `application show`, `application list`,
 `application history`, `reminder list`, `reminder show`, `saved-search list`,
 `saved-search show`, `saved-search run`, `review next`, `review show`,
-`review list`, `review history`, and `report` never acquire the
+`review list`, `review history`, `report`, and the whole `export` family never
+acquire the
 collection lock and remain available
 while a collection is running.
 
@@ -574,6 +580,75 @@ saved-search name or profile/database/setup failure, `2` for invalid flags or a
 search-mode `--saved-search`. The command never exits 75 and never touches the
 database beyond idempotent schema initialization.
 
+## Deterministic exports
+
+`export` projects stored CareerOS state into deterministic JSON/JSONL/CSV
+output, on stdout or into a file. It is **read-only**: it never fetches jobs,
+never writes to the database, never acquires the collection lock (so it runs
+while a collection is in progress), never performs schema initialization, and
+never contacts any external service. A database path that does not exist yields
+a valid empty export without creating the file. The five subcommands are
+`jobs`, `ranked`, `review`, `source-stats`, and `collection-history`.
+
+Record contract (shared by every format):
+
+- **JSON** — one document `{"records": [...], "total": N, "truncated": bool}`,
+  `indent=2`, `ensure_ascii=False`. Record keys appear in a fixed canonical
+  column order.
+- **JSONL** — one compact JSON record per line in the same order (no envelope).
+- **CSV** — a header row of the canonical column names, then one row per
+  record. Nested values (lists/dicts) render as stable JSON strings with
+  sorted keys; `None` renders as an empty cell; booleans render as
+  `true`/`false`.
+
+`total` is the number of records the underlying pipeline produced before the
+export cap; `truncated` is True exactly when the cap dropped records. `--limit
+N` defaults to 20 and `0` means "no cap"; every value is hard-bounded by
+`MAX_EXPORT_RECORDS = 1_000_000` (`src/careeros/export/models.py`). A broken
+pipe (e.g. `careeros export jobs | head`) is not an error: the process exits 0.
+
+Shared flags: `--format {json,jsonl,csv}` (default `json`), `--limit N`,
+`--output PATH` (default stdout; refuses to overwrite without `--overwrite`),
+`--overwrite`, and `--database`. Per-command flags:
+
+- **`jobs`** — `--query`, `--remote`, `--location`, `--source`,
+  `--employment-type`, `--grouped`, `--clean-descriptions`. Flat mode exports
+  one record per stored job in search order (published desc, then id), each
+  carrying its canonical `group_id` (nullable, resolved with the batch helper
+  `group_ids_for_jobs`). Grouped mode exports one record per canonical group
+  (representative plus `member_count`/`members`/`sources`/`urls`), ordered by
+  ascending representative job id; filters apply to candidate member rows
+  before grouping, matching the grouped-search semantics.
+- **`ranked`** — requires `--query` and `--profile`; ranks through the shared
+  `rank_candidates` pipeline with `limit=None`, then applies `--min-score`
+  (already enforced by the pipeline) and the export cap. One-based `rank`
+  reflects the final output order. Records carry `score`, `match_score`,
+  `reasons`, and `score_components` (the `component_to_dict` form used by the
+  JSON rank/review/report renderers). `--no-feedback` disables review feedback;
+  `--grouped` collapses duplicates.
+- **`review`** — requires `--profile`; reuses `build_queue` with the same
+  defaults as `review next` (state `unreviewed`, grouped by default, tracked
+  applications excluded unless `--include-tracked`). Each record carries
+  `review_decision` (the resolved group decision or null). `--state`,
+  `--min-score`, `--no-feedback`, `--grouped`/`--no-grouped` mirror
+  `review next`.
+- **`source-stats`** — one record per registered source in registry order with
+  the eight per-field `{field}_missing`/`{field}_coverage_pct` columns;
+  `--source` narrows to one source.
+- **`collection-history`** — collection runs newest first (`started_at DESC,
+  id DESC`) with `--source` and `--failed` filters.
+
+Implementation: the CLI (`cli.run_export`) validates flags, builds an
+`ExportRequest`, opens the database only when the file exists (skipping the
+`connect()` parent-dir/file creation otherwise), and dispatches through
+`careeros.export.service.build_records` (per-command builders), then renders
+with `careeros.export.serializers.render_export` and writes via
+`careeros.export.writer.write_export` (broken-pipe policy). `build_records`
+accepts a `None` connection for the missing-file case; the shared
+`empty_source_stats` helper feeds the empty source-stats projection. Exit
+codes: `0` success, `1` output/profile/database failure, `2` usage errors
+(negative limit, missing required `--query`/`--profile`).
+
 ## systemd user units
 
 The `systemd/` directory holds templates, an installer, and an uninstaller for
@@ -612,6 +687,7 @@ after moving the repository (uninstall first if the old units should go).
 - `src/careeros/review/` — daily review queue (models, service, render)
 - `src/careeros/source_stats/` — unified per-source statistics and quality diagnostics
 - `src/careeros/reporting/` — Career Snapshot dashboard (models, service, renderers)
+- `src/careeros/export/` — deterministic read-only exports (models, service, serializers, writer)
 - `src/careeros/{job_hunter,privacy,ranking}/` — stubs (empty, not implemented)
 - `tests/` — pytest suite, uses `tmp_path` for isolated SQLite databases
 - `config/` — YAML config (settings.example.yaml, candidate_profile.example.yaml)
@@ -623,7 +699,7 @@ after moving the repository (uninstall first if the old units should go).
 - **No external runtime dependencies** — only stdlib + dev tools
 - **SQLite only** — schema managed in `schema.py`, not via migration tooling
 - **No CI/CD**, no pre-commit hooks, no Makefile
-- Module sub-packages beyond `collectors`, `database`, `grouping`, `saved_searches`, `reminders`, and `reporting` are stubs; adding real code there is expected
+- Module sub-packages beyond `collectors`, `database`, `grouping`, `saved_searches`, `reminders`, `review`, `source_stats`, `reporting`, and `export` are stubs; adding real code there is expected
 - Ruff: `line-length = 88`, selected rules `E F I UP B`
 - `mypy` is strict, scoped to `src/careeros` only (not tests)
 

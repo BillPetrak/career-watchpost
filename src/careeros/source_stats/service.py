@@ -78,6 +78,30 @@ def _never_groupable_count(jobs: Sequence[StoredJob]) -> int:
     return never_groupable
 
 
+def empty_source_stats(
+    order: Sequence[CollectorName] | None = None,
+) -> tuple[SourceStats, ...]:
+    """Return per-source statistics for an empty database.
+
+    Produces the same shape as ``compute_source_stats`` on an empty database
+    (all zero counts, no coverage percentages) without ever touching the
+    filesystem. Read-only commands use this when the database file does not
+    exist so they can report a deterministically empty database without
+    creating the file.
+    """
+    if order is None:
+        order = tuple(COLLECTORS)
+    return tuple(
+        SourceStats(
+            source=source,
+            total_jobs=0,
+            fields=_fields_for(()),
+            never_groupable_jobs=0,
+        )
+        for source in order
+    )
+
+
 def compute_source_stats(
     connection: sqlite3.Connection,
     *,
