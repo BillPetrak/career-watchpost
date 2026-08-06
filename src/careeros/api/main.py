@@ -1,13 +1,14 @@
 """FastAPI application for the CareerOS API slice.
 
-The slice exposes nine read-only endpoints backed by the shared database and
+The slice exposes twelve read-only endpoints backed by the shared database and
 presentation layers: ``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``,
-``GET /applications/{job_id}``, ``GET /reminders``, and
-``GET /reminders/{reminder_id}``. Every endpoint is strictly read-only: it
-never creates a database file, directory, or schema, never writes, and never
-makes network calls. Application notes, event history, review decisions, and
-reminder messages are never exposed over HTTP.
+``GET /applications/{job_id}``, ``GET /reminders``,
+``GET /reminders/{reminder_id}``, ``GET /groups``, ``GET /groups/summary``,
+and ``GET /groups/{group_id}``. Every endpoint is strictly read-only: it never
+creates a database file, directory, or schema, never writes, and never makes
+network calls. Application notes, event history, review decisions, reminder
+messages, and group matcher diagnostics are never exposed over HTTP.
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ from careeros.api.schemas import (
     ApplicationListResponse,
     CollectionRun,
     CollectionRunListResponse,
+    Group,
+    GroupListResponse,
+    GroupSummaryResponse,
     HealthResponse,
     Job,
     JobListResponse,
@@ -39,11 +43,18 @@ from careeros.database.applications import (
     get_application,
     list_applications,
 )
+from careeros.database.groups import (
+    GroupedJob,
+    grouping_summary,
+    list_all_groups,
+    list_group_infos,
+)
 from careeros.database.jobs import get_job_by_id, list_jobs
 from careeros.database.reminders import ReminderListEntry, get_reminder
 from careeros.database.runs import list_runs
 from careeros.presenters import (
     application_item_dict,
+    group_dict,
     job_dict,
     reminder_item_dict,
     source_stats_dict,
@@ -92,6 +103,11 @@ def _no_job_found_message(job_id: int) -> str:
 def _no_reminder_found_message(reminder_id: int) -> str:
     """Return the canonical "no such reminder" message for a reminder id."""
     return f"No reminder found with ID {reminder_id}."
+
+
+def _no_group_found_message(group_id: str) -> str:
+    """Return the canonical "no such group" message for a group id."""
+    return f"No group found with ID {group_id}."
 
 
 def _read_schema_version(connection: sqlite3.Connection) -> int | None:
@@ -359,6 +375,72 @@ def create_app() -> FastAPI:
         raise HTTPException(
             status_code=404, detail=_no_reminder_found_message(reminder_id)
         )
+
+    @app.get("/groups", response_model=GroupListResponse)
+    def list_groups_endpoint(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+        source: str | None = None,
+        remote: bool | None = None,
+        location: str | None = None,
+        employment_type: str | None = None,
+    ) -> GroupListResponse:
+        if connection is None:
+            return GroupListResponse(items=[], total=0, offset=offset, limit=limit)
+        groups = list_all_groups(
+            connection,
+            remote=remote,
+            location=location,
+            source=source,
+            employment_type=employment_type,
+        )
+        return GroupListResponse(
+            items=[
+                Group.model_validate(group_dict(group))
+                for group in groups[offset : offset + limit]
+            ],
+            total=len(groups),
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/groups/summary", response_model=GroupSummaryResponse)
+    def group_summary(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+    ) -> GroupSummaryResponse:
+        if connection is None:
+            return GroupSummaryResponse(
+                total_jobs=0, groups=0, grouped_jobs=0, distinct_opportunities=0
+            )
+        summary = grouping_summary(connection)
+        return GroupSummaryResponse(
+            total_jobs=summary.total_jobs,
+            groups=summary.groups,
+            grouped_jobs=summary.grouped_jobs,
+            distinct_opportunities=(
+                summary.total_jobs - summary.grouped_jobs + summary.groups
+            ),
+        )
+
+    @app.get("/groups/{group_id}", response_model=Group)
+    def show_group(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        group_id: str,
+    ) -> Group:
+        if connection is not None:
+            infos = list_group_infos(connection, group_id=group_id, limit=1)
+            if infos:
+                info = infos[0]
+                grouped = GroupedJob(
+                    group_id=info.group_id,
+                    representative=info.members[0],
+                    members=info.members,
+                    sources=info.sources,
+                    urls=info.urls,
+                )
+                return Group.model_validate(group_dict(grouped))
+        raise HTTPException(status_code=404, detail=_no_group_found_message(group_id))
 
     return app
 

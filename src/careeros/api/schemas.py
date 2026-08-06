@@ -154,12 +154,56 @@ class ReminderListResponse(BaseModel):
     limit: int
 
 
+class Group(BaseModel):
+    """A distinct opportunity: one canonical duplicate group, or one ungrouped job.
+
+    Mirrors the shared ``group_dict`` projection. ``group_id`` is ``None`` for
+    ungrouped singleton jobs. Matcher diagnostics (``reason``,
+    ``remote_sig``, ``location_sig``) and the group ``created_at`` are
+    deliberately omitted: they are internal matching detail the HTTP API never
+    exposes. ``members`` are ordered ascending by job ID, ``sources`` and
+    ``urls`` in ordered-distinct form.
+    """
+
+    group_id: str | None
+    representative: Job
+    members: list[Job]
+    sources: list[str]
+    urls: list[str | None]
+
+
+class GroupListResponse(BaseModel):
+    """A paginated page of distinct opportunities."""
+
+    items: list[Group]
+    total: int
+    offset: int
+    limit: int
+
+
+class GroupSummaryResponse(BaseModel):
+    """Aggregate grouping counts for the current database.
+
+    ``distinct_opportunities`` is derived as ``total_jobs - grouped_jobs +
+    groups``, matching the report Overview's definition of a distinct
+    opportunity.
+    """
+
+    total_jobs: int
+    groups: int
+    grouped_jobs: int
+    distinct_opportunities: int
+
+
 __all__: tuple[str, ...] = (
     "ApplicationItem",
     "ApplicationListResponse",
     "CollectionRun",
     "CollectionRunListResponse",
     "FieldCoverageStats",
+    "Group",
+    "GroupListResponse",
+    "GroupSummaryResponse",
     "HealthResponse",
     "Job",
     "JobListResponse",

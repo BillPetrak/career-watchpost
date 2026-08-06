@@ -745,6 +745,38 @@ canonical `No job found with ID {id}.` message locally.
   `No reminder found with ID {reminder_id}.` message; a defensively-detected
   reminder whose job is missing returns `404` with `No job found with ID
   {job_id}.`. Non-integer path input returns FastAPI's normal `422`.
+- `GET /groups` — distinct opportunities (canonical duplicate groups plus
+  ungrouped jobs as singletons), reusing the shared `database.groups`
+  `list_all_groups` service with the canonical `presenters.group_dict`
+  projection. Deterministic `offset`/`limit` pagination (defaults 0/20,
+  `limit` capped at 100). Optional `source`, `remote`, `location`, and
+  `employment_type` filters apply to candidate member rows BEFORE grouping,
+  matching the grouped-search semantics; unknown `source`/`employment_type`
+  values are ordinary equality filters that yield an empty `200`. Ordering is
+  deterministic: ascending representative (lowest member) job ID, with each
+  group's members ascending by job ID and `sources`/`urls` in ordered-distinct
+  form. `total` is the count after filtering/grouping and before
+  `offset`/`limit` slicing. The envelope is `{items, total, offset, limit}`;
+  each item has the exact field order `group_id` (null for singletons),
+  `representative`, `members`, `sources`, `urls`, with the nested jobs using
+  the canonical `job_dict` projection. Job descriptions, matcher diagnostics
+  (`reason`, `remote_sig`, `location_sig`), group `created_at`, and all
+  workflow state (notes, decisions, reminders, notification data) are
+  deliberately omitted from every response.
+- `GET /groups/summary` — aggregate grouping counts reusing the shared
+  `database.groups.grouping_summary` service, with no query parameters and no
+  pagination. The exact field order is `total_jobs`, `groups`,
+  `grouped_jobs`, `distinct_opportunities` (derived as `total_jobs -
+  grouped_jobs + groups`). A missing database returns all four values as zero
+  without creating a file or directory.
+- `GET /groups/{group_id}` — one canonical group using the same item shape as
+  a list item, resolved through `database.groups.list_group_infos` (members
+  ascending by job ID). `group_id` is a plain string path parameter with no
+  artificial regex or length validation. An unknown or arbitrary group ID
+  returns `404` with the canonical `No group found with ID {group_id}.`
+  message; singleton entries (`group_id` null) are list-only and not
+  addressable here. A missing database returns the same canonical `404`
+  without creating a file or directory.
 
 A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict read-only policy (no DDL on read paths).
