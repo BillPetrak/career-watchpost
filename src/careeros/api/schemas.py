@@ -37,4 +37,46 @@ class JobListResponse(BaseModel):
     limit: int
 
 
-__all__: tuple[str, ...] = ("HealthResponse", "Job", "JobListResponse")
+class FieldCoverageStats(BaseModel):
+    """Coverage of one stored job field for one source.
+
+    Mirrors the shared ``field_coverage_dict`` projection: ``coverage_pct`` is
+    ``None`` when the source has no stored jobs.
+    """
+
+    field: str
+    missing_count: int
+    provided_count: int
+    coverage_pct: int | None
+
+
+class SourceStats(BaseModel):
+    """Per-source statistics, mirroring the shared ``source_stats_dict``.
+
+    ``fields`` holds one :class:`FieldCoverageStats` per tracked field in the
+    canonical ``MISSING_FIELD_COLUMNS`` order.
+    """
+
+    source: str
+    total_jobs: int
+    never_groupable_jobs: int
+    fields: list[FieldCoverageStats]
+
+
+class SourceStatsListResponse(BaseModel):
+    """A paginated page of per-source statistics in collector registry order."""
+
+    items: list[SourceStats]
+    total: int
+    offset: int
+    limit: int
+
+
+__all__: tuple[str, ...] = (
+    "FieldCoverageStats",
+    "HealthResponse",
+    "Job",
+    "JobListResponse",
+    "SourceStats",
+    "SourceStatsListResponse",
+)

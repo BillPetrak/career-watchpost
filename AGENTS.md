@@ -672,6 +672,18 @@ canonical `No job found with ID {id}.` message locally.
   capped at 100) plus optional `source`, `remote`, `location`,
   `employment_type` filters; returns `{items, total, offset, limit}`.
 - `GET /jobs/{job_id}` — one job or `404` with the canonical message.
+- `GET /sources/stats` — unified per-source statistics in collector registry
+  order (one record per registered source, including zero-count sources),
+  computed by the shared `compute_source_stats` service. Each record carries
+  `source`, `total_jobs`, `never_groupable_jobs`, and one `fields` entry per
+  tracked field in `MISSING_FIELD_COLUMNS` order (`field`, `missing_count`,
+  `provided_count`, `coverage_pct`; `coverage_pct` is `null` when the source
+  has no stored jobs). Supports the same deterministic `offset`/`limit`
+  pagination as `/jobs` (defaults 0/20, `limit` capped at 100) plus an
+  optional equality `source` filter; an unknown `source` value returns `200`
+  with empty `items` and `total` 0. A missing database file returns all
+  registered sources with zero counts and `null` coverage without creating the
+  file.
 
 A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict read-only policy (no DDL on read paths).

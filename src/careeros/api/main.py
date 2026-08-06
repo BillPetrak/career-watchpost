@@ -1,9 +1,10 @@
 """FastAPI application for the first CareerOS API slice.
 
-The slice exposes three read-only endpoints backed by the shared database and
-presentation layers: ``GET /health``, ``GET /jobs``, and ``GET /jobs/{job_id}``.
-Every endpoint is strictly read-only: it never creates a database file,
-directory, or schema, never writes, and never makes network calls.
+The slice exposes four read-only endpoints backed by the shared database and
+presentation layers: ``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
+and ``GET /sources/stats``. Every endpoint is strictly read-only: it never
+creates a database file, directory, or schema, never writes, and never makes
+network calls.
 """
 
 from __future__ import annotations
@@ -15,9 +16,16 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from careeros.api.deps import read_only_connection
-from careeros.api.schemas import HealthResponse, Job, JobListResponse
+from careeros.api.schemas import (
+    HealthResponse,
+    Job,
+    JobListResponse,
+    SourceStats,
+    SourceStatsListResponse,
+)
 from careeros.database.jobs import get_job_by_id, list_jobs
-from careeros.presenters import job_dict
+from careeros.presenters import job_dict, source_stats_dict
+from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
@@ -119,6 +127,29 @@ def create_app() -> FastAPI:
             if stored is not None:
                 return Job.model_validate(job_dict(stored))
         raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
+
+    @app.get("/sources/stats", response_model=SourceStatsListResponse)
+    def source_stats(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+        source: str | None = None,
+    ) -> SourceStatsListResponse:
+        if connection is None:
+            stats = empty_source_stats()
+        else:
+            stats = compute_source_stats(connection)
+        if source is not None:
+            stats = tuple(entry for entry in stats if entry.source == source)
+        return SourceStatsListResponse(
+            items=[
+                SourceStats.model_validate(source_stats_dict(entry))
+                for entry in stats[offset : offset + limit]
+            ],
+            total=len(stats),
+            offset=offset,
+            limit=limit,
+        )
 
     return app
 
