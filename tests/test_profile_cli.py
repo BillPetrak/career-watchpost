@@ -231,7 +231,7 @@ def test_cli_profile_init_defaults_to_private_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = tmp_path / "config" / "candidate_profile.yaml"
-    monkeypatch.setattr("careeros.cli.DEFAULT_PROFILE_PATH", target)
+    monkeypatch.setattr("careeros.cli.common.DEFAULT_PROFILE_PATH", target)
 
     exit_code = cli.main(["profile", "init"])
     capsys.readouterr()
@@ -294,7 +294,7 @@ def test_cli_profile_show_defaults_to_private_path(
     target = tmp_path / "config" / "candidate_profile.yaml"
     target.parent.mkdir(parents=True, exist_ok=True)
     _write_yaml_profile(target, _ALL_FIELDS)
-    monkeypatch.setattr("careeros.cli.DEFAULT_PROFILE_PATH", target)
+    monkeypatch.setattr("careeros.cli.common.DEFAULT_PROFILE_PATH", target)
 
     exit_code = cli.main(["profile", "show"])
     captured = capsys.readouterr()
@@ -312,7 +312,7 @@ def test_cli_profile_validate_defaults_to_private_path(
     target = tmp_path / "config" / "candidate_profile.yaml"
     target.parent.mkdir(parents=True, exist_ok=True)
     _write_yaml_profile(target, _ALL_FIELDS)
-    monkeypatch.setattr("careeros.cli.DEFAULT_PROFILE_PATH", target)
+    monkeypatch.setattr("careeros.cli.common.DEFAULT_PROFILE_PATH", target)
 
     exit_code = cli.main(["profile", "validate"])
     captured = capsys.readouterr()

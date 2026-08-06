@@ -157,7 +157,7 @@ def test_cli_status_never_run_shows_due(
     capsys: pytest.CaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     exit_code = cli.main(
         ["collect", "status", "--database", str(tmp_path / "careeros.sqlite3")]
     )
@@ -178,7 +178,7 @@ def test_cli_status_recent_success_not_due(
 ) -> None:
     database_path = tmp_path / "careeros.sqlite3"
     _seed_run(database_path, "jobicy", _EPOCH - timedelta(minutes=30))
-    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     exit_code = cli.main(["collect", "status", "--database", str(database_path)])
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -199,7 +199,7 @@ def test_cli_status_failed_run_shows_error(
         succeeded=False,
         error="URLError: network down",
     )
-    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     exit_code = cli.main(["collect", "status", "--database", str(database_path)])
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -215,7 +215,7 @@ def test_cli_status_surfaces_incomplete_runs(
     database_path = tmp_path / "careeros.sqlite3"
     _seed_run(database_path, "jobicy", _EPOCH - timedelta(hours=1))
     _seed_run(database_path, "jobicy", _EPOCH, incomplete=True)
-    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     assert cli.main(["collect", "status", "--database", str(database_path)]) == 0
     captured = capsys.readouterr()
     assert "Incomplete runs: 1" in captured.out

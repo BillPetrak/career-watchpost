@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from careeros import cli
+from careeros.cli.commands.reminders import deliver
 from careeros.collectors.arbeitnow import CollectedJob
 from careeros.database.connection import connect
 from careeros.database.jobs import save_jobs
@@ -142,12 +143,12 @@ def test_notify_due_failure_is_recorded_and_retried(
 ) -> None:
     db_path, _job_id, reminder_id = _seed_due_reminder_db(tmp_path)
 
-    real_deliver = cli.deliver
+    real_deliver = deliver
 
     def _fail(_backend: str, _occurrence) -> DeliveryResult:
         return DeliveryResult(success=False, error="delivery exploded")
 
-    monkeypatch.setattr(cli, "deliver", _fail)
+    monkeypatch.setattr("careeros.cli.commands.reminders.deliver", _fail)
 
     exit_code = cli.main(_notify_due_args(db_path))
     captured = capsys.readouterr()
@@ -164,7 +165,7 @@ def test_notify_due_failure_is_recorded_and_retried(
     assert rows[0][3] == "delivery exploded"
 
     # A failed delivery leaves the occurrence eligible, so a later run retries.
-    monkeypatch.setattr(cli, "deliver", real_deliver)
+    monkeypatch.setattr("careeros.cli.commands.reminders.deliver", real_deliver)
     capsys.readouterr()
     assert cli.main(_notify_due_args(db_path)) == 0
     captured = capsys.readouterr()
@@ -265,7 +266,7 @@ def test_notify_history_filters_by_reminder_and_failure(
     db_path, _job_id, first_reminder = _seed_due_reminder_db(tmp_path)
     second_reminder = _add_reminder(db_path, _job_id)
 
-    real_deliver = cli.deliver
+    real_deliver = deliver
 
     def _fail(_backend: str, _occurrence) -> DeliveryResult:
         return DeliveryResult(success=False, error="boom")
@@ -274,10 +275,10 @@ def test_notify_history_filters_by_reminder_and_failure(
     # per run keeps the two occurrences on separate runs).
     assert cli.main([*_notify_due_args(db_path), "--limit", "1"]) == 0
     capsys.readouterr()
-    monkeypatch.setattr(cli, "deliver", _fail)
+    monkeypatch.setattr("careeros.cli.commands.reminders.deliver", _fail)
     assert cli.main([*_notify_due_args(db_path), "--limit", "1"]) == 1
     capsys.readouterr()
-    monkeypatch.setattr(cli, "deliver", real_deliver)
+    monkeypatch.setattr("careeros.cli.commands.reminders.deliver", real_deliver)
 
     exit_code = cli.main(
         ["reminder", "notify-history", "--failed", "--database", str(db_path)]

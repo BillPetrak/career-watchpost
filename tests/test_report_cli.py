@@ -102,7 +102,7 @@ def test_cli_report_empty_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = tmp_path / "careeros.sqlite3"
-    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     exit_code = cli.main(["report", "--database", str(database_path)])
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -120,7 +120,7 @@ def test_cli_report_json_format(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = _seed(tmp_path, applications={"a-1": "interview"})
-    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     exit_code = cli.main(
         ["report", "--database", str(database_path), "--format", "json"]
     )
@@ -388,7 +388,7 @@ def test_cli_report_never_exits_75_while_lock_held(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = _seed(tmp_path)
-    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     with collection_lock(database_path, command="collect due"):
         exit_code = cli.main(["report", "--database", str(database_path)])
     captured = capsys.readouterr()
@@ -413,7 +413,7 @@ def test_cli_report_text_includes_source_quality(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = _seed(tmp_path)
-    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     exit_code = cli.main(["report", "--database", str(database_path)])
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -428,7 +428,7 @@ def test_cli_report_json_includes_source_stats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = _seed(tmp_path)
-    monkeypatch.setattr("careeros.cli._utc_now", lambda: _EPOCH)
+    monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     exit_code = cli.main(
         ["report", "--database", str(database_path), "--format", "json"]
     )
