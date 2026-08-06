@@ -1,17 +1,19 @@
 """FastAPI application for the CareerOS API slice.
 
-The slice exposes seven read-only endpoints backed by the shared database and
+The slice exposes nine read-only endpoints backed by the shared database and
 presentation layers: ``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
-``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``, and
-``GET /applications/{job_id}``. Every endpoint is strictly read-only: it never
-creates a database file, directory, or schema, never writes, and never makes
-network calls. Application notes, event history, reminders, and review
-decisions are never exposed over HTTP.
+``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``,
+``GET /applications/{job_id}``, ``GET /reminders``, and
+``GET /reminders/{reminder_id}``. Every endpoint is strictly read-only: it
+never creates a database file, directory, or schema, never writes, and never
+makes network calls. Application notes, event history, review decisions, and
+reminder messages are never exposed over HTTP.
 """
 
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -26,6 +28,8 @@ from careeros.api.schemas import (
     HealthResponse,
     Job,
     JobListResponse,
+    ReminderItem,
+    ReminderListResponse,
     SourceStats,
     SourceStatsListResponse,
 )
@@ -36,8 +40,21 @@ from careeros.database.applications import (
     list_applications,
 )
 from careeros.database.jobs import get_job_by_id, list_jobs
+from careeros.database.reminders import ReminderListEntry, get_reminder
 from careeros.database.runs import list_runs
-from careeros.presenters import application_item_dict, job_dict, source_stats_dict
+from careeros.presenters import (
+    application_item_dict,
+    job_dict,
+    reminder_item_dict,
+    source_stats_dict,
+)
+from careeros.reminders.models import (
+    ValidationError as ReminderValidationError,
+)
+from careeros.reminders.models import (
+    parse_due_at,
+)
+from careeros.reminders.service import list_reminders
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
 DEFAULT_LIMIT = 20
@@ -55,6 +72,12 @@ MAX_FETCH_APPLICATIONS = 1_000_000
 # record cap without importing it.
 MAX_FETCH_RUNS = 1_000_000
 
+# Safety valve when loading all matching reminders before Python-side slicing
+# (the same load-then-slice pattern as the other list endpoints). Reminder
+# counts are bounded by the stored jobs they attach to; this mirrors the
+# export package's record cap without importing it.
+MAX_FETCH_REMINDERS = 1_000_000
+
 DATABASE_UNAVAILABLE_MESSAGE = (
     "The database schema is unavailable (run 'careeros collect <source>' to "
     "initialize it)."
@@ -64,6 +87,11 @@ DATABASE_UNAVAILABLE_MESSAGE = (
 def _no_job_found_message(job_id: int) -> str:
     """Return the canonical "no such job" message for a job id."""
     return f"No job found with ID {job_id}."
+
+
+def _no_reminder_found_message(reminder_id: int) -> str:
+    """Return the canonical "no such reminder" message for a reminder id."""
+    return f"No reminder found with ID {reminder_id}."
 
 
 def _read_schema_version(connection: sqlite3.Connection) -> int | None:
@@ -268,6 +296,69 @@ def create_app() -> FastAPI:
                     status_code=404, detail=f"No application found for job {job_id}."
                 )
         raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
+
+    @app.get("/reminders", response_model=ReminderListResponse)
+    def list_reminders_endpoint(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+        job_id: Annotated[int | None, Query(ge=1)] = None,
+        kind: str | None = None,
+        state: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        as_of: str | None = None,
+    ) -> ReminderListResponse:
+        if connection is None:
+            return ReminderListResponse(items=[], total=0, offset=offset, limit=limit)
+        reference: datetime | None = None
+        if as_of is not None:
+            try:
+                reference = parse_due_at(as_of)
+            except ReminderValidationError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
+        try:
+            entries = list_reminders(
+                connection,
+                job_id=job_id,
+                kind=kind,
+                state=state,
+                after=after,
+                before=before,
+                limit=MAX_FETCH_REMINDERS,
+                now=reference,
+            )
+        except ReminderValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        return ReminderListResponse(
+            items=[
+                ReminderItem.model_validate(reminder_item_dict(entry))
+                for entry in entries[offset : offset + limit]
+            ],
+            total=len(entries),
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/reminders/{reminder_id}", response_model=ReminderItem)
+    def show_reminder(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        reminder_id: int,
+    ) -> ReminderItem:
+        if connection is not None:
+            stored = get_reminder(connection, reminder_id)
+            if stored is not None:
+                job = get_job_by_id(connection, stored.job_id)
+                if job is not None:
+                    return ReminderItem.model_validate(
+                        reminder_item_dict(ReminderListEntry(reminder=stored, job=job))
+                    )
+                raise HTTPException(
+                    status_code=404, detail=_no_job_found_message(stored.job_id)
+                )
+        raise HTTPException(
+            status_code=404, detail=_no_reminder_found_message(reminder_id)
+        )
 
     return app
 

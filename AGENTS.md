@@ -718,6 +718,33 @@ canonical `No job found with ID {id}.` message locally.
   `No job found with ID {job_id}.` message; an existing-but-untracked job
   returns `404` with `No application found for job {job_id}.`. Non-integer
   path input returns FastAPI's normal `422`.
+- `GET /reminders` — reminders soonest first (`due_at ASC, id ASC`, the shared
+  `database.reminders.list_reminders` order) with deterministic
+  `offset`/`limit` pagination (defaults 0/20, `limit` capped at 100) and
+  optional `job_id` (>= 1; an unknown job returns `200` with empty `items` and
+  `total` 0), `kind` (validated against `REMINDER_KINDS`), `state` (`open`,
+  `overdue`, `due`, `upcoming`, `completed`), `after`/`before` (ISO-8601
+  timestamps with explicit UTC offsets, due-time windows), and `as_of` filters.
+  Invalid `kind`, `state`, `after`, `before`, or `as_of` values return `422`.
+  With no `state` the endpoint returns both open and completed reminders. The
+  time-dependent states `overdue`, `due`, and `upcoming` are evaluated against
+  `as_of` (an explicit ISO-8601 timestamp with a UTC offset; `Z` is accepted
+  and naive/date-only values return `422`); when `as_of` is omitted the
+  server's current UTC time is used, matching the CLI default. `as_of` has no
+  effect on `open`/`completed` or when no `state` is given. Filtering is
+  applied before pagination; `total` is the filtered count before
+  `offset`/`limit` slicing. The envelope is `{items, total, offset, limit}`.
+  Each item uses the shared `presenters.reminder_item_dict` projection with
+  the exact field order `reminder_id`, `job_id`, `kind`, `due_at`,
+  `completed_at`, `created_at`, `updated_at`, `job`; the nested `job` is the
+  canonical `job_dict` projection. Reminder messages, notification delivery
+  history, application notes, and review decisions are deliberately omitted
+  from every response.
+- `GET /reminders/{reminder_id}` — one reminder item using the exact same
+  shape as a list item. An unknown reminder returns `404` with the canonical
+  `No reminder found with ID {reminder_id}.` message; a defensively-detected
+  reminder whose job is missing returns `404` with `No job found with ID
+  {job_id}.`. Non-integer path input returns FastAPI's normal `422`.
 
 A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict read-only policy (no DDL on read paths).

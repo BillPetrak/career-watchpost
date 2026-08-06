@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from careeros.database.applications import ApplicationListItem
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
+from careeros.database.reminders import ReminderListEntry
 from careeros.ranking.scorer import RankedGroup, RankedJob, component_to_dict
 
 if TYPE_CHECKING:
@@ -58,6 +59,26 @@ def application_item_dict(item: ApplicationListItem) -> dict[str, Any]:
         "created_at": item.application.created_at,
         "updated_at": item.application.updated_at,
         "job": job_dict(item.job),
+    }
+
+
+def reminder_item_dict(entry: ReminderListEntry) -> dict[str, Any]:
+    """Serialize one stored reminder joined with its job.
+
+    The projection deliberately excludes the reminder message (user-written
+    free text), notification delivery history, and any other local workflow
+    state: those stay private to the CLI and are never exposed over the HTTP
+    API.
+    """
+    return {
+        "reminder_id": entry.reminder.id,
+        "job_id": entry.reminder.job_id,
+        "kind": entry.reminder.kind,
+        "due_at": entry.reminder.due_at,
+        "completed_at": entry.reminder.completed_at,
+        "created_at": entry.reminder.created_at,
+        "updated_at": entry.reminder.updated_at,
+        "job": job_dict(entry.job),
     }
 
 
@@ -139,5 +160,6 @@ __all__: tuple[str, ...] = (
     "location_display",
     "ranked_group_dict",
     "ranked_job_dict",
+    "reminder_item_dict",
     "source_stats_dict",
 )

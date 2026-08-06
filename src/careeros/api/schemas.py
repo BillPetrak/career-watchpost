@@ -126,6 +126,34 @@ class ApplicationListResponse(BaseModel):
     limit: int
 
 
+class ReminderItem(BaseModel):
+    """One stored reminder joined with its job.
+
+    Mirrors the shared ``reminder_item_dict`` projection. The reminder
+    message, its notification delivery history, and other local workflow state
+    (application notes, review decisions) are deliberately omitted: they are
+    user-written or diagnostic content the HTTP API never exposes.
+    """
+
+    reminder_id: int
+    job_id: int
+    kind: str
+    due_at: str
+    completed_at: str | None
+    created_at: str
+    updated_at: str
+    job: Job
+
+
+class ReminderListResponse(BaseModel):
+    """A paginated page of reminders, soonest first."""
+
+    items: list[ReminderItem]
+    total: int
+    offset: int
+    limit: int
+
+
 __all__: tuple[str, ...] = (
     "ApplicationItem",
     "ApplicationListResponse",
@@ -135,6 +163,8 @@ __all__: tuple[str, ...] = (
     "HealthResponse",
     "Job",
     "JobListResponse",
+    "ReminderItem",
+    "ReminderListResponse",
     "SourceStats",
     "SourceStatsListResponse",
 )
