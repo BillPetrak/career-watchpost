@@ -4,6 +4,7 @@
 
 ```bash
 uv sync --extra development   # install with dev deps (pytest, ruff, mypy)
+uv sync --extra development --extra api   # also install FastAPI/Uvicorn for the API slice
 uv run careeros diagnose      # verify environment
 ```
 
@@ -18,6 +19,7 @@ uv run careeros diagnose      # verify environment
 | `uv run ruff format --check src tests` | Format check |
 | `uv run ruff format src tests` | Auto-format |
 | `uv run mypy` | Typecheck (strict) |
+| `uv run uvicorn careeros.api:app` | Serve the FastAPI read-only API |
 | `uv run careeros collect arbeitnow --limit 10` | Collect jobs |
 | `uv run careeros collect arbeitnow --database /tmp/test.db` | Override DB path |
 | `uv run careeros collect remotive --limit 10` | Collect jobs from Remotive |
@@ -649,6 +651,31 @@ accepts a `None` connection for the missing-file case; the shared
 codes: `0` success, `1` output/profile/database failure, `2` usage errors
 (negative limit, missing required `--query`/`--profile`).
 
+## HTTP API
+
+`src/careeros/api/` is a read-only FastAPI slice (optional `api` extra). Serve
+with `uv run uvicorn careeros.api:app`. The slice never fetches jobs, never
+writes, never creates a database file, directory, or schema, and never contacts
+external services. The database path comes from `CAREEROS_DATABASE` (see
+`src/careeros/settings.py`), read per request with the standard library; a
+missing database is treated as empty. Each request opens one SQLite connection
+with `mode=ro` and closes it deterministically; no connection is shared across
+requests. Endpoints reuse the shared database/presenter layers and the canonical
+job projection (`presenters.job_dict`). API code must never import `careeros.cli`
+(an AST test enforces this); the `/jobs/{job_id}` 404 detail reproduces the
+canonical `No job found with ID {id}.` message locally.
+
+- `GET /health` — `200` with `status`, `database` (`present`/`absent`), and
+  `schema_version` (`null` when absent or uninitialized).
+- `GET /jobs` — canonical job order (`published_at DESC NULLS LAST, id ASC`)
+  with deterministic `offset`/`limit` pagination (defaults 0/20, `limit`
+  capped at 100) plus optional `source`, `remote`, `location`,
+  `employment_type` filters; returns `{items, total, offset, limit}`.
+- `GET /jobs/{job_id}` — one job or `404` with the canonical message.
+
+A present-but-uninitialized database yields a `500` with instructions to run a
+collection, matching the strict read-only policy (no DDL on read paths).
+
 ## systemd user units
 
 The `systemd/` directory holds templates, an installer, and an uninstaller for
@@ -678,12 +705,14 @@ after moving the repository (uninstall first if the old units should go).
 ## Project structure
 
 - `src/careeros/` — package root, entrypoint `careeros.cli:main`
+- `src/careeros/api/` — FastAPI application (first read-only slice: `/health`, `/jobs`, `/jobs/{job_id}`)
 - `src/careeros/applications/` — application-tracking workflow (models, service)
 - `src/careeros/collectors/` — job-board API clients
 - `src/careeros/database/` — SQLite layer (schema, connection, persistence)
 - `src/careeros/grouping/` — duplicate detection (normalization, matcher)
 - `src/careeros/presenters.py` — shared presentation helpers (job/group/ranked/coverage dicts, location display)
 - `src/careeros/saved_searches/` — saved workflow definitions and shared execution
+- `src/careeros/settings.py` — runtime settings (e.g. the `CAREEROS_DATABASE` env var)
 - `src/careeros/reminders/` — local follow-up reminders (models, service)
 - `src/careeros/review/` — daily review queue (models, service, render)
 - `src/careeros/source_stats/` — unified per-source statistics and quality diagnostics
