@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from careeros.database.applications import ApplicationListItem
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.ranking.scorer import RankedGroup, RankedJob, component_to_dict
@@ -40,6 +41,23 @@ def job_dict(job: StoredJob) -> dict[str, Any]:
         "employment_type": job.employment_type,
         "published_at": job.published_at,
         "url": job.url,
+    }
+
+
+def application_item_dict(item: ApplicationListItem) -> dict[str, Any]:
+    """Serialize one tracked application joined with its job.
+
+    The projection deliberately excludes the application note, the event
+    history, and any other local workflow state (reminders, review decisions):
+    those stay private to the CLI and are never exposed over the HTTP API.
+    """
+    return {
+        "application_id": item.application.id,
+        "job_id": item.application.job_id,
+        "current_status": item.application.current_status,
+        "created_at": item.application.created_at,
+        "updated_at": item.application.updated_at,
+        "job": job_dict(item.job),
     }
 
 
@@ -114,6 +132,7 @@ def source_stats_dict(stats: SourceStats) -> dict[str, Any]:
 
 
 __all__: tuple[str, ...] = (
+    "application_item_dict",
     "field_coverage_dict",
     "group_dict",
     "job_dict",

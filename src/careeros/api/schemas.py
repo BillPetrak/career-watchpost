@@ -101,7 +101,34 @@ class CollectionRunListResponse(BaseModel):
     limit: int
 
 
+class ApplicationItem(BaseModel):
+    """One tracked application joined with its job.
+
+    Mirrors the shared ``application_item_dict`` projection. The application
+    note, its event history, reminders, and review decisions are deliberately
+    omitted: they are local workflow state the HTTP API never exposes.
+    """
+
+    application_id: int
+    job_id: int
+    current_status: str
+    created_at: str
+    updated_at: str
+    job: Job
+
+
+class ApplicationListResponse(BaseModel):
+    """A paginated page of tracked applications, newest first."""
+
+    items: list[ApplicationItem]
+    total: int
+    offset: int
+    limit: int
+
+
 __all__: tuple[str, ...] = (
+    "ApplicationItem",
+    "ApplicationListResponse",
     "CollectionRun",
     "CollectionRunListResponse",
     "FieldCoverageStats",

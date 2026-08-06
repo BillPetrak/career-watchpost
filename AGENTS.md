@@ -700,6 +700,24 @@ canonical `No job found with ID {id}.` message locally.
   `export collection-history` remain the full-diagnostic channels. An unknown
   `source` value returns `200` with empty `items` and `total` 0, and a missing
   database file returns an empty envelope without creating the file.
+- `GET /applications` — tracked applications newest first (`created_at DESC,
+  id DESC`, the shared `database.applications.list_applications` order) with
+  deterministic `offset`/`limit` pagination (defaults 0/20, `limit` capped at
+  100) and an optional repeatable `status` filter. Every `status` value is
+  validated against `APPLICATION_STATUSES` (via `validate_status`); an invalid
+  value returns `422`. Repeated statuses use inclusive OR semantics. The
+  filter is applied before pagination; `total` is the filtered count before
+  `offset`/`limit` slicing. The envelope is `{items, total, offset, limit}`.
+  Each item uses the shared `presenters.application_item_dict` projection with
+  the exact field order `application_id`, `job_id`, `current_status`,
+  `created_at`, `updated_at`, `job`; the nested `job` is the canonical
+  `job_dict` projection. Application notes, the event history, reminders, and
+  review decisions are deliberately omitted from every response.
+- `GET /applications/{job_id}` — one application item using the exact same
+  shape as a list item. An unknown job returns `404` with the canonical
+  `No job found with ID {job_id}.` message; an existing-but-untracked job
+  returns `404` with `No application found for job {job_id}.`. Non-integer
+  path input returns FastAPI's normal `422`.
 
 A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict read-only policy (no DDL on read paths).

@@ -1,10 +1,12 @@
-"""FastAPI application for the first CareerOS API slice.
+"""FastAPI application for the CareerOS API slice.
 
-The slice exposes five read-only endpoints backed by the shared database and
+The slice exposes seven read-only endpoints backed by the shared database and
 presentation layers: ``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
-``GET /sources/stats``, and ``GET /collection-runs``. Every endpoint is
-strictly read-only: it never creates a database file, directory, or schema,
-never writes, and never makes network calls.
+``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``, and
+``GET /applications/{job_id}``. Every endpoint is strictly read-only: it never
+creates a database file, directory, or schema, never writes, and never makes
+network calls. Application notes, event history, reminders, and review
+decisions are never exposed over HTTP.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ from fastapi.responses import JSONResponse
 
 from careeros.api.deps import read_only_connection
 from careeros.api.schemas import (
+    ApplicationItem,
+    ApplicationListResponse,
     CollectionRun,
     CollectionRunListResponse,
     HealthResponse,
@@ -25,13 +29,25 @@ from careeros.api.schemas import (
     SourceStats,
     SourceStatsListResponse,
 )
+from careeros.applications.models import validate_status
+from careeros.database.applications import (
+    ApplicationListItem,
+    get_application,
+    list_applications,
+)
 from careeros.database.jobs import get_job_by_id, list_jobs
 from careeros.database.runs import list_runs
-from careeros.presenters import job_dict, source_stats_dict
+from careeros.presenters import application_item_dict, job_dict, source_stats_dict
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
+
+# Safety valve when loading all matching applications before Python-side
+# slicing (the same load-then-slice pattern as the other list endpoints).
+# Tracked-application counts are bounded by the stored jobs they attach to;
+# this mirrors the export package's record cap without importing it.
+MAX_FETCH_APPLICATIONS = 1_000_000
 
 # Safety valve when loading all matching runs before Python-side slicing (the
 # same load-then-slice pattern as the other list endpoints). Run history is
@@ -196,6 +212,62 @@ def create_app() -> FastAPI:
             offset=offset,
             limit=limit,
         )
+
+    @app.get("/applications", response_model=ApplicationListResponse)
+    def list_applications_endpoint(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+        status: Annotated[list[str] | None, Query()] = None,
+    ) -> ApplicationListResponse:
+        if connection is None:
+            return ApplicationListResponse(
+                items=[], total=0, offset=offset, limit=limit
+            )
+        if status:
+            for value in status:
+                try:
+                    validate_status(value)
+                except ValueError as error:
+                    raise HTTPException(status_code=422, detail=str(error)) from None
+        matches = list_applications(
+            connection,
+            statuses=status,
+            limit=MAX_FETCH_APPLICATIONS,
+        )
+        return ApplicationListResponse(
+            items=[
+                ApplicationItem.model_validate(application_item_dict(item))
+                for item in matches[offset : offset + limit]
+            ],
+            total=len(matches),
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/applications/{job_id}", response_model=ApplicationItem)
+    def show_application(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        job_id: int,
+    ) -> ApplicationItem:
+        if connection is not None:
+            stored = get_job_by_id(connection, job_id)
+            if stored is not None:
+                application = get_application(connection, job_id)
+                if application is not None:
+                    return ApplicationItem.model_validate(
+                        application_item_dict(
+                            ApplicationListItem(
+                                application=application,
+                                job=stored,
+                                latest_note=None,
+                            )
+                        )
+                    )
+                raise HTTPException(
+                    status_code=404, detail=f"No application found for job {job_id}."
+                )
+        raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
 
     return app
 
