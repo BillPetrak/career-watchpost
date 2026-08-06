@@ -684,6 +684,22 @@ canonical `No job found with ID {id}.` message locally.
   with empty `items` and `total` 0. A missing database file returns all
   registered sources with zero counts and `null` coverage without creating the
   file.
+- `GET /collection-runs` — collection-run history newest first, reusing the
+  shared `database.runs.list_runs` service. Deterministic ordering is
+  `started_at DESC, id DESC` (ties broken by `id`). Supports the same
+  deterministic `offset`/`limit` pagination as `/jobs` (defaults 0/20, `limit`
+  capped at 100) plus an optional equality `source` filter and a boolean
+  `failed` filter (completed failed runs only, matching the CLI `--failed`
+  flag; incomplete runs are excluded). `total` is the count after filtering
+  and before `offset`/`limit` slicing. Items carry `run_id`, `source`,
+  `started_at`, `finished_at`, `succeeded` (`1` success, `0` failed, `null`
+  incomplete), `fetched`, `inserted`, and `updated`; `started_at`/`finished_at`
+  are raw stored ISO-8601 strings so malformed stored values survive without
+  crashing. The provider `error` text is intentionally **omitted** (it can
+  embed URLs, hostnames, or local paths); the CLI `collect history` and
+  `export collection-history` remain the full-diagnostic channels. An unknown
+  `source` value returns `200` with empty `items` and `total` 0, and a missing
+  database file returns an empty envelope without creating the file.
 
 A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict read-only policy (no DDL on read paths).

@@ -1,10 +1,10 @@
 """FastAPI application for the first CareerOS API slice.
 
-The slice exposes four read-only endpoints backed by the shared database and
+The slice exposes five read-only endpoints backed by the shared database and
 presentation layers: ``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
-and ``GET /sources/stats``. Every endpoint is strictly read-only: it never
-creates a database file, directory, or schema, never writes, and never makes
-network calls.
+``GET /sources/stats``, and ``GET /collection-runs``. Every endpoint is
+strictly read-only: it never creates a database file, directory, or schema,
+never writes, and never makes network calls.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from fastapi.responses import JSONResponse
 
 from careeros.api.deps import read_only_connection
 from careeros.api.schemas import (
+    CollectionRun,
+    CollectionRunListResponse,
     HealthResponse,
     Job,
     JobListResponse,
@@ -24,11 +26,18 @@ from careeros.api.schemas import (
     SourceStatsListResponse,
 )
 from careeros.database.jobs import get_job_by_id, list_jobs
+from careeros.database.runs import list_runs
 from careeros.presenters import job_dict, source_stats_dict
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
+
+# Safety valve when loading all matching runs before Python-side slicing (the
+# same load-then-slice pattern as the other list endpoints). Run history is
+# bounded in practice by collection cadence; this mirrors the export package's
+# record cap without importing it.
+MAX_FETCH_RUNS = 1_000_000
 
 DATABASE_UNAVAILABLE_MESSAGE = (
     "The database schema is unavailable (run 'careeros collect <source>' to "
@@ -147,6 +156,43 @@ def create_app() -> FastAPI:
                 for entry in stats[offset : offset + limit]
             ],
             total=len(stats),
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/collection-runs", response_model=CollectionRunListResponse)
+    def collection_runs(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+        source: str | None = None,
+        failed: bool = False,
+    ) -> CollectionRunListResponse:
+        if connection is None:
+            return CollectionRunListResponse(
+                items=[], total=0, offset=offset, limit=limit
+            )
+        runs = list_runs(
+            connection,
+            source=source,
+            failed_only=failed,
+            limit=MAX_FETCH_RUNS,
+        )
+        return CollectionRunListResponse(
+            items=[
+                CollectionRun(
+                    run_id=run.run_id,
+                    source=run.source,
+                    started_at=run.started_at,
+                    finished_at=run.finished_at,
+                    succeeded=run.succeeded,
+                    fetched=run.fetched,
+                    inserted=run.inserted,
+                    updated=run.updated,
+                )
+                for run in runs[offset : offset + limit]
+            ],
+            total=len(runs),
             offset=offset,
             limit=limit,
         )

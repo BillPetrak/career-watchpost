@@ -72,7 +72,38 @@ class SourceStatsListResponse(BaseModel):
     limit: int
 
 
+class CollectionRun(BaseModel):
+    """One collection attempt, mirroring ``database.runs.CollectionRun``.
+
+    ``started_at``/``finished_at`` are raw stored ISO-8601 strings so malformed
+    values survive to the response without crashing. ``succeeded`` is ``None``
+    for incomplete (crashed) runs. The provider ``error`` text is intentionally
+    omitted: it can embed URLs, hostnames, or local paths, so the API exposes
+    no diagnostic content beyond the run's own fields.
+    """
+
+    run_id: int
+    source: str
+    started_at: str | None
+    finished_at: str | None
+    succeeded: int | None
+    fetched: int
+    inserted: int
+    updated: int
+
+
+class CollectionRunListResponse(BaseModel):
+    """A paginated page of collection-run history, newest first."""
+
+    items: list[CollectionRun]
+    total: int
+    offset: int
+    limit: int
+
+
 __all__: tuple[str, ...] = (
+    "CollectionRun",
+    "CollectionRunListResponse",
     "FieldCoverageStats",
     "HealthResponse",
     "Job",
