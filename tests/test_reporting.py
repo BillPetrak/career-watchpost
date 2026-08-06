@@ -884,3 +884,24 @@ def test_source_stats_json_carries_full_counts_and_coverage(tmp_path: Path) -> N
     assert company["missing_count"] == 0
     assert company["provided_count"] == 2
     assert company["coverage_pct"] == 100
+
+
+def test_report_and_source_stats_renderers_share_source_stats_dict(
+    tmp_path: Path,
+) -> None:
+    from careeros.presenters import source_stats_dict
+    from careeros.source_stats.render import render_source_stats_json
+
+    with _open(tmp_path) as connection:
+        _seed_jobs(connection)
+
+    report_payload = json.loads(render_report_json(_build(tmp_path)))
+    standalone = json.loads(
+        render_source_stats_json(_build(tmp_path).overview.source_stats)
+    )
+
+    report_stats = report_payload["overview"]["source_stats"]
+    assert report_stats == standalone["sources"]
+    assert report_stats == [
+        source_stats_dict(entry) for entry in _build(tmp_path).overview.source_stats
+    ]

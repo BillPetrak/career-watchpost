@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from careeros.database.jobs import _SELECT_COLUMNS, _stored_job_from_row
+from careeros.database.jobs import JOB_COLUMNS, job_from_row
 from careeros.ranking.feedback import FeedbackSet, FeedbackSource
 
 
@@ -55,10 +55,10 @@ def build_feedback_set(connection: sqlite3.Connection) -> FeedbackSet:
     rep_ids = tuple(sorted(representatives))
     placeholders = ", ".join("?" * len(rep_ids))
     job_rows = connection.execute(
-        f"SELECT {_SELECT_COLUMNS} FROM jobs WHERE id IN ({placeholders})",
+        f"SELECT {JOB_COLUMNS} FROM jobs WHERE id IN ({placeholders})",
         rep_ids,
     ).fetchall()
-    jobs_by_id = {int(row["id"]): _stored_job_from_row(row) for row in job_rows}
+    jobs_by_id = {int(row["id"]): job_from_row(row) for row in job_rows}
 
     sources = tuple(
         FeedbackSource(

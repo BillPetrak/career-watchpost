@@ -13,10 +13,16 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from careeros.database.groups import GroupedJob
-from careeros.database.jobs import StoredJob
 from careeros.database.reminders import StoredReminder
 from careeros.notifications.models import NotificationSummary
+from careeros.presenters import (
+    group_dict,
+    job_dict,
+    location_display,
+    ranked_group_dict,
+    ranked_job_dict,
+    source_stats_dict,
+)
 from careeros.ranking.feedback import FeedbackAdjustment
 from careeros.ranking.scorer import (
     RankedGroup,
@@ -37,11 +43,7 @@ from careeros.reporting.models import (
     Report,
     ReviewQueue,
 )
-from careeros.source_stats.models import (
-    MISSING_FIELD_WORDING,
-    FieldCoverage,
-    SourceStats,
-)
+from careeros.source_stats.models import MISSING_FIELD_WORDING, SourceStats
 from careeros.status import SourceStatus
 
 _SOURCE_OUTCOMES: dict[bool | None, str] = {
@@ -296,7 +298,7 @@ def _render_review(review: ReviewQueue) -> str:
         lines.append(f"  {index}. [Score {item.match_score}/100] {rep.title}")
         lines.append(f"     Company:  {rep.company or 'N/A'}")
         lines.append(
-            f"     Location: {_location_display(rep.location, rep.remote_status)}"
+            f"     Location: {location_display(rep.location, rep.remote_status)}"
         )
         lines.append(f"     Source:   {', '.join(group.sources)}")
         if len(group.members) > 1:
@@ -358,7 +360,7 @@ def _ranked_job_lines(index: int, ranked: RankedJob) -> list[str]:
     lines = [
         f"  {index}. [Score {ranked.match_score}/100] {job.title}",
         f"     Company:  {job.company or 'N/A'}",
-        f"     Location: {_location_display(job.location, job.remote_status)}",
+        f"     Location: {location_display(job.location, job.remote_status)}",
         f"     Source:   {job.source}",
     ]
     lines.extend(_feedback_lines(ranked.result.feedback))
@@ -372,7 +374,7 @@ def _ranked_group_lines(index: int, ranked: RankedGroup) -> list[str]:
     lines = [
         f"  {index}. [Score {ranked.match_score}/100] {rep.title}",
         f"     Company:  {rep.company or 'N/A'}",
-        f"     Location: {_location_display(rep.location, rep.remote_status)}",
+        f"     Location: {location_display(rep.location, rep.remote_status)}",
         f"     Source:   {', '.join(group.sources)}",
     ]
     if len(group.members) > 1:
@@ -396,13 +398,6 @@ def _feedback_lines(feedback: FeedbackAdjustment | None) -> list[str]:
     if feedback is None or feedback.points == 0:
         return []
     return [f"Feedback: {feedback_summary(feedback)}"]
-
-
-def _location_display(location: str | None, remote_status: str | None) -> str:
-    value = location or "N/A"
-    if remote_status == "remote":
-        return f"{value} (remote)"
-    return value
 
 
 def _render_health(health: CollectionHealth) -> str:
@@ -437,21 +432,6 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _job_dict(job: StoredJob) -> dict[str, Any]:
-    return {
-        "id": job.id,
-        "source": job.source,
-        "source_job_id": job.source_job_id,
-        "title": job.title,
-        "company": job.company,
-        "location": job.location,
-        "remote_status": job.remote_status,
-        "employment_type": job.employment_type,
-        "published_at": job.published_at,
-        "url": job.url,
-    }
-
-
 def _source_status_dict(status: SourceStatus) -> dict[str, Any]:
     return {
         "source": status.source,
@@ -469,27 +449,9 @@ def _source_status_dict(status: SourceStatus) -> dict[str, Any]:
     }
 
 
-def _field_coverage_dict(field: FieldCoverage) -> dict[str, Any]:
-    return {
-        "field": field.field,
-        "missing_count": field.missing_count,
-        "provided_count": field.provided_count,
-        "coverage_pct": field.coverage_pct,
-    }
-
-
-def _source_stats_dict(stats: SourceStats) -> dict[str, Any]:
-    return {
-        "source": stats.source,
-        "total_jobs": stats.total_jobs,
-        "never_groupable_jobs": stats.never_groupable_jobs,
-        "fields": [_field_coverage_dict(field) for field in stats.fields],
-    }
-
-
 def _snapshot_dict(snapshot: ApplicationSnapshot) -> dict[str, Any]:
     return {
-        "job": _job_dict(snapshot.job),
+        "job": job_dict(snapshot.job),
         "status": snapshot.application.current_status,
         "created_at": snapshot.application.created_at,
         "updated_at": snapshot.application.updated_at,
@@ -501,7 +463,7 @@ def _action_dict(item: ActionItem) -> dict[str, Any]:
     return {
         "kind": item.kind,
         "label": item.label,
-        "job": _job_dict(item.job),
+        "job": job_dict(item.job),
         "status": item.status,
         "updated_at": item.updated_at,
         "latest_note": item.latest_note,
@@ -531,40 +493,6 @@ def _notification_summary_dict(summary: NotificationSummary) -> dict[str, Any]:
     }
 
 
-def _ranked_job_dict(ranked: RankedJob) -> dict[str, Any]:
-    return {
-        "job": _job_dict(ranked.job),
-        "match_score": ranked.match_score,
-        "score": ranked.score,
-        "reasons": list(ranked.reasons),
-        "score_components": [
-            component_to_dict(component) for component in ranked.result.components
-        ],
-    }
-
-
-def _group_dict(group: GroupedJob) -> dict[str, Any]:
-    return {
-        "group_id": group.group_id,
-        "representative": _job_dict(group.representative),
-        "members": [_job_dict(member) for member in group.members],
-        "sources": list(group.sources),
-        "urls": list(group.urls),
-    }
-
-
-def _ranked_group_dict(ranked: RankedGroup) -> dict[str, Any]:
-    return {
-        "group": _group_dict(ranked.group),
-        "match_score": ranked.match_score,
-        "score": ranked.score,
-        "reasons": list(ranked.reasons),
-        "score_components": [
-            component_to_dict(component) for component in ranked.result.components
-        ],
-    }
-
-
 def _report_to_dict(report: Report) -> dict[str, Any]:
     overview = report.overview
     pipeline = report.pipeline
@@ -590,7 +518,7 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
             ],
             "due_sources": list(overview.due_sources),
             "source_stats": [
-                _source_stats_dict(stats) for stats in overview.source_stats
+                source_stats_dict(stats) for stats in overview.source_stats
             ],
         },
         "application_pipeline": {
@@ -614,7 +542,7 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
             "upcoming": [
                 {
                     "reminder": _reminder_dict(snapshot.reminder),
-                    "job": _job_dict(snapshot.job),
+                    "job": job_dict(snapshot.job),
                 }
                 for snapshot in report.reminders.upcoming
             ],
@@ -630,10 +558,10 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
             "candidate_count": recommendations.candidate_count,
             "note": recommendations.note,
             "ranked_jobs": [
-                _ranked_job_dict(ranked) for ranked in recommendations.ranked_jobs
+                ranked_job_dict(ranked) for ranked in recommendations.ranked_jobs
             ],
             "ranked_groups": [
-                _ranked_group_dict(ranked) for ranked in recommendations.ranked_groups
+                ranked_group_dict(ranked) for ranked in recommendations.ranked_groups
             ],
         },
         "review_queue": {
@@ -644,7 +572,7 @@ def _report_to_dict(report: Report) -> dict[str, Any]:
             "note": review.note,
             "items": [
                 {
-                    "group": _group_dict(item.group),
+                    "group": group_dict(item.group),
                     "match_score": item.match_score,
                     "reasons": list(item.reasons),
                     "score_components": [

@@ -8,14 +8,14 @@ from dataclasses import dataclass
 
 from careeros.collectors.models import CollectedJob
 
-_SELECT_COLUMNS = (
+JOB_COLUMNS = (
     "id, source, source_job_id, title, company, location,"
     " description, url, employment_type, remote_status,"
     " published_at, collected_at, created_at, updated_at"
 )
 
 
-def _stored_job_from_row(row: sqlite3.Row) -> StoredJob:
+def job_from_row(row: sqlite3.Row) -> StoredJob:
     """Build a StoredJob from a SQLite row."""
     return StoredJob(
         id=row["id"],
@@ -106,7 +106,7 @@ def search_jobs(
         params.append(f"%{employment_type}%")
 
     sql = f"""
-        SELECT {_SELECT_COLUMNS}
+        SELECT {JOB_COLUMNS}
         FROM jobs
         WHERE {" AND ".join(conditions)}
         ORDER BY published_at DESC NULLS LAST, id ASC
@@ -116,7 +116,7 @@ def search_jobs(
     else:
         rows = connection.execute(sql + " LIMIT ?", [*params, limit]).fetchall()
 
-    return [_stored_job_from_row(row) for row in rows]
+    return [job_from_row(row) for row in rows]
 
 
 def list_jobs(
@@ -157,14 +157,14 @@ def list_jobs(
 
     rows = connection.execute(
         f"""
-        SELECT {_SELECT_COLUMNS}
+        SELECT {JOB_COLUMNS}
         FROM jobs
         {where_clause}
         ORDER BY published_at DESC NULLS LAST, id ASC
         """,
         params,
     ).fetchall()
-    return [_stored_job_from_row(row) for row in rows]
+    return [job_from_row(row) for row in rows]
 
 
 def get_job_by_id(
@@ -174,7 +174,7 @@ def get_job_by_id(
     """Retrieve a single job by its database ID, or None if not found."""
     row = connection.execute(
         f"""
-        SELECT {_SELECT_COLUMNS}
+        SELECT {JOB_COLUMNS}
         FROM jobs
         WHERE id = ?
         """,
@@ -183,7 +183,7 @@ def get_job_by_id(
 
     if row is None:
         return None
-    return _stored_job_from_row(row)
+    return job_from_row(row)
 
 
 def save_jobs(
@@ -258,7 +258,5 @@ def save_jobs(
 
 def list_all_jobs(connection: sqlite3.Connection) -> list[StoredJob]:
     """Return every stored job in ascending database-id order."""
-    rows = connection.execute(
-        f"SELECT {_SELECT_COLUMNS} FROM jobs ORDER BY id"
-    ).fetchall()
-    return [_stored_job_from_row(row) for row in rows]
+    rows = connection.execute(f"SELECT {JOB_COLUMNS} FROM jobs ORDER BY id").fetchall()
+    return [job_from_row(row) for row in rows]

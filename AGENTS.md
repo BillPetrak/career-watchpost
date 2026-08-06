@@ -682,6 +682,7 @@ after moving the repository (uninstall first if the old units should go).
 - `src/careeros/collectors/` — job-board API clients
 - `src/careeros/database/` — SQLite layer (schema, connection, persistence)
 - `src/careeros/grouping/` — duplicate detection (normalization, matcher)
+- `src/careeros/presenters.py` — shared presentation helpers (job/group/ranked/coverage dicts, location display)
 - `src/careeros/saved_searches/` — saved workflow definitions and shared execution
 - `src/careeros/reminders/` — local follow-up reminders (models, service)
 - `src/careeros/review/` — daily review queue (models, service, render)
@@ -693,6 +694,52 @@ after moving the repository (uninstall first if the old units should go).
 - `config/` — YAML config (settings.example.yaml, candidate_profile.example.yaml)
 - `data/database/careeros.sqlite3` — default SQLite DB path
 - `.env` — not loaded by app yet; reserved for future provider keys
+
+## Shared presentation helpers
+
+`src/careeros/presenters.py` is the single home for the display/JSON projections
+that the CLI and the text/JSON renderers all share: `job_dict`, `group_dict`,
+`ranked_job_dict`, `ranked_group_dict`, `location_display`,
+`field_coverage_dict`, and `source_stats_dict`. The reporting, review, and
+source-stats renderers plus `cli.py` use these helpers exclusively, so the exact
+key order and values of every job/group/ranked/coverage dict live in exactly one
+place. Never reimplement these dict builders in a renderer or command; add or
+adjust the shared helper instead. The richer export record schemas in
+`src/careeros/export/service.py` intentionally do NOT use these helpers — export
+records are defined by their own deterministic contract (full stored columns
+plus export metadata) and must not be conflated with the display projections.
+
+## Public database row mapper
+
+`src/careeros/database/jobs.py` exposes the canonical public row-mapper API:
+`JOB_COLUMNS` (the full column list string used in `SELECT` statements) and
+`job_from_row(row)` (builds a `StoredJob` from a `sqlite3.Row`). All modules
+that read stored jobs — `database/review.py`, `database/applications.py`,
+`database/reminders.py`, `database/groups.py`, `reporting/service.py`, and
+`review/feedback.py` — import these public names. The old private
+`_SELECT_COLUMNS`/`_stored_job_from_row` names are removed; do not reintroduce
+them. Note that `saved_searches/database.py` has its own unrelated
+`_SELECT_COLUMNS` for the `saved_searches` table — leave it alone.
+
+## CLI error-message conventions
+
+User-facing errors follow fixed conventions so output is predictable and tests
+can assert on stable strings:
+
+- Profile loading goes through the shared `load_profile_or_error(Path)` helper
+  in `cli.py`, which always prints exactly `Failed to load profile: {error}` to
+  stderr and signals failure by returning `None` (callers return exit code 1).
+  Do not inline `load_profile` + its own try/except at new call sites.
+- The "no such job" message is produced by `no_job_found_message(job_id)` and
+  renders as `No job found with ID {id}.`; every command that reports a missing
+  job uses it.
+- Failure prefixes are domain-labelled and consistent: `Search failed:`,
+  `Show failed:`, `Application failed:`, `Reminder failed:`, `Review failed:`,
+  `Report failed:`, `Source stats failed:`, followed by
+  `{type(error).__name__}: {error}`.
+- Database/setup failures are caught as `(OSError, sqlite3.Error)`. Never use a
+  bare `except Exception` to report command failures — narrowing keeps genuine
+  programming errors visible.
 
 ## Toolchain quirks
 

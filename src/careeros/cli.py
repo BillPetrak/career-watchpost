@@ -67,13 +67,13 @@ from careeros.notifications.service import (
     list_attempts,
     list_due_occurrences,
 )
+from careeros.presenters import ranked_group_dict, ranked_job_dict
 from careeros.ranking.profile import load_profile
 from careeros.ranking.scorer import (
     CandidateProfile,
     MatchResult,
     RankedGroup,
     RankedJob,
-    component_to_dict,
     feedback_summary,
 )
 from careeros.reminders.models import (
@@ -145,7 +145,6 @@ from careeros.saved_searches.service import (
     rename_search,
     update_search,
 )
-from careeros.source_stats.models import SourceStats
 from careeros.source_stats.render import (
     render_source_stats_json,
     render_source_stats_text,
@@ -161,6 +160,25 @@ DEFAULT_PROFILE_PATH = PROJECT_ROOT / "config" / "candidate_profile.yaml"
 # EX_TEMPFAIL from sysexits.h: a conventional "temporary failure, retry later"
 # code, distinct from 1 (collection/setup failure) and 2 (argparse errors).
 EXIT_TEMP_FAILURE = 75
+
+
+def load_profile_or_error(profile_path: Path) -> CandidateProfile | None:
+    """Load a candidate profile, printing a message and returning None on failure.
+
+    Centralizes the load-profile failure path used by ``review next``, ``rank``,
+    ``report``, and the ``profile`` commands: every call site keeps the exact
+    message ``Failed to load profile: {error}`` and exit code 1.
+    """
+    try:
+        return load_profile(profile_path)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
+        print(f"Failed to load profile: {error}", file=sys.stderr)
+        return None
+
+
+def no_job_found_message(job_id: int) -> str:
+    """Return the canonical "no such job" message for a job id."""
+    return f"No job found with ID {job_id}."
 
 
 def print_diagnostics() -> int:
@@ -645,59 +663,6 @@ def render_rank_json(outcome: RankOutcome) -> str:
     return json.dumps(_rank_outcome_dict(outcome), indent=2, sort_keys=True) + "\n"
 
 
-def _job_dict(job: StoredJob) -> dict[str, object]:
-    """Serialize a stored job with the stable CareerOS job keys."""
-    return {
-        "id": job.id,
-        "source": job.source,
-        "source_job_id": job.source_job_id,
-        "title": job.title,
-        "company": job.company,
-        "location": job.location,
-        "remote_status": job.remote_status,
-        "employment_type": job.employment_type,
-        "published_at": job.published_at,
-        "url": job.url,
-    }
-
-
-def _group_dict(group: GroupedJob) -> dict[str, object]:
-    """Serialize a canonical group with the stable CareerOS group keys."""
-    return {
-        "group_id": group.group_id,
-        "representative": _job_dict(group.representative),
-        "members": [_job_dict(member) for member in group.members],
-        "sources": list(group.sources),
-        "urls": list(group.urls),
-    }
-
-
-def _ranked_job_dict(ranked: RankedJob) -> dict[str, object]:
-    """Serialize one scored flat result with its component breakdown."""
-    return {
-        "job": _job_dict(ranked.job),
-        "match_score": ranked.match_score,
-        "score": ranked.score,
-        "reasons": list(ranked.reasons),
-        "score_components": [
-            component_to_dict(component) for component in ranked.result.components
-        ],
-    }
-
-
-def _ranked_group_dict(ranked: RankedGroup) -> dict[str, object]:
-    """Serialize one scored grouped result with its component breakdown."""
-    return {
-        "group": _group_dict(ranked.group),
-        "match_score": ranked.match_score,
-        "score": ranked.score,
-        "reasons": list(ranked.reasons),
-        "score_components": [
-            component_to_dict(component) for component in ranked.result.components
-        ],
-    }
-
-
 def _rank_outcome_dict(outcome: RankOutcome) -> dict[str, object]:
     """Serialize a rank outcome (flat or grouped) as one JSON object."""
     return {
@@ -707,8 +672,8 @@ def _rank_outcome_dict(outcome: RankOutcome) -> dict[str, object]:
             if outcome.grouped
             else outcome.flat_candidate_count
         ),
-        "jobs": [_ranked_job_dict(ranked) for ranked in outcome.flat_ranked],
-        "groups": [_ranked_group_dict(ranked) for ranked in outcome.grouped_ranked],
+        "jobs": [ranked_job_dict(ranked) for ranked in outcome.flat_ranked],
+        "groups": [ranked_group_dict(ranked) for ranked in outcome.grouped_ranked],
         "tracking_statuses": outcome.tracking_statuses,
     }
 
@@ -835,7 +800,7 @@ def run_application_show(job_id: int, database_path: Path) -> int:
             initialize_schema(connection)
             job = get_job_by_id(connection, job_id)
             if job is None:
-                print(f"No job found with ID {job_id}.", file=sys.stderr)
+                print(no_job_found_message(job_id), file=sys.stderr)
                 return 1
             application = get_application(connection, job_id=job_id)
             note = None
@@ -933,7 +898,7 @@ def run_application_history(
             initialize_schema(connection)
             job = get_job_by_id(connection, job_id)
             if job is None:
-                print(f"No job found with ID {job_id}.", file=sys.stderr)
+                print(no_job_found_message(job_id), file=sys.stderr)
                 return 1
             application = get_application(connection, job_id=job_id)
             if application is None:
@@ -1093,7 +1058,7 @@ def run_reminder_show(reminder_id: int, database_path: Path) -> int:
             reminder = require_reminder(connection, reminder_id)
             job = get_job_by_id(connection, reminder.job_id)
             if job is None:
-                print(f"No job found with ID {reminder.job_id}.", file=sys.stderr)
+                print(no_job_found_message(reminder.job_id), file=sys.stderr)
                 return 1
             attempts = attempts_for_reminder(connection, reminder_id, limit=5)
     except ReminderUnknownReminderError as error:
@@ -1503,7 +1468,7 @@ def run_review_show(job_id: int, database_path: Path) -> int:
             initialize_schema(connection)
             job = get_job_by_id(connection, job_id)
             if job is None:
-                print(f"No job found with ID {job_id}.", file=sys.stderr)
+                print(no_job_found_message(job_id), file=sys.stderr)
                 return 1
             decision = get_decision(connection, job_id=job_id)
             note = None
@@ -1590,7 +1555,7 @@ def run_review_history(
             initialize_schema(connection)
             job = get_job_by_id(connection, job_id)
             if job is None:
-                print(f"No job found with ID {job_id}.", file=sys.stderr)
+                print(no_job_found_message(job_id), file=sys.stderr)
                 return 1
             events = list_decision_events(connection, job_id=job_id, limit=limit)
     except ReviewValidationError as error:
@@ -1636,10 +1601,8 @@ def run_review_next(
     use_feedback: bool = True,
 ) -> int:
     """Rank a personalized daily review queue (read-only, no lock)."""
-    try:
-        profile = load_profile(profile_path)
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
-        print(f"Failed to load profile: {error}", file=sys.stderr)
+    profile = load_profile_or_error(profile_path)
+    if profile is None:
         return 1
 
     try:
@@ -1702,7 +1665,7 @@ def run_search(
                 include_statuses=tuple(include_statuses),
                 exclude_statuses=tuple(exclude_statuses),
             )
-    except Exception as error:
+    except (OSError, sqlite3.Error) as error:
         print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
@@ -1720,12 +1683,12 @@ def run_show(job_id: int, database_path: Path) -> int:
         with connect(database_path) as connection:
             initialize_schema(connection)
             job = get_job_by_id(connection, job_id)
-    except Exception as error:
-        print(f"Error: {type(error).__name__}: {error}", file=sys.stderr)
+    except (OSError, sqlite3.Error) as error:
+        print(f"Show failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
     if job is None:
-        print(f"No job found with ID {job_id}.", file=sys.stderr)
+        print(no_job_found_message(job_id), file=sys.stderr)
         return 1
 
     print(f"ID:               {job.id}")
@@ -1835,10 +1798,8 @@ def run_rank(
     use_feedback: bool = True,
 ) -> int:
     """Search jobs and rank them against a candidate profile."""
-    try:
-        profile = load_profile(profile_path)
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
-        print(f"Failed to load profile: {error}", file=sys.stderr)
+    profile = load_profile_or_error(profile_path)
+    if profile is None:
         return 1
 
     try:
@@ -1996,10 +1957,8 @@ def run_profile_init(profile_path: Path | None, *, force: bool) -> int:
 def run_profile_show(profile_path: Path | None) -> int:
     """Show a candidate profile from a JSON or YAML file (read-only, no DB)."""
     path = profile_path if profile_path is not None else DEFAULT_PROFILE_PATH
-    try:
-        profile = load_profile(path)
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
-        print(f"Failed to load profile: {error}", file=sys.stderr)
+    profile = load_profile_or_error(path)
+    if profile is None:
         return 1
 
     print(f"Profile: {path}")
@@ -2011,10 +1970,7 @@ def run_profile_show(profile_path: Path | None) -> int:
 def run_profile_validate(profile_path: Path | None) -> int:
     """Validate a candidate profile file without displaying its contents."""
     path = profile_path if profile_path is not None else DEFAULT_PROFILE_PATH
-    try:
-        load_profile(path)
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
-        print(f"Failed to load profile: {error}", file=sys.stderr)
+    if load_profile_or_error(path) is None:
         return 1
 
     print(f"Profile {path} is valid.")
@@ -2057,7 +2013,9 @@ def run_report(
                 saved_search = definition
 
             if arguments.profile is not None:
-                profile = load_profile(arguments.profile)
+                profile = load_profile_or_error(arguments.profile)
+                if profile is None:
+                    return 1
             elif saved_search is not None:
                 if not saved_search.profile_path:
                     print(
@@ -2065,7 +2023,9 @@ def run_report(
                         file=sys.stderr,
                     )
                     return 1
-                profile = load_profile(Path(saved_search.profile_path))
+                profile = load_profile_or_error(Path(saved_search.profile_path))
+                if profile is None:
+                    return 1
 
             report = build_report(
                 connection,
@@ -2080,9 +2040,6 @@ def run_report(
                     else None
                 ),
             )
-    except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
-        print(f"Failed to load profile: {error}", file=sys.stderr)
-        return 1
     except (OSError, sqlite3.Error) as error:
         print(f"Report failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
@@ -2163,16 +2120,6 @@ def run_export(
     return write_export(text, stdout_stream())
 
 
-def _empty_source_stats() -> tuple[SourceStats, ...]:
-    """Build zero-count statistics for every registered source.
-
-    Used when the database file does not exist so the read-only command can
-    report a deterministically empty database without ever creating the file.
-    Delegates to the shared source-stats service helper.
-    """
-    return empty_source_stats()
-
-
 def run_source_stats(
     *,
     source: str | None,
@@ -2189,7 +2136,7 @@ def run_source_stats(
             with connect(database_path) as connection:
                 stats = compute_source_stats(connection)
         else:
-            stats = _empty_source_stats()
+            stats = empty_source_stats()
     except (OSError, sqlite3.Error) as error:
         print(f"Source stats failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1

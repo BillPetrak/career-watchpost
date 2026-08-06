@@ -1,0 +1,124 @@
+"""Shared presentation and serialization helpers.
+
+Every helper here is a pure projection of stored CareerOS domain objects into
+display or JSON structures, with the exact key order and values the existing
+CLI and renderers rely on. They are shared by the command-line interface
+(:mod:`careeros.cli`), the Career Snapshot report renderers
+(:mod:`careeros.reporting.render`), the review-queue renderer
+(:mod:`careeros.review.render`), and the source-statistics renderer
+(:mod:`careeros.source_stats.render`) so that identical shapes are produced in
+exactly one place.
+
+The richer export record schemas in :mod:`careeros.export.service` intentionally
+do NOT use these helpers: export records carry the full stored-job columns plus
+export-specific metadata (``group_id``, ``member_count``, ``rank``, ...) and
+are defined by their own deterministic contract.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from careeros.database.groups import GroupedJob
+from careeros.database.jobs import StoredJob
+from careeros.ranking.scorer import RankedGroup, RankedJob, component_to_dict
+
+if TYPE_CHECKING:
+    from careeros.source_stats.models import FieldCoverage, SourceStats
+
+
+def job_dict(job: StoredJob) -> dict[str, Any]:
+    """Serialize a stored job with the stable CareerOS job keys."""
+    return {
+        "id": job.id,
+        "source": job.source,
+        "source_job_id": job.source_job_id,
+        "title": job.title,
+        "company": job.company,
+        "location": job.location,
+        "remote_status": job.remote_status,
+        "employment_type": job.employment_type,
+        "published_at": job.published_at,
+        "url": job.url,
+    }
+
+
+def group_dict(group: GroupedJob) -> dict[str, Any]:
+    """Serialize a canonical group with the stable CareerOS group keys."""
+    return {
+        "group_id": group.group_id,
+        "representative": job_dict(group.representative),
+        "members": [job_dict(member) for member in group.members],
+        "sources": list(group.sources),
+        "urls": list(group.urls),
+    }
+
+
+def ranked_job_dict(ranked: RankedJob) -> dict[str, Any]:
+    """Serialize one scored flat result with its component breakdown."""
+    return {
+        "job": job_dict(ranked.job),
+        "match_score": ranked.match_score,
+        "score": ranked.score,
+        "reasons": list(ranked.reasons),
+        "score_components": [
+            component_to_dict(component) for component in ranked.result.components
+        ],
+    }
+
+
+def ranked_group_dict(ranked: RankedGroup) -> dict[str, Any]:
+    """Serialize one scored grouped result with its component breakdown."""
+    return {
+        "group": group_dict(ranked.group),
+        "match_score": ranked.match_score,
+        "score": ranked.score,
+        "reasons": list(ranked.reasons),
+        "score_components": [
+            component_to_dict(component) for component in ranked.result.components
+        ],
+    }
+
+
+def location_display(location: str | None, remote_status: str | None) -> str:
+    """Render a job location for display, appending ``(remote)`` when remote.
+
+    Matches the long-standing display convention used by search, rank, review,
+    and report text output: absent locations render as ``N/A`` and remote jobs
+    are annotated inline.
+    """
+    value = location or "N/A"
+    if remote_status == "remote":
+        return f"{value} (remote)"
+    return value
+
+
+def field_coverage_dict(field: FieldCoverage) -> dict[str, Any]:
+    """Serialize one per-field coverage statistic."""
+    return {
+        "field": field.field,
+        "missing_count": field.missing_count,
+        "provided_count": field.provided_count,
+        "coverage_pct": field.coverage_pct,
+    }
+
+
+def source_stats_dict(stats: SourceStats) -> dict[str, Any]:
+    """Serialize one per-source statistics entry."""
+    return {
+        "source": stats.source,
+        "total_jobs": stats.total_jobs,
+        "never_groupable_jobs": stats.never_groupable_jobs,
+        "fields": [field_coverage_dict(field) for field in stats.fields],
+    }
+
+
+__all__: tuple[str, ...] = (
+    "field_coverage_dict",
+    "group_dict",
+    "job_dict",
+    "location_display",
+    "ranked_group_dict",
+    "ranked_job_dict",
+    "source_stats_dict",
+)

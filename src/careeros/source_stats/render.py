@@ -11,11 +11,8 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from careeros.source_stats.models import (
-    MISSING_FIELD_WORDING,
-    FieldCoverage,
-    SourceStats,
-)
+from careeros.presenters import source_stats_dict
+from careeros.source_stats.models import MISSING_FIELD_WORDING, SourceStats
 
 
 def render_source_stats_text(stats: Sequence[SourceStats]) -> str:
@@ -31,7 +28,7 @@ def render_source_stats_text(stats: Sequence[SourceStats]) -> str:
 
 def render_source_stats_json(stats: Sequence[SourceStats]) -> str:
     """Render per-source statistics as deterministic JSON (same data)."""
-    payload = {"sources": [_source_stats_dict(entry) for entry in stats]}
+    payload = {"sources": [source_stats_dict(entry) for entry in stats]}
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
@@ -58,21 +55,3 @@ def _source_stats_block(entry: SourceStats) -> list[str]:
         pct = f"{field.coverage_pct}%" if field.coverage_pct is not None else "-"
         lines.append(f"    {field.field} {pct}")
     return lines
-
-
-def _field_coverage_dict(field: FieldCoverage) -> dict[str, object]:
-    return {
-        "field": field.field,
-        "missing_count": field.missing_count,
-        "provided_count": field.provided_count,
-        "coverage_pct": field.coverage_pct,
-    }
-
-
-def _source_stats_dict(entry: SourceStats) -> dict[str, object]:
-    return {
-        "source": entry.source,
-        "total_jobs": entry.total_jobs,
-        "never_groupable_jobs": entry.never_groupable_jobs,
-        "fields": [_field_coverage_dict(field) for field in entry.fields],
-    }

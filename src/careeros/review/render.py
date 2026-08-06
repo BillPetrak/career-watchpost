@@ -14,8 +14,7 @@ import json
 from typing import Any
 
 from careeros.applications.service import GroupTrackingInfo
-from careeros.database.groups import GroupedJob
-from careeros.database.jobs import StoredJob
+from careeros.presenters import group_dict, job_dict, location_display
 from careeros.ranking.feedback import FeedbackAdjustment
 from careeros.ranking.scorer import component_to_dict, feedback_summary
 from careeros.review.service import GroupDecision, QueueItem, QueueOutcome
@@ -89,9 +88,7 @@ def _queue_item_lines(index: int, item: QueueItem) -> list[str]:
     """Render one ranked queue entry as labeled lines."""
     group = item.group
     rep = group.representative
-    location = rep.location or "N/A"
-    if rep.remote_status == "remote":
-        location = f"{location} (remote)"
+    location = location_display(rep.location, rep.remote_status)
 
     lines = [
         f"{index}. [Score {item.ranked.match_score}/100] {rep.title}",
@@ -123,33 +120,6 @@ def _feedback_lines(feedback: FeedbackAdjustment | None) -> list[str]:
     return [f"   Feedback: {feedback_summary(feedback)}"]
 
 
-def _job_dict(job: StoredJob) -> dict[str, Any]:
-    """Serialize a stored job with the stable CareerOS job keys."""
-    return {
-        "id": job.id,
-        "source": job.source,
-        "source_job_id": job.source_job_id,
-        "title": job.title,
-        "company": job.company,
-        "location": job.location,
-        "remote_status": job.remote_status,
-        "employment_type": job.employment_type,
-        "published_at": job.published_at,
-        "url": job.url,
-    }
-
-
-def _group_dict(group: GroupedJob) -> dict[str, Any]:
-    """Serialize a canonical group with the stable CareerOS group keys."""
-    return {
-        "group_id": group.group_id,
-        "representative": _job_dict(group.representative),
-        "members": [_job_dict(member) for member in group.members],
-        "sources": list(group.sources),
-        "urls": list(group.urls),
-    }
-
-
 def _queue_item_dict(item: QueueItem) -> dict[str, Any]:
     """Serialize one ranked queue entry."""
     group_decision = item.group_decision
@@ -157,9 +127,7 @@ def _queue_item_dict(item: QueueItem) -> dict[str, Any]:
         "decision": group_decision.decision,
         "decision_conflict": group_decision.conflict,
         "decision_owner": (
-            _job_dict(group_decision.owner)
-            if group_decision.owner is not None
-            else None
+            job_dict(group_decision.owner) if group_decision.owner is not None else None
         ),
         "match_score": item.ranked.match_score,
         "score": item.ranked.score,
@@ -167,10 +135,10 @@ def _queue_item_dict(item: QueueItem) -> dict[str, Any]:
         "score_components": [
             component_to_dict(component) for component in item.ranked.result.components
         ],
-        "group": _group_dict(item.group),
+        "group": group_dict(item.group),
         "application_status": item.application.status,
         "application_owner": (
-            _job_dict(item.application.owner)
+            job_dict(item.application.owner)
             if item.application.owner is not None
             else None
         ),

@@ -18,12 +18,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from careeros.database.jobs import (
-    _SELECT_COLUMNS,
+    JOB_COLUMNS,
     StoredJob,
-    _stored_job_from_row,
+    job_from_row,
 )
 
-_JOB_COLUMNS: tuple[str, ...] = tuple(_SELECT_COLUMNS.split(", "))
+_JOB_COLUMNS: tuple[str, ...] = tuple(JOB_COLUMNS.split(", "))
 
 
 @dataclass(frozen=True)
@@ -100,7 +100,7 @@ def _list_item_from_row(row: sqlite3.Row) -> ApplicationListItem:
             created_at=row["app_created_at"],
             updated_at=row["app_updated_at"],
         ),
-        job=_stored_job_from_row(row),
+        job=job_from_row(row),
         latest_note=row["latest_note"],
     )
 

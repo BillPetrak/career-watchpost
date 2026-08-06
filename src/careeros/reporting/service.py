@@ -15,7 +15,7 @@ from datetime import datetime
 from careeros.applications.models import APPLICATION_STATUSES
 from careeros.database.applications import StoredApplication
 from careeros.database.groups import grouping_summary
-from careeros.database.jobs import _SELECT_COLUMNS, _stored_job_from_row
+from careeros.database.jobs import JOB_COLUMNS, job_from_row
 from careeros.notifications.service import notification_summary
 from careeros.ranking.feedback import FeedbackSet
 from careeros.ranking.scorer import CandidateProfile
@@ -47,7 +47,7 @@ from careeros.saved_searches.service import list_searches
 from careeros.source_stats.service import compute_source_stats
 from careeros.status import build_statuses
 
-_JOB_COLUMNS: tuple[str, ...] = tuple(_SELECT_COLUMNS.split(", "))
+_JOB_COLUMNS: tuple[str, ...] = tuple(JOB_COLUMNS.split(", "))
 
 
 def _counts_by_status(connection: sqlite3.Connection) -> dict[str, int]:
@@ -94,7 +94,7 @@ def _list_tracked(connection: sqlite3.Connection) -> list[ApplicationSnapshot]:
     for row in rows:
         snapshots.append(
             ApplicationSnapshot(
-                job=_stored_job_from_row(row),
+                job=job_from_row(row),
                 application=StoredApplication(
                     id=row["app_id"],
                     job_id=row["job_id"],

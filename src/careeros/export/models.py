@@ -26,13 +26,6 @@ class ExportFormat(Enum):
     CSV = "csv"
 
 
-FORMAT_EXTENSIONS: dict[ExportFormat, str] = {
-    ExportFormat.JSON: ".json",
-    ExportFormat.JSONL: ".jsonl",
-    ExportFormat.CSV: ".csv",
-}
-
-
 class ExportError(Exception):
     """A user-facing export failure (invalid output path, write error, ...)."""
 

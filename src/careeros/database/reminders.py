@@ -16,12 +16,12 @@ import sqlite3
 from dataclasses import dataclass
 
 from careeros.database.jobs import (
-    _SELECT_COLUMNS,
+    JOB_COLUMNS,
     StoredJob,
-    _stored_job_from_row,
+    job_from_row,
 )
 
-_JOB_COLUMNS: tuple[str, ...] = tuple(_SELECT_COLUMNS.split(", "))
+_JOB_COLUMNS: tuple[str, ...] = tuple(JOB_COLUMNS.split(", "))
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ def _list_entry_from_row(row: sqlite3.Row) -> ReminderListEntry:
             created_at=row["reminder_created"],
             updated_at=row["reminder_updated"],
         ),
-        job=_stored_job_from_row(row),
+        job=job_from_row(row),
     )
 
 

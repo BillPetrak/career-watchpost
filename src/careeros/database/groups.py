@@ -12,15 +12,15 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from careeros.database.jobs import (
-    _SELECT_COLUMNS,
+    JOB_COLUMNS,
     StoredJob,
-    _stored_job_from_row,
+    job_from_row,
     list_all_jobs,
 )
 from careeros.database.runs import parse_utc
 from careeros.grouping.matcher import assign_groups, identity_for
 
-_JOB_COLUMNS: tuple[str, ...] = tuple(_SELECT_COLUMNS.split(", "))
+_JOB_COLUMNS: tuple[str, ...] = tuple(JOB_COLUMNS.split(", "))
 
 
 @dataclass(frozen=True)
@@ -171,7 +171,7 @@ def search_grouped(
     buckets: dict[str, list[StoredJob]] = {}
     order: list[str] = []
     for row in rows:
-        job = _stored_job_from_row(row)
+        job = job_from_row(row)
         group_id = row["group_id"]
         key = group_id if group_id is not None else f"__single__:{job.id}"
         if key not in buckets:
@@ -263,7 +263,7 @@ def list_all_groups(
     buckets: dict[str, list[StoredJob]] = {}
     order: list[str] = []
     for row in rows:
-        job = _stored_job_from_row(row)
+        job = job_from_row(row)
         group_id = row["group_id"]
         key = group_id if group_id is not None else f"__single__:{job.id}"
         if key not in buckets:
@@ -319,7 +319,7 @@ def list_group_infos(
         if group_id is not None and gid != group_id:
             continue
         member_rows = grouped[gid]
-        members = tuple(_stored_job_from_row(row) for row in member_rows)
+        members = tuple(job_from_row(row) for row in member_rows)
         sources, urls = _sources_and_urls(members)
         infos.append(
             GroupInfo(
