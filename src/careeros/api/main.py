@@ -5,15 +5,19 @@ and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``,
 ``GET /applications/{job_id}``, ``GET /reminders``,
 ``GET /reminders/{reminder_id}``, ``GET /groups``, ``GET /groups/summary``, and
-``GET /groups/{group_id}``) plus one computation-only ``POST /ranked-jobs``
-endpoint. Every endpoint is strictly read-only with respect to the database and
-filesystem: nothing creates a database file, directory, or schema, nothing
-writes, and nothing makes network calls. ``POST /ranked-jobs`` computes a
-ranking from a candidate profile submitted inline in the request body and
-creates no resource; it never reads profile files, never persists or logs the
-submitted profile, and never applies review feedback. Application notes, event
-history, review decisions, reminder messages, group matcher diagnostics, and
-ranking reasons are never exposed over HTTP.
+``GET /groups/{group_id}``) plus two computation-only ``POST`` endpoints:
+``POST /ranked-jobs`` and ``POST /review-queue``. Every endpoint is strictly
+read-only with respect to the database and filesystem: nothing creates a
+database file, directory, or schema, nothing writes, and nothing makes network
+calls. Both ``POST`` endpoints compute a ranking from a candidate profile
+submitted inline in the request body and create no resource; they never read
+profile files, never persist or log the submitted profile, and never apply
+review feedback. ``POST /review-queue`` ranks the personalized daily review
+queue (opportunities needing review) against the inline profile, collapsing
+cross-source duplicates per canonical group by default. Application notes,
+event history, review decisions (beyond the resolved queue decision value),
+reminder messages, group matcher diagnostics, and ranking reasons are never
+exposed over HTTP.
 """
 
 from __future__ import annotations
@@ -43,6 +47,9 @@ from careeros.api.schemas import (
     RankRequest,
     ReminderItem,
     ReminderListResponse,
+    ReviewQueueItem,
+    ReviewQueueRequest,
+    ReviewQueueResponse,
     SourceStats,
     SourceStatsListResponse,
 )
@@ -67,6 +74,7 @@ from careeros.presenters import (
     job_dict,
     ranked_job_item_dict,
     reminder_item_dict,
+    review_queue_item_dict,
     source_stats_dict,
 )
 from careeros.ranking.scorer import CandidateProfile
@@ -77,6 +85,10 @@ from careeros.reminders.models import (
     parse_due_at,
 )
 from careeros.reminders.service import list_reminders
+from careeros.review.models import (
+    ValidationError as ReviewValidationError,
+)
+from careeros.review.service import build_queue
 from careeros.saved_searches.execution import rank_candidates
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
@@ -100,6 +112,12 @@ MAX_FETCH_RUNS = 1_000_000
 # counts are bounded by the stored jobs they attach to; this mirrors the
 # export package's record cap without importing it.
 MAX_FETCH_REMINDERS = 1_000_000
+
+# Safety valve when loading all matching review-queue entries before Python-side
+# slicing (the same load-then-slice pattern as the other list endpoints). The
+# queue is bounded by the stored jobs it ranks; this mirrors the export
+# package's record cap without importing it.
+MAX_FETCH_QUEUE = 1_000_000
 
 DATABASE_UNAVAILABLE_MESSAGE = (
     "The database schema is unavailable (run 'careeros collect <source>' to "
@@ -520,6 +538,63 @@ def create_app() -> FastAPI:
                 for item in ranked[offset : offset + limit]
             ],
             total=len(ranked),
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.post("/review-queue", response_model=ReviewQueueResponse)
+    def review_queue(
+        payload: ReviewQueueRequest,
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        state: str = "unreviewed",
+        minimum_score: Annotated[int, Query(ge=0, le=100)] = 0,
+        include_tracked: bool = False,
+        grouped: bool = True,
+        source: str | None = None,
+        remote: bool | None = None,
+        location: str | None = None,
+        employment_type: str | None = None,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+    ) -> ReviewQueueResponse:
+        """Rank the personalized daily review queue (computation-only).
+
+        Review feedback is always excluded (``feedback=None``), so stored
+        review decisions never influence queue scores. Results are grouped per
+        canonical duplicate group by default (``grouped=false`` expands to
+        singleton groups), deterministically ordered by ``match_score DESC``,
+        then newest member publication time, then representative job ID.
+        ``total`` reflects the queue count after ``state``/application/
+        ``minimum_score`` filtering and before pagination. A missing database
+        yields an empty envelope without creating a file, directory, or schema.
+        """
+        if connection is None:
+            return ReviewQueueResponse(items=[], total=0, offset=offset, limit=limit)
+        profile = _to_profile(payload.profile)
+        try:
+            outcome = build_queue(
+                connection,
+                profile=profile,
+                state=state,
+                min_score=minimum_score,
+                include_tracked=include_tracked,
+                source=source,
+                location=location,
+                remote=remote,
+                employment_type=employment_type,
+                limit=MAX_FETCH_QUEUE,
+                grouped=grouped,
+                feedback=None,
+            )
+        except ReviewValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        items = outcome.items
+        return ReviewQueueResponse(
+            items=[
+                ReviewQueueItem.model_validate(review_queue_item_dict(item))
+                for item in items[offset : offset + limit]
+            ],
+            total=len(items),
             offset=offset,
             limit=limit,
         )

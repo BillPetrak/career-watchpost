@@ -24,6 +24,7 @@ from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.reminders import ReminderListEntry
 from careeros.ranking.scorer import RankedGroup, RankedJob, component_to_dict
+from careeros.review.service import QueueItem
 
 if TYPE_CHECKING:
     from careeros.source_stats.models import FieldCoverage, SourceStats
@@ -134,6 +135,26 @@ def ranked_job_item_dict(ranked: RankedJob) -> dict[str, Any]:
     }
 
 
+def review_queue_item_dict(item: QueueItem) -> dict[str, Any]:
+    """Serialize one ranked review-queue entry for the HTTP API.
+
+    A narrowly scoped subset of the review renderer's queue-item shape: the
+    canonical group, the two score values, and the resolved group decision and
+    application status. ``reasons`` and ``score_components`` are deliberately
+    omitted because they can echo submitted profile terms or embed private
+    review-feedback text, which the HTTP API never exposes. Decision notes,
+    application notes, conflict/owner detail, and reminder messages are
+    likewise never exposed.
+    """
+    return {
+        "group": group_dict(item.group),
+        "match_score": item.ranked.match_score,
+        "score": item.ranked.score,
+        "review_decision": item.group_decision.decision,
+        "application_status": item.application.status,
+    }
+
+
 def location_display(location: str | None, remote_status: str | None) -> str:
     """Render a job location for display, appending ``(remote)`` when remote.
 
@@ -177,5 +198,6 @@ __all__: tuple[str, ...] = (
     "ranked_job_dict",
     "ranked_job_item_dict",
     "reminder_item_dict",
+    "review_queue_item_dict",
     "source_stats_dict",
 )

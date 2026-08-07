@@ -289,6 +289,52 @@ class RankedJobsResponse(BaseModel):
     limit: int
 
 
+class ReviewQueueRequest(BaseModel):
+    """Request body for ``POST /review-queue``: an inline candidate profile.
+
+    Unknown top-level fields are silently ignored, so an attempted
+    ``profile_path`` (or any other probe) is inert and never acted upon. The
+    API never reads profile files, never persists or logs the submitted
+    profile, and never exposes its contents.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    profile: CandidateProfileRequest
+
+
+class ReviewQueueItem(BaseModel):
+    """One ranked daily-review-queue entry.
+
+    Mirrors a narrowly pruned subset of the shared review renderer's queue-item
+    shape: the canonical group, the two score values, the resolved group
+    decision (``None`` when unreviewed), and the group's tracked application
+    status (``None`` when untracked). ``reasons``, ``score_components``,
+    decision notes, application notes, conflict/owner detail, and reminder
+    messages are deliberately omitted: they can echo submitted profile terms or
+    embed private free text, which the HTTP API never exposes.
+    """
+
+    group: Group
+    match_score: int
+    score: int
+    review_decision: str | None
+    application_status: str | None
+
+
+class ReviewQueueResponse(BaseModel):
+    """A paginated page of ranked review-queue entries, best match first.
+
+    ``total`` is the count of queue entries after ``state``/application/
+    ``minimum_score`` filtering and before ``offset``/``limit`` pagination.
+    """
+
+    items: list[ReviewQueueItem]
+    total: int
+    offset: int
+    limit: int
+
+
 __all__: tuple[str, ...] = (
     "ApplicationItem",
     "ApplicationListResponse",
@@ -310,6 +356,9 @@ __all__: tuple[str, ...] = (
     "RankedJobsResponse",
     "ReminderItem",
     "ReminderListResponse",
+    "ReviewQueueItem",
+    "ReviewQueueRequest",
+    "ReviewQueueResponse",
     "SourceStats",
     "SourceStatsListResponse",
 )

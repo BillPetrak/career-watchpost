@@ -656,9 +656,10 @@ codes: `0` success, `1` output/profile/database failure, `2` usage errors
 `src/careeros/api/` is a read-only FastAPI slice (optional `api` extra). Serve
 with `uv run uvicorn careeros.api:app`. The slice never fetches jobs, never
 writes, never creates a database file, directory, or schema, and never contacts
-external services. Its single POST endpoint, `POST /ranked-jobs`, is
-computation-only: it ranks stored jobs against a candidate profile submitted
-inline in the request body and creates no resource. The database path comes
+external services. Its two POST endpoints, `POST /ranked-jobs` and
+`POST /review-queue`, are computation-only: they rank stored jobs against a
+candidate profile submitted inline in the request body and create no resource.
+The database path comes
 from `CAREEROS_DATABASE` (see
 `src/careeros/settings.py`), read per request with the standard library; a
 missing database is treated as empty. Each request opens one SQLite connection
@@ -802,6 +803,37 @@ canonical `No job found with ID {id}.` message locally.
   pagination. A missing database returns `200` with an empty envelope without
   creating a file or directory; an uninitialized or malformed database returns
   the canonical privacy-safe `500`.
+- `POST /review-queue` — rank the personalized daily review queue (opportunities
+  needing review) against a candidate profile submitted inline in the request
+  body (`{"profile": {...}}`). Computation-only with the same guarantees as
+  `POST /ranked-jobs`: it never creates a resource, never writes, never reads a
+  profile file (no `profile_path` is ever accepted), and never persists or logs
+  the submitted profile. The request body reuses the `CandidateProfileRequest`
+  semantics (all optional, unknown fields ignored, whitespace-stripped list
+  entries, up to 100 entries per list and 100 characters per entry,
+  `remote_preference` up to 50 characters, duplicates preserved, empty profile
+  valid) through a dedicated `ReviewQueueRequest` wrapper. Query parameters
+  mirror `review next`: `state` (one of `unreviewed`, `shortlist`, `dismiss`,
+  `review_later`, `any`; default `unreviewed`), `minimum_score` (0–100, default
+  0), `include_tracked` (default `false`), `grouped` (default `true`), the
+  `/jobs` filters (`source`, `location`, `remote`, `employment_type`) applied to
+  candidate member rows BEFORE grouping, and `offset`/`limit` pagination
+  (defaults 0/20, `limit` capped at 100). Review feedback is always excluded
+  (`feedback=None`), so stored review decisions never alter queue scores.
+  Results are grouped per canonical duplicate group by default (`grouped=false`
+  expands to singleton groups using the `/groups` convention of a null
+  `group_id`); deterministic order is `match_score DESC`, then newest member
+  publication time (`NULLS LAST`), then representative (lowest member) job ID.
+  Each item carries exactly `group` (the canonical `group_dict` projection with
+  nested `job_dict` members), `match_score`, `score`, `review_decision`
+  (resolved group decision value or null), and `application_status` (tracked
+  status or null); `reasons`, `score_components`, profile terms, decision notes,
+  application notes, conflict/owner detail, and all other private free text are
+  deliberately omitted. The envelope is `{items, total, offset, limit}`;
+  `total` is the count after `state`/application/`minimum_score` filtering and
+  before pagination. A missing database returns `200` with an empty envelope
+  without creating a file or directory; an uninitialized or malformed database
+  returns the canonical privacy-safe `500`; an invalid `state` returns `422`.
 
 A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict read-only policy (no DDL on read paths).
