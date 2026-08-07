@@ -793,6 +793,32 @@ canonical `No job found with ID {id}.` message locally.
   `new_decision` (`null` for a clearing transition), `created_at`; event `note`s
   are deliberately omitted. The envelope is `{items, total, offset, limit}`;
   `total` is the event count before `offset`/`limit` slicing.
+- `GET /saved-searches` — stored saved-search **definitions** for viewing only
+  (execution is out of scope; see `saved-search run` for the CLI path). Listing
+  is deterministic: ascending case-insensitive `name` then ascending `id` (the
+  shared `saved_searches.service.list_searches` order, `name COLLATE NOCASE, id`),
+  with standard `offset`/`limit` pagination (defaults 0/20, `limit` capped at
+  100) and no filters. The envelope is `{items, total, offset, limit}`; `total`
+  is the number of stored saved searches before `offset`/`limit` slicing. Each
+  item uses the shared `presenters.saved_search_item_dict` projection with the
+  exact field order `id`, `name`, `mode`, `query`, `grouped`, `source`, `remote`
+  (`null` = no filter, `true` = remote only), `location`, `untracked`,
+  `include_statuses`, `exclude_statuses`, `min_score`, `result_limit`,
+  `created_at`, `updated_at`. `query` is intentionally public — it is the
+  essential search definition being viewed. Saved-search `profile_path` (a local
+  filesystem path) and `description` (unused free text) are deliberately omitted
+  from every response and are never read, dereferenced, or loaded by these
+  endpoints; no profile loading or filesystem access occurs as a consequence of a
+  read. A missing database file returns an empty envelope without creating the
+  file.
+- `GET /saved-searches/{name}` — one stored saved-search definition using the
+  exact same shape as a list item, resolved case-insensitively through the
+  shared `saved_searches.service.get_search` (`name COLLATE NOCASE`; the API
+  never re-folds case itself). An unknown name returns `404` with the canonical
+  `No saved search named '{name}'.` message; a missing database file returns the
+  same `404` without creating the file. Viewing only: the request never
+  dereferences `profile_path`, never loads a profile, and never executes the
+  saved search.
 - `GET /groups` — distinct opportunities (canonical duplicate groups plus
   ungrouped jobs as singletons), reusing the shared `database.groups`
   `list_all_groups` service with the canonical `presenters.group_dict`

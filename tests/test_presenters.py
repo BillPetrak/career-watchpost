@@ -30,9 +30,11 @@ from careeros.presenters import (
     location_display,
     ranked_group_dict,
     ranked_job_dict,
+    saved_search_item_dict,
     source_stats_dict,
 )
 from careeros.ranking.scorer import MatchResult, RankedGroup, RankedJob
+from careeros.saved_searches.models import SavedSearch
 from careeros.source_stats.models import FieldCoverage, SourceStats
 
 JOB_KEYS = (
@@ -61,6 +63,24 @@ RANKED_KEYS = (
 COVERAGE_KEYS = ("field", "missing_count", "provided_count", "coverage_pct")
 
 SOURCE_STATS_KEYS = ("source", "total_jobs", "never_groupable_jobs", "fields")
+
+SAVED_SEARCH_KEYS = (
+    "id",
+    "name",
+    "mode",
+    "query",
+    "grouped",
+    "source",
+    "remote",
+    "location",
+    "untracked",
+    "include_statuses",
+    "exclude_statuses",
+    "min_score",
+    "result_limit",
+    "created_at",
+    "updated_at",
+)
 
 
 def _seed_job(tmp_path: Path) -> tuple[sqlite3.Connection, int]:
@@ -250,6 +270,52 @@ def test_field_coverage_dict_key_order_and_values() -> None:
     assert result["missing_count"] == 2
     assert result["provided_count"] == 8
     assert result["coverage_pct"] == 80
+
+
+def test_saved_search_item_dict_key_order_and_private_field_omission() -> None:
+    search = SavedSearch(
+        id=11,
+        name="Top-Ranks",
+        query="senior engineer",
+        mode="rank",
+        description="secret-description",
+        profile_path="/opt/private/secrets/candidate.yaml",
+        grouped=True,
+        source="arbeitnow",
+        remote=True,
+        location="Berlin",
+        untracked=True,
+        include_statuses=("interview", "applied"),
+        exclude_statuses=("rejected",),
+        min_score=30,
+        result_limit=15,
+        created_at="2026-08-03T12:00:00+00:00",
+        updated_at="2026-08-03T12:00:00+00:00",
+    )
+    result = saved_search_item_dict(search)
+
+    assert tuple(result) == SAVED_SEARCH_KEYS
+    assert result == {
+        "id": 11,
+        "name": "Top-Ranks",
+        "mode": "rank",
+        "query": "senior engineer",
+        "grouped": True,
+        "source": "arbeitnow",
+        "remote": True,
+        "location": "Berlin",
+        "untracked": True,
+        "include_statuses": ["interview", "applied"],
+        "exclude_statuses": ["rejected"],
+        "min_score": 30,
+        "result_limit": 15,
+        "created_at": "2026-08-03T12:00:00+00:00",
+        "updated_at": "2026-08-03T12:00:00+00:00",
+    }
+    assert "profile_path" not in result
+    assert "description" not in result
+    assert "/opt/private/secrets/candidate.yaml" not in result.values()
+    assert "secret-description" not in result.values()
 
 
 def test_source_stats_dict_key_order_and_values() -> None:

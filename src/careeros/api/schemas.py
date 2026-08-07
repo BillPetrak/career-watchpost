@@ -195,6 +195,48 @@ class ReminderListResponse(BaseModel):
     limit: int
 
 
+class SavedSearchItem(BaseModel):
+    """One stored saved-search definition for the HTTP API.
+
+    Mirrors the shared ``saved_search_item_dict`` projection: an explicit
+    allow-list of the public definition fields. ``profile_path`` (a local
+    filesystem path) and ``description`` (unused user-authored free text) are
+    deliberately omitted: the HTTP API never exposes filesystem paths or
+    workflow free text. ``query`` is intentionally public — it is the essential
+    search definition being viewed, not private workflow annotation.
+    ``remote`` is ``None`` (no filter) or ``True`` (remote only), exactly as
+    the domain stores it.
+    """
+
+    id: int
+    name: str
+    mode: str
+    query: str
+    grouped: bool
+    source: str | None
+    remote: bool | None
+    location: str | None
+    untracked: bool
+    include_statuses: list[str]
+    exclude_statuses: list[str]
+    min_score: int | None
+    result_limit: int
+    created_at: str
+    updated_at: str
+
+
+class SavedSearchListResponse(BaseModel):
+    """A paginated page of saved-search definitions.
+
+    ``total`` is the count of stored saved searches before pagination.
+    """
+
+    items: list[SavedSearchItem]
+    total: int
+    offset: int
+    limit: int
+
+
 class ReviewDecisionItem(BaseModel):
     """One current review decision joined with its job.
 
@@ -462,6 +504,8 @@ __all__: tuple[str, ...] = (
     "ReviewQueueItem",
     "ReviewQueueRequest",
     "ReviewQueueResponse",
+    "SavedSearchItem",
+    "SavedSearchListResponse",
     "SourceStats",
     "SourceStatsListResponse",
 )

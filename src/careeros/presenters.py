@@ -26,6 +26,7 @@ from careeros.database.reminders import ReminderListEntry
 from careeros.database.review import DecisionListItem, ReviewEvent
 from careeros.ranking.scorer import RankedGroup, RankedJob, component_to_dict
 from careeros.review.service import QueueItem
+from careeros.saved_searches.models import SavedSearch
 
 if TYPE_CHECKING:
     from careeros.source_stats.models import FieldCoverage, SourceStats
@@ -98,6 +99,35 @@ def reminder_item_dict(entry: ReminderListEntry) -> dict[str, Any]:
         "created_at": entry.reminder.created_at,
         "updated_at": entry.reminder.updated_at,
         "job": job_dict(entry.job),
+    }
+
+
+def saved_search_item_dict(search: SavedSearch) -> dict[str, Any]:
+    """Serialize one stored saved-search definition for the HTTP API.
+
+    An explicit allow-listed projection of exactly the public definition
+    fields: identity, name, mode, query, filter configuration, score/limit
+    settings, and timestamps. ``profile_path`` (a local filesystem path) and
+    ``description`` (unused user-authored free text) are structurally absent:
+    the projection is built field-by-field and never serializes the dataclass
+    wholesale, so private/internal fields can never leak into a response.
+    """
+    return {
+        "id": search.id,
+        "name": search.name,
+        "mode": search.mode,
+        "query": search.query,
+        "grouped": search.grouped,
+        "source": search.source,
+        "remote": search.remote,
+        "location": search.location,
+        "untracked": search.untracked,
+        "include_statuses": list(search.include_statuses),
+        "exclude_statuses": list(search.exclude_statuses),
+        "min_score": search.min_score,
+        "result_limit": search.result_limit,
+        "created_at": search.created_at,
+        "updated_at": search.updated_at,
     }
 
 
@@ -270,5 +300,6 @@ __all__: tuple[str, ...] = (
     "review_decision_event_dict",
     "review_decision_item_dict",
     "review_queue_item_dict",
+    "saved_search_item_dict",
     "source_stats_dict",
 )

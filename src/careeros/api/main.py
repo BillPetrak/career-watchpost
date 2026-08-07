@@ -1,14 +1,15 @@
 """FastAPI application for the CareerOS API slice.
 
-The slice exposes sixteen read-only GET endpoints backed by the shared database
+The slice exposes eighteen read-only GET endpoints backed by the shared database
 and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``,
 ``GET /applications/{job_id}``, ``GET /applications/{job_id}/history``,
 ``GET /reminders``,
 ``GET /reminders/{reminder_id}``, ``GET /groups``, ``GET /groups/summary``,
 ``GET /groups/{group_id}``, ``GET /review-decisions``,
-``GET /review-decisions/{job_id}``, and
-``GET /review-decisions/{job_id}/history``) plus two computation-only ``POST``
+``GET /review-decisions/{job_id}``,
+``GET /review-decisions/{job_id}/history``, ``GET /saved-searches``, and
+``GET /saved-searches/{name}``) plus two computation-only ``POST``
 endpoints: ``POST /ranked-jobs`` and ``POST /review-queue``. Every endpoint is
 strictly read-only with respect to the database and filesystem: nothing creates
 a database file, directory, or schema, nothing writes, and nothing makes network
@@ -21,11 +22,14 @@ group when ``grouped=true``. ``POST /review-queue`` ranks the personalized
 daily review queue (opportunities needing review) against the inline profile,
 collapsing cross-source duplicates per canonical group by default. The
 review-decisions endpoints expose current review decisions and their
-append-only transition history joined with the canonical job projection, and
-the applications endpoints expose tracked applications and their append-only
-status-transition history. Application notes, event notes (beyond status
-transition values and times), review decision notes, reminder messages, group
-matcher diagnostics, and ranking reasons are never exposed over HTTP.
+append-only transition history joined with the canonical job projection, the
+applications endpoints expose tracked applications and their append-only
+status-transition history, and the saved-searches endpoints expose stored
+saved-search definitions for viewing only (list and detail; execution is out of
+scope). Application notes, event notes (beyond status transition values and
+times), review decision notes, reminder messages, group matcher diagnostics,
+ranking reasons, saved-search ``profile_path`` values (local filesystem paths),
+and saved-search ``description`` values are never exposed over HTTP.
 """
 
 from __future__ import annotations
@@ -65,6 +69,8 @@ from careeros.api.schemas import (
     ReviewQueueItem,
     ReviewQueueRequest,
     ReviewQueueResponse,
+    SavedSearchItem,
+    SavedSearchListResponse,
     SourceStats,
     SourceStatsListResponse,
 )
@@ -96,6 +102,7 @@ from careeros.presenters import (
     review_decision_event_dict,
     review_decision_item_dict,
     review_queue_item_dict,
+    saved_search_item_dict,
     source_stats_dict,
 )
 from careeros.ranking.scorer import CandidateProfile
@@ -119,6 +126,7 @@ from careeros.review.service import (
     list_decisions,
 )
 from careeros.saved_searches.execution import rank_candidates
+from careeros.saved_searches.service import get_search, list_searches
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
 DEFAULT_LIMIT = 20
@@ -173,6 +181,11 @@ def _no_reminder_found_message(reminder_id: int) -> str:
 def _no_group_found_message(group_id: str) -> str:
     """Return the canonical "no such group" message for a group id."""
     return f"No group found with ID {group_id}."
+
+
+def _no_saved_search_found_message(name: str) -> str:
+    """Return the canonical "no such saved search" message for a name."""
+    return f"No saved search named {name!r}."
 
 
 def _to_profile(request_profile: CandidateProfileRequest) -> CandidateProfile:
@@ -590,6 +603,55 @@ def create_app() -> FastAPI:
                     limit=limit,
                 )
         raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
+
+    @app.get("/saved-searches", response_model=SavedSearchListResponse)
+    def list_saved_searches(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+    ) -> SavedSearchListResponse:
+        """List stored saved-search definitions, case-insensitively by name.
+
+        Viewing only: definitions are listed exactly as stored through the
+        shared ``list_searches`` service (ordered case-insensitively by name
+        then id); execution is out of scope. ``profile_path`` and
+        ``description`` are never exposed. A missing database yields an empty
+        envelope without creating a file, directory, or schema.
+        """
+        if connection is None:
+            return SavedSearchListResponse(
+                items=[], total=0, offset=offset, limit=limit
+            )
+        searches = list_searches(connection)
+        return SavedSearchListResponse(
+            items=[
+                SavedSearchItem.model_validate(saved_search_item_dict(search))
+                for search in searches[offset : offset + limit]
+            ],
+            total=len(searches),
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/saved-searches/{name}", response_model=SavedSearchItem)
+    def show_saved_search(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        name: str,
+    ) -> SavedSearchItem:
+        """Show one stored saved-search definition by case-insensitive name.
+
+        Viewing only: the definition is fetched through the shared
+        ``get_search`` service. No filesystem access, profile loading, or
+        execution ever occurs as a consequence of this request, and
+        ``profile_path`` / ``description`` are never exposed.
+        """
+        if connection is not None:
+            stored = get_search(connection, name)
+            if stored is not None:
+                return SavedSearchItem.model_validate(saved_search_item_dict(stored))
+        raise HTTPException(
+            status_code=404, detail=_no_saved_search_found_message(name)
+        )
 
     @app.get("/groups", response_model=GroupListResponse)
     def list_groups_endpoint(
