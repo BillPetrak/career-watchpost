@@ -716,12 +716,25 @@ canonical `No job found with ID {id}.` message locally.
   the exact field order `application_id`, `job_id`, `current_status`,
   `created_at`, `updated_at`, `job`; the nested `job` is the canonical
   `job_dict` projection. Application notes, the event history, reminders, and
-  review decisions are deliberately omitted from every response.
+  review decisions are deliberately omitted from the application list and
+  detail responses.
 - `GET /applications/{job_id}` — one application item using the exact same
   shape as a list item. An unknown job returns `404` with the canonical
   `No job found with ID {job_id}.` message; an existing-but-untracked job
   returns `404` with `No application found for job {job_id}.`. Non-integer
   path input returns FastAPI's normal `422`.
+- `GET /applications/{job_id}/history` — a job's append-only application
+  status-transition history newest first (`created_at DESC, id DESC`, the
+  shared `database.applications.list_application_events` order) with
+  deterministic `offset`/`limit` pagination (defaults 0/20, `limit` capped at
+  100). An unknown job returns the canonical job `404`; an existing-but-untracked
+  job returns `404` with `No application found for job {job_id}.`. Each item
+  uses the shared `presenters.application_event_dict` projection with the exact
+  field order `event_id`, `job_id`, `old_status` (`null` for the first
+  assignment), `new_status`, `created_at`; event `note`s and the internal
+  `application_id` are deliberately omitted. The envelope is
+  `{items, total, offset, limit}`; `total` is the event count before
+  `offset`/`limit` slicing.
 - `GET /reminders` — reminders soonest first (`due_at ASC, id ASC`, the shared
   `database.reminders.list_reminders` order) with deterministic
   `offset`/`limit` pagination (defaults 0/20, `limit` capped at 100) and

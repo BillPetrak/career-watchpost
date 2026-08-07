@@ -1,9 +1,10 @@
 """FastAPI application for the CareerOS API slice.
 
-The slice exposes fifteen read-only GET endpoints backed by the shared database
+The slice exposes sixteen read-only GET endpoints backed by the shared database
 and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``,
-``GET /applications/{job_id}``, ``GET /reminders``,
+``GET /applications/{job_id}``, ``GET /applications/{job_id}/history``,
+``GET /reminders``,
 ``GET /reminders/{reminder_id}``, ``GET /groups``, ``GET /groups/summary``,
 ``GET /groups/{group_id}``, ``GET /review-decisions``,
 ``GET /review-decisions/{job_id}``, and
@@ -20,10 +21,11 @@ group when ``grouped=true``. ``POST /review-queue`` ranks the personalized
 daily review queue (opportunities needing review) against the inline profile,
 collapsing cross-source duplicates per canonical group by default. The
 review-decisions endpoints expose current review decisions and their
-append-only transition history joined with the canonical job projection.
-Application notes, event history (beyond the resolved decision values and
-transition times), review decision notes, reminder messages, group matcher
-diagnostics, and ranking reasons are never exposed over HTTP.
+append-only transition history joined with the canonical job projection, and
+the applications endpoints expose tracked applications and their append-only
+status-transition history. Application notes, event notes (beyond status
+transition values and times), review decision notes, reminder messages, group
+matcher diagnostics, and ranking reasons are never exposed over HTTP.
 """
 
 from __future__ import annotations
@@ -37,6 +39,8 @@ from fastapi.responses import JSONResponse
 
 from careeros.api.deps import read_only_connection
 from careeros.api.schemas import (
+    ApplicationHistoryEvent,
+    ApplicationHistoryResponse,
     ApplicationItem,
     ApplicationListResponse,
     CandidateProfileRequest,
@@ -68,6 +72,7 @@ from careeros.applications.models import validate_status
 from careeros.database.applications import (
     ApplicationListItem,
     get_application,
+    list_application_events,
     list_applications,
 )
 from careeros.database.groups import (
@@ -81,6 +86,7 @@ from careeros.database.reminders import ReminderListEntry, get_reminder
 from careeros.database.review import DecisionListItem
 from careeros.database.runs import list_runs
 from careeros.presenters import (
+    application_event_dict,
     application_item_dict,
     group_dict,
     job_dict,
@@ -118,10 +124,10 @@ from careeros.source_stats.service import compute_source_stats, empty_source_sta
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
 
-# Safety valve when loading all matching applications before Python-side
+# Safety valve when loading all matching applications/events before Python-side
 # slicing (the same load-then-slice pattern as the other list endpoints).
-# Tracked-application counts are bounded by the stored jobs they attach to;
-# this mirrors the export package's record cap without importing it.
+# Tracked-application and event counts are bounded by the stored jobs they
+# attach to; this mirrors the export package's record cap without importing it.
 MAX_FETCH_APPLICATIONS = 1_000_000
 
 # Safety valve when loading all matching runs before Python-side slicing (the
@@ -390,6 +396,44 @@ def create_app() -> FastAPI:
                     )
                 raise HTTPException(
                     status_code=404, detail=f"No application found for job {job_id}."
+                )
+        raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
+
+    @app.get(
+        "/applications/{job_id}/history",
+        response_model=ApplicationHistoryResponse,
+    )
+    def application_history(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        job_id: int,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+    ) -> ApplicationHistoryResponse:
+        """Show one job's append-only application history, newest first."""
+        if connection is not None:
+            stored = get_job_by_id(connection, job_id)
+            if stored is not None:
+                application = get_application(connection, job_id)
+                if application is not None:
+                    events = list_application_events(
+                        connection,
+                        application_id=application.id,
+                        limit=MAX_FETCH_APPLICATIONS,
+                    )
+                    return ApplicationHistoryResponse(
+                        items=[
+                            ApplicationHistoryEvent.model_validate(
+                                application_event_dict(event, job_id=job_id)
+                            )
+                            for event in events[offset : offset + limit]
+                        ],
+                        total=len(events),
+                        offset=offset,
+                        limit=limit,
+                    )
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No application found for job {job_id}.",
                 )
         raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
 

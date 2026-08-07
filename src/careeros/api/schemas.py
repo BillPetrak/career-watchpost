@@ -140,6 +140,33 @@ class ApplicationListResponse(BaseModel):
     limit: int
 
 
+class ApplicationHistoryEvent(BaseModel):
+    """One append-only application status transition.
+
+    Mirrors the shared ``application_event_dict`` projection.
+    ``old_status`` is ``None`` for the first assignment and ``new_status`` is
+    always set, exactly as represented by the domain model; no replacement
+    values are invented. The event note and the internal application id are
+    deliberately omitted: the note is user-written free text the HTTP API
+    never exposes.
+    """
+
+    event_id: int
+    job_id: int
+    old_status: str | None
+    new_status: str
+    created_at: str
+
+
+class ApplicationHistoryResponse(BaseModel):
+    """A paginated page of one job's application history, newest first."""
+
+    items: list[ApplicationHistoryEvent]
+    total: int
+    offset: int
+    limit: int
+
+
 class ReminderItem(BaseModel):
     """One stored reminder joined with its job.
 
@@ -405,6 +432,8 @@ class ReviewQueueResponse(BaseModel):
 
 
 __all__: tuple[str, ...] = (
+    "ApplicationHistoryEvent",
+    "ApplicationHistoryResponse",
     "ApplicationItem",
     "ApplicationListResponse",
     "CandidateProfileRequest",

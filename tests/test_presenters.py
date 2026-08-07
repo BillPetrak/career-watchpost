@@ -17,11 +17,13 @@ from pathlib import Path
 import pytest
 
 from careeros.collectors.arbeitnow import CollectedJob
+from careeros.database.applications import ApplicationEvent
 from careeros.database.connection import connect
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import save_jobs
 from careeros.database.schema import initialize_schema
 from careeros.presenters import (
+    application_event_dict,
     field_coverage_dict,
     group_dict,
     job_dict,
@@ -133,6 +135,35 @@ def test_job_dict_key_order_and_values(tmp_path: Path) -> None:
     assert result["employment_type"] == "Full-time"
     assert result["published_at"] == "2026-07-29T10:00:00Z"
     assert result["url"] == "https://example.com/1"
+
+
+def test_application_event_dict_key_order_and_note_omission() -> None:
+    event = ApplicationEvent(
+        id=7,
+        application_id=3,
+        old_status="applied",
+        new_status="interview",
+        note="secret-note",
+        created_at="2026-08-03T12:00:00+00:00",
+    )
+    result = application_event_dict(event, job_id=42)
+
+    assert tuple(result) == (
+        "event_id",
+        "job_id",
+        "old_status",
+        "new_status",
+        "created_at",
+    )
+    assert result == {
+        "event_id": 7,
+        "job_id": 42,
+        "old_status": "applied",
+        "new_status": "interview",
+        "created_at": "2026-08-03T12:00:00+00:00",
+    }
+    assert "note" not in result
+    assert "application_id" not in result
 
 
 def test_group_dict_key_order_and_values(tmp_path: Path) -> None:

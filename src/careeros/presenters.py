@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from careeros.database.applications import ApplicationListItem
+from careeros.database.applications import ApplicationEvent, ApplicationListItem
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.reminders import ReminderListEntry
@@ -44,6 +44,23 @@ def job_dict(job: StoredJob) -> dict[str, Any]:
         "employment_type": job.employment_type,
         "published_at": job.published_at,
         "url": job.url,
+    }
+
+
+def application_event_dict(event: ApplicationEvent, *, job_id: int) -> dict[str, Any]:
+    """Serialize one append-only application status transition.
+
+    The projection deliberately excludes the event note (user-written free
+    text) and the internal application id: they are local workflow state the
+    HTTP API never exposes. ``job_id`` is supplied by the caller because an
+    :class:`ApplicationEvent` is keyed by ``application_id``, not ``jobs.id``.
+    """
+    return {
+        "event_id": event.id,
+        "job_id": job_id,
+        "old_status": event.old_status,
+        "new_status": event.new_status,
+        "created_at": event.created_at,
     }
 
 
@@ -239,6 +256,7 @@ def source_stats_dict(stats: SourceStats) -> dict[str, Any]:
 
 
 __all__: tuple[str, ...] = (
+    "application_event_dict",
     "application_item_dict",
     "field_coverage_dict",
     "group_dict",

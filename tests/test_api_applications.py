@@ -1,10 +1,10 @@
 """Tests for the CareerOS application endpoints (fourth slice).
 
-Covers ``GET /applications`` and ``GET /applications/{job_id}``: envelope and
-item field order, deterministic ordering, ``status`` filtering, pagination,
-database-availability behavior, and the privacy guarantee that application
-notes, event history, reminders, and review decisions never appear in any
-HTTP response.
+Covers ``GET /applications``, ``GET /applications/{job_id}``, and
+``GET /applications/{job_id}/history``: envelope and item field order,
+deterministic ordering, ``status`` filtering, pagination, database-availability
+behavior, and the privacy guarantee that application notes, event notes,
+reminders, and review decisions never appear in any HTTP response.
 """
 
 from __future__ import annotations
@@ -42,6 +42,14 @@ _JOB_FIELDS = [
     "employment_type",
     "published_at",
     "url",
+]
+
+_EVENT_FIELDS = [
+    "event_id",
+    "job_id",
+    "old_status",
+    "new_status",
+    "created_at",
 ]
 
 
@@ -133,6 +141,51 @@ def _seed(
             note="secret-review-note",
             now=_EPOCH,
         )
+    application_ids = {
+        row["job_id"]: row["id"]
+        for row in connection.execute("SELECT id, job_id FROM applications")
+    }
+    connection.close()
+    return job_ids, application_ids
+
+
+def _seed_history(path: Path) -> tuple[dict[str, int], dict[int, int]]:
+    """Seed one job (``py-1``) with three application events.
+
+    Timeline (newest first): a same-status ``applied`` note event at
+    ``_EPOCH + 2h``, a real ``interested -> applied`` transition with a note at
+    ``_EPOCH + 1h``, and the first assignment ``None -> interested`` at
+    ``_EPOCH``. ``go-2`` is tracked with a single event and ``ds-4`` stays
+    untracked.
+    """
+    job_ids, _ = _seed(path, track=False)
+    connection = connect(path)
+    set_application_status(
+        connection,
+        job_id=job_ids["py-1"],
+        status="interested",
+        now=_EPOCH,
+    )
+    set_application_status(
+        connection,
+        job_id=job_ids["py-1"],
+        status="applied",
+        note="secret-history-note",
+        now=_EPOCH + timedelta(hours=1),
+    )
+    set_application_status(
+        connection,
+        job_id=job_ids["py-1"],
+        status="applied",
+        note="second-secret-note",
+        now=_EPOCH + timedelta(hours=2),
+    )
+    set_application_status(
+        connection,
+        job_id=job_ids["go-2"],
+        status="interview",
+        now=_EPOCH + timedelta(hours=3),
+    )
     application_ids = {
         row["job_id"]: row["id"]
         for row in connection.execute("SELECT id, job_id FROM applications")
@@ -496,6 +549,311 @@ def test_show_rejects_non_integer_id(
 
 
 # --------------------------------------------------------------------------- #
+# History
+# --------------------------------------------------------------------------- #
+
+
+def test_history_populated_returns_200(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(f"/applications/{job_ids['py-1']}/history")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert list(payload) == ["items", "total", "offset", "limit"]
+    assert payload["total"] == 3
+    assert payload["offset"] == 0
+    assert payload["limit"] == 20
+    assert [event["job_id"] for event in payload["items"]] == [
+        job_ids["py-1"],
+        job_ids["py-1"],
+        job_ids["py-1"],
+    ]
+
+
+def test_history_envelope_and_event_field_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        payload = client.get(f"/applications/{job_ids['py-1']}/history").json()
+
+    assert list(payload) == ["items", "total", "offset", "limit"]
+    for event in payload["items"]:
+        assert list(event) == _EVENT_FIELDS
+
+
+def test_history_newest_first_ordering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(f"/applications/{job_ids['py-1']}/history")
+
+    assert response.status_code == 200
+    events = response.json()["items"]
+    created_ats = [event["created_at"] for event in events]
+    assert created_ats == sorted(created_ats, reverse=True)
+
+
+def test_history_first_assignment_has_null_old_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(f"/applications/{job_ids['py-1']}/history")
+
+    assert response.status_code == 200
+    events = response.json()["items"]
+    # Newest first, so the oldest event is last.
+    assert events[-1]["old_status"] is None
+    assert events[-1]["new_status"] == "interested"
+    assert events[-1]["created_at"] == _EPOCH.isoformat()
+
+
+def test_history_transition_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(f"/applications/{job_ids['py-1']}/history")
+
+    assert response.status_code == 200
+    events = response.json()["items"]
+    assert events[1]["old_status"] == "interested"
+    assert events[1]["new_status"] == "applied"
+    assert events[1]["created_at"] == (_EPOCH + timedelta(hours=1)).isoformat()
+
+
+def test_history_same_status_event_is_represented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(f"/applications/{job_ids['py-1']}/history")
+
+    assert response.status_code == 200
+    events = response.json()["items"]
+    # Newest event is the same-status note event: old_status == new_status.
+    assert events[0]["old_status"] == "applied"
+    assert events[0]["new_status"] == "applied"
+
+
+def test_history_deterministic_repeated_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        first = client.get(f"/applications/{job_ids['py-1']}/history").json()
+        second = client.get(f"/applications/{job_ids['py-1']}/history").json()
+
+    assert first == second
+    event_ids = [event["event_id"] for event in first["items"]]
+    assert event_ids == sorted(event_ids, reverse=True)
+
+
+def test_history_tie_breaks_by_id_desc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed(path, track=False)
+    connection = connect(path)
+    set_application_status(
+        connection, job_id=job_ids["py-1"], status="interested", now=_EPOCH
+    )
+    set_application_status(
+        connection, job_id=job_ids["py-1"], status="applied", now=_EPOCH
+    )
+    connection.close()
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(f"/applications/{job_ids['py-1']}/history")
+
+    assert response.status_code == 200
+    events = response.json()["items"]
+    # Equal created_at: the higher event id (the applied transition) leads.
+    assert events[0]["new_status"] == "applied"
+    assert events[1]["new_status"] == "interested"
+
+
+def test_history_pagination_total_before_slicing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        first = client.get(
+            f"/applications/{job_ids['py-1']}/history", params={"limit": 1}
+        )
+        second = client.get(
+            f"/applications/{job_ids['py-1']}/history",
+            params={"offset": 1, "limit": 1},
+        )
+
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["total"] == 3
+    assert len(first_payload["items"]) == 1
+    assert first_payload["items"][0]["new_status"] == "applied"
+    assert first_payload["items"][0]["old_status"] == "applied"
+
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload["total"] == 3
+    assert len(second_payload["items"]) == 1
+    assert second_payload["items"][0]["old_status"] == "interested"
+    assert second_payload["items"][0]["new_status"] == "applied"
+
+
+def test_history_out_of_range_offset_is_empty_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/applications/{job_ids['py-1']}/history", params={"offset": 10}
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 3
+    assert payload["items"] == []
+
+
+def test_history_rejects_invalid_pagination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        for params in ({"offset": -1}, {"limit": 0}, {"limit": 101}):
+            response = client.get(
+                f"/applications/{job_ids['py-1']}/history", params=params
+            )
+            assert response.status_code == 422
+
+
+def test_history_non_integer_job_id_is_422(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get("/applications/not-an-int/history")
+
+    assert response.status_code == 422
+
+
+def test_history_unknown_job_is_404(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get("/applications/9999/history")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "No job found with ID 9999."}
+
+
+def test_history_existing_untracked_job_is_404(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(f"/applications/{job_ids['ds-4']}/history")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": f"No application found for job {job_ids['ds-4']}."
+    }
+
+
+def test_history_tracked_application_with_zero_events_is_empty_200(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed(path, track=False)
+    # Defensive corruption simulation: a tracked application with no events,
+    # which the service invariants never produce but the API must survive.
+    connection = connect(path)
+    connection.execute(
+        "INSERT INTO applications (job_id, current_status, created_at, updated_at) "
+        "VALUES (?, 'interested', ?, ?)",
+        (job_ids["py-1"], _EPOCH.isoformat(), _EPOCH.isoformat()),
+    )
+    connection.commit()
+    connection.close()
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(f"/applications/{job_ids['py-1']}/history")
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
+
+
+def test_history_coexists_with_prior_application_endpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        listing = client.get("/applications")
+        detail = client.get(f"/applications/{job_ids['py-1']}")
+        history = client.get(f"/applications/{job_ids['py-1']}/history")
+        untracked_history = client.get(f"/applications/{job_ids['ds-4']}/history")
+
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 2
+    assert detail.status_code == 200
+    assert detail.json()["current_status"] == "applied"
+    assert history.status_code == 200
+    assert history.json()["total"] == 3
+    assert untracked_history.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
 # Database availability
 # --------------------------------------------------------------------------- #
 
@@ -528,6 +886,49 @@ def test_show_absent_database_returns_404_without_creating_file(
     assert response.json() == {"detail": "No job found with ID 1."}
     assert not database_path.exists()
     assert not database_path.parent.exists()
+
+
+def test_history_absent_database_returns_404_without_creating_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "nested" / "missing.sqlite3"
+    _set_database(monkeypatch, database_path)
+
+    with TestClient(app) as client:
+        response = client.get("/applications/1/history")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "No job found with ID 1."}
+    assert not database_path.exists()
+    assert not database_path.parent.exists()
+
+
+def test_history_uninitialized_database_is_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "empty.sqlite3"
+    database_path.write_bytes(b"")
+    _set_database(monkeypatch, database_path)
+
+    with TestClient(app) as client:
+        response = client.get("/applications/1/history")
+
+    assert response.status_code == 500
+    assert "run 'careeros collect" in response.json()["detail"]
+
+
+def test_history_malformed_database_is_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "garbage.sqlite3"
+    database_path.write_bytes(b"this is not a sqlite database")
+    _set_database(monkeypatch, database_path)
+
+    with TestClient(app) as client:
+        response = client.get("/applications/1/history")
+
+    assert response.status_code == 500
+    assert "run 'careeros collect" in response.json()["detail"]
 
 
 def test_list_uninitialized_database_is_500(
@@ -573,14 +974,66 @@ def test_application_notes_absent_from_every_response(
     with TestClient(app) as client:
         listing = client.get("/applications")
         detail = client.get(f"/applications/{job_ids['py-1']}")
+        history = client.get(f"/applications/{job_ids['py-1']}/history")
 
-    for response in (listing, detail):
+    for response in (listing, detail, history):
         assert response.status_code == 200
         payload = response.json()
         item = payload["items"][0] if "items" in payload else payload
         assert "note" not in item
         assert "latest_note" not in item
         assert "secret-cv-note" not in response.text
+
+
+def test_history_privacy_exclusions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed_history(path)
+    with connect(path) as connection:
+        add_reminder(
+            connection,
+            job_id=job_ids["py-1"],
+            kind="follow_up",
+            due_at="2026-08-05T09:00:00+00:00",
+            message="secret-reminder-message",
+            now=_EPOCH,
+        )
+        set_decision(
+            connection,
+            job_id=job_ids["py-1"],
+            decision="shortlist",
+            note="secret-review-note",
+            now=_EPOCH,
+        )
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(f"/applications/{job_ids['py-1']}/history")
+
+    assert response.status_code == 200
+    for event in response.json()["items"]:
+        assert list(event) == _EVENT_FIELDS
+    for leaked in (
+        "secret-history-note",
+        "second-secret-note",
+        "secret-cv-note",
+        "secret-review-note",
+        "secret-reminder-message",
+        "note",
+        "latest_note",
+        "application_id",
+        "message",
+        "description",
+        "reasons",
+        "score_components",
+        "conflict",
+        "feedback",
+        str(path),
+        "Traceback",
+        "sqlite3",
+    ):
+        assert leaked not in response.text
 
 
 def test_review_and_reminder_data_absent_from_every_response(
@@ -593,8 +1046,9 @@ def test_review_and_reminder_data_absent_from_every_response(
     with TestClient(app) as client:
         listing = client.get("/applications")
         detail = client.get(f"/applications/{job_ids['py-1']}")
+        history = client.get(f"/applications/{job_ids['py-1']}/history")
 
-    for response in (listing, detail):
+    for response in (listing, detail, history):
         assert response.status_code == 200
         for leaked in (
             "secret-reminder-message",
