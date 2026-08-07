@@ -23,6 +23,7 @@ from careeros.database.applications import ApplicationListItem
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.reminders import ReminderListEntry
+from careeros.database.review import DecisionListItem, ReviewEvent
 from careeros.ranking.scorer import RankedGroup, RankedJob, component_to_dict
 from careeros.review.service import QueueItem
 
@@ -155,6 +156,38 @@ def review_queue_item_dict(item: QueueItem) -> dict[str, Any]:
     }
 
 
+def review_decision_item_dict(item: DecisionListItem) -> dict[str, Any]:
+    """Serialize one current review decision joined with its job.
+
+    The projection deliberately excludes the latest review note (user-written
+    free text) and the decision event history: those are local workflow state
+    the HTTP API never exposes.
+    """
+    return {
+        "decision_id": item.decision.id,
+        "job_id": item.decision.job_id,
+        "decision": item.decision.decision,
+        "created_at": item.decision.created_at,
+        "updated_at": item.decision.updated_at,
+        "job": job_dict(item.job),
+    }
+
+
+def review_decision_event_dict(event: ReviewEvent) -> dict[str, Any]:
+    """Serialize one append-only review-decision transition.
+
+    The projection deliberately excludes the event note (user-written free
+    text): it is local workflow state the HTTP API never exposes.
+    """
+    return {
+        "event_id": event.id,
+        "job_id": event.job_id,
+        "old_decision": event.old_decision,
+        "new_decision": event.new_decision,
+        "created_at": event.created_at,
+    }
+
+
 def location_display(location: str | None, remote_status: str | None) -> str:
     """Render a job location for display, appending ``(remote)`` when remote.
 
@@ -198,6 +231,8 @@ __all__: tuple[str, ...] = (
     "ranked_job_dict",
     "ranked_job_item_dict",
     "reminder_item_dict",
+    "review_decision_event_dict",
+    "review_decision_item_dict",
     "review_queue_item_dict",
     "source_stats_dict",
 )

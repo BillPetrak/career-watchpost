@@ -749,6 +749,37 @@ canonical `No job found with ID {id}.` message locally.
   `No reminder found with ID {reminder_id}.` message; a defensively-detected
   reminder whose job is missing returns `404` with `No job found with ID
   {job_id}.`. Non-integer path input returns FastAPI's normal `422`.
+- `GET /review-decisions` — current review decisions joined with their jobs,
+  newest first (`updated_at DESC, id DESC`, the shared
+  `database.review.list_decisions` order) with deterministic `offset`/`limit`
+  pagination (defaults 0/20, `limit` capped at 100) and an optional repeatable
+  `decision` filter. Every `decision` value is validated against the shared
+  `review.models.validate_decision` vocabulary (`shortlist`, `dismiss`,
+  `review_later`); an invalid value returns `422`. The filter is applied before
+  pagination; `total` is the filtered count before `offset`/`limit` slicing.
+  The envelope is `{items, total, offset, limit}`. Each item uses the shared
+  `presenters.review_decision_item_dict` projection with the exact field order
+  `decision_id`, `job_id`, `decision`, `created_at`, `updated_at`, `job`; the
+  nested `job` is the canonical `job_dict` projection. Decision notes, the
+  decision event history, reminders, application notes, and review-feedback
+  detail are deliberately omitted from every response. A missing database file
+  returns an empty envelope without creating the file.
+- `GET /review-decisions/{job_id}` — one current review decision using the
+  exact same shape as a list item. An unknown job returns `404` with the
+  canonical `No job found with ID {job_id}.` message; an existing-but-unreviewed
+  job returns `404` with `No review decision found for job {job_id}.`.
+  Non-integer path input returns FastAPI's normal `422`.
+- `GET /review-decisions/{job_id}/history` — a job's append-only review-decision
+  transition history newest first (`created_at DESC, id DESC`, the shared
+  `database.review.list_decision_events` order) with deterministic
+  `offset`/`limit` pagination (defaults 0/20, `limit` capped at 100). An
+  existing job with no history returns `200` with an empty envelope; an unknown
+  job returns the canonical job `404`. Each item uses the shared
+  `presenters.review_decision_event_dict` projection with the exact field order
+  `event_id`, `job_id`, `old_decision` (`null` for the first assignment),
+  `new_decision` (`null` for a clearing transition), `created_at`; event `note`s
+  are deliberately omitted. The envelope is `{items, total, offset, limit}`;
+  `total` is the event count before `offset`/`limit` slicing.
 - `GET /groups` — distinct opportunities (canonical duplicate groups plus
   ungrouped jobs as singletons), reusing the shared `database.groups`
   `list_all_groups` service with the canonical `presenters.group_dict`

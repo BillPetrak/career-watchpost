@@ -168,6 +168,58 @@ class ReminderListResponse(BaseModel):
     limit: int
 
 
+class ReviewDecisionItem(BaseModel):
+    """One current review decision joined with its job.
+
+    Mirrors the shared ``review_decision_item_dict`` projection. The latest
+    review note and the decision event history are deliberately omitted: they
+    are user-written free text and local workflow audit state the HTTP API
+    never exposes.
+    """
+
+    decision_id: int
+    job_id: int
+    decision: str
+    created_at: str
+    updated_at: str
+    job: Job
+
+
+class ReviewDecisionListResponse(BaseModel):
+    """A paginated page of current review decisions, newest first."""
+
+    items: list[ReviewDecisionItem]
+    total: int
+    offset: int
+    limit: int
+
+
+class ReviewDecisionEvent(BaseModel):
+    """One append-only review-decision transition.
+
+    Mirrors the shared ``review_decision_event_dict`` projection.
+    ``old_decision`` is ``None`` for the first assignment and ``new_decision``
+    is ``None`` for a clearing transition, exactly as represented by the domain
+    model; no replacement values are invented. The event note is deliberately
+    omitted: it is user-written free text the HTTP API never exposes.
+    """
+
+    event_id: int
+    job_id: int
+    old_decision: str | None
+    new_decision: str | None
+    created_at: str
+
+
+class ReviewDecisionHistoryResponse(BaseModel):
+    """A paginated page of one job's decision history, newest first."""
+
+    items: list[ReviewDecisionEvent]
+    total: int
+    offset: int
+    limit: int
+
+
 class Group(BaseModel):
     """A distinct opportunity: one canonical duplicate group, or one ungrouped job.
 
@@ -356,6 +408,10 @@ __all__: tuple[str, ...] = (
     "RankedJobsResponse",
     "ReminderItem",
     "ReminderListResponse",
+    "ReviewDecisionEvent",
+    "ReviewDecisionHistoryResponse",
+    "ReviewDecisionItem",
+    "ReviewDecisionListResponse",
     "ReviewQueueItem",
     "ReviewQueueRequest",
     "ReviewQueueResponse",

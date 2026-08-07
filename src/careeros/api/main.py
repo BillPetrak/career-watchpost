@@ -1,23 +1,27 @@
 """FastAPI application for the CareerOS API slice.
 
-The slice exposes twelve read-only GET endpoints backed by the shared database
+The slice exposes fifteen read-only GET endpoints backed by the shared database
 and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``,
 ``GET /applications/{job_id}``, ``GET /reminders``,
-``GET /reminders/{reminder_id}``, ``GET /groups``, ``GET /groups/summary``, and
-``GET /groups/{group_id}``) plus two computation-only ``POST`` endpoints:
-``POST /ranked-jobs`` and ``POST /review-queue``. Every endpoint is strictly
-read-only with respect to the database and filesystem: nothing creates a
-database file, directory, or schema, nothing writes, and nothing makes network
+``GET /reminders/{reminder_id}``, ``GET /groups``, ``GET /groups/summary``,
+``GET /groups/{group_id}``, ``GET /review-decisions``,
+``GET /review-decisions/{job_id}``, and
+``GET /review-decisions/{job_id}/history``) plus two computation-only ``POST``
+endpoints: ``POST /ranked-jobs`` and ``POST /review-queue``. Every endpoint is
+strictly read-only with respect to the database and filesystem: nothing creates
+a database file, directory, or schema, nothing writes, and nothing makes network
 calls. Both ``POST`` endpoints compute a ranking from a candidate profile
 submitted inline in the request body and create no resource; they never read
 profile files, never persist or log the submitted profile, and never apply
 review feedback. ``POST /review-queue`` ranks the personalized daily review
 queue (opportunities needing review) against the inline profile, collapsing
-cross-source duplicates per canonical group by default. Application notes,
-event history, review decisions (beyond the resolved queue decision value),
-reminder messages, group matcher diagnostics, and ranking reasons are never
-exposed over HTTP.
+cross-source duplicates per canonical group by default. The review-decisions
+endpoints expose current review decisions and their append-only transition
+history joined with the canonical job projection. Application notes, event
+history (beyond the resolved decision values and transition times), review
+decision notes, reminder messages, group matcher diagnostics, and ranking
+reasons are never exposed over HTTP.
 """
 
 from __future__ import annotations
@@ -47,6 +51,10 @@ from careeros.api.schemas import (
     RankRequest,
     ReminderItem,
     ReminderListResponse,
+    ReviewDecisionEvent,
+    ReviewDecisionHistoryResponse,
+    ReviewDecisionItem,
+    ReviewDecisionListResponse,
     ReviewQueueItem,
     ReviewQueueRequest,
     ReviewQueueResponse,
@@ -67,6 +75,7 @@ from careeros.database.groups import (
 )
 from careeros.database.jobs import get_job_by_id, list_jobs
 from careeros.database.reminders import ReminderListEntry, get_reminder
+from careeros.database.review import DecisionListItem
 from careeros.database.runs import list_runs
 from careeros.presenters import (
     application_item_dict,
@@ -74,6 +83,8 @@ from careeros.presenters import (
     job_dict,
     ranked_job_item_dict,
     reminder_item_dict,
+    review_decision_event_dict,
+    review_decision_item_dict,
     review_queue_item_dict,
     source_stats_dict,
 )
@@ -88,7 +99,15 @@ from careeros.reminders.service import list_reminders
 from careeros.review.models import (
     ValidationError as ReviewValidationError,
 )
-from careeros.review.service import build_queue
+from careeros.review.models import (
+    validate_decision,
+)
+from careeros.review.service import (
+    build_queue,
+    get_decision,
+    list_decision_events,
+    list_decisions,
+)
 from careeros.saved_searches.execution import rank_candidates
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
@@ -118,6 +137,12 @@ MAX_FETCH_REMINDERS = 1_000_000
 # queue is bounded by the stored jobs it ranks; this mirrors the export
 # package's record cap without importing it.
 MAX_FETCH_QUEUE = 1_000_000
+
+# Safety valve when loading all matching review decisions/events before
+# Python-side slicing (the same load-then-slice pattern as the other list
+# endpoints). Decision and event counts are bounded by the stored jobs they
+# attach to; this mirrors the export package's record cap without importing it.
+MAX_FETCH_DECISIONS = 1_000_000
 
 DATABASE_UNAVAILABLE_MESSAGE = (
     "The database schema is unavailable (run 'careeros collect <source>' to "
@@ -426,6 +451,97 @@ def create_app() -> FastAPI:
         raise HTTPException(
             status_code=404, detail=_no_reminder_found_message(reminder_id)
         )
+
+    @app.get("/review-decisions", response_model=ReviewDecisionListResponse)
+    def list_review_decisions(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+        decision: Annotated[list[str] | None, Query()] = None,
+    ) -> ReviewDecisionListResponse:
+        """List current review decisions joined with their jobs, newest first."""
+        if connection is None:
+            return ReviewDecisionListResponse(
+                items=[], total=0, offset=offset, limit=limit
+            )
+        if decision:
+            for value in decision:
+                try:
+                    validate_decision(value)
+                except ValueError as error:
+                    raise HTTPException(status_code=422, detail=str(error)) from None
+        matches = list_decisions(
+            connection,
+            decisions=decision,
+            limit=MAX_FETCH_DECISIONS,
+        )
+        return ReviewDecisionListResponse(
+            items=[
+                ReviewDecisionItem.model_validate(review_decision_item_dict(item))
+                for item in matches[offset : offset + limit]
+            ],
+            total=len(matches),
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/review-decisions/{job_id}", response_model=ReviewDecisionItem)
+    def show_review_decision(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        job_id: int,
+    ) -> ReviewDecisionItem:
+        """Show the current review decision for one job."""
+        if connection is not None:
+            stored = get_job_by_id(connection, job_id)
+            if stored is not None:
+                decision = get_decision(connection, job_id=job_id)
+                if decision is not None:
+                    return ReviewDecisionItem.model_validate(
+                        review_decision_item_dict(
+                            DecisionListItem(
+                                decision=decision,
+                                job=stored,
+                                latest_note=None,
+                            )
+                        )
+                    )
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No review decision found for job {job_id}.",
+                )
+        raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
+
+    @app.get(
+        "/review-decisions/{job_id}/history",
+        response_model=ReviewDecisionHistoryResponse,
+    )
+    def review_decision_history(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        job_id: int,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+    ) -> ReviewDecisionHistoryResponse:
+        """Show one job's append-only review-decision history, newest first."""
+        if connection is not None:
+            stored = get_job_by_id(connection, job_id)
+            if stored is not None:
+                events = list_decision_events(
+                    connection,
+                    job_id=job_id,
+                    limit=MAX_FETCH_DECISIONS,
+                )
+                return ReviewDecisionHistoryResponse(
+                    items=[
+                        ReviewDecisionEvent.model_validate(
+                            review_decision_event_dict(event)
+                        )
+                        for event in events[offset : offset + limit]
+                    ],
+                    total=len(events),
+                    offset=offset,
+                    limit=limit,
+                )
+        raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
 
     @app.get("/groups", response_model=GroupListResponse)
     def list_groups_endpoint(
