@@ -119,6 +119,21 @@ def ranked_group_dict(ranked: RankedGroup) -> dict[str, Any]:
     }
 
 
+def ranked_job_item_dict(ranked: RankedJob) -> dict[str, Any]:
+    """Serialize one scored flat result for the HTTP API.
+
+    A narrowly scoped subset of ``ranked_job_dict``: the HTTP API exposes only
+    the job and its two score values. ``reasons`` and ``score_components`` are
+    deliberately omitted because they can echo submitted profile terms or embed
+    private review-feedback text, which the HTTP API never exposes.
+    """
+    return {
+        "job": job_dict(ranked.job),
+        "match_score": ranked.match_score,
+        "score": ranked.score,
+    }
+
+
 def location_display(location: str | None, remote_status: str | None) -> str:
     """Render a job location for display, appending ``(remote)`` when remote.
 
@@ -160,6 +175,7 @@ __all__: tuple[str, ...] = (
     "location_display",
     "ranked_group_dict",
     "ranked_job_dict",
+    "ranked_job_item_dict",
     "reminder_item_dict",
     "source_stats_dict",
 )

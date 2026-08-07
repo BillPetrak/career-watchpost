@@ -1,14 +1,19 @@
 """FastAPI application for the CareerOS API slice.
 
-The slice exposes twelve read-only endpoints backed by the shared database and
-presentation layers: ``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
+The slice exposes twelve read-only GET endpoints backed by the shared database
+and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``,
 ``GET /applications/{job_id}``, ``GET /reminders``,
-``GET /reminders/{reminder_id}``, ``GET /groups``, ``GET /groups/summary``,
-and ``GET /groups/{group_id}``. Every endpoint is strictly read-only: it never
-creates a database file, directory, or schema, never writes, and never makes
-network calls. Application notes, event history, review decisions, reminder
-messages, and group matcher diagnostics are never exposed over HTTP.
+``GET /reminders/{reminder_id}``, ``GET /groups``, ``GET /groups/summary``, and
+``GET /groups/{group_id}``) plus one computation-only ``POST /ranked-jobs``
+endpoint. Every endpoint is strictly read-only with respect to the database and
+filesystem: nothing creates a database file, directory, or schema, nothing
+writes, and nothing makes network calls. ``POST /ranked-jobs`` computes a
+ranking from a candidate profile submitted inline in the request body and
+creates no resource; it never reads profile files, never persists or logs the
+submitted profile, and never applies review feedback. Application notes, event
+history, review decisions, reminder messages, group matcher diagnostics, and
+ranking reasons are never exposed over HTTP.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from careeros.api.deps import read_only_connection
 from careeros.api.schemas import (
     ApplicationItem,
     ApplicationListResponse,
+    CandidateProfileRequest,
     CollectionRun,
     CollectionRunListResponse,
     Group,
@@ -32,6 +38,9 @@ from careeros.api.schemas import (
     HealthResponse,
     Job,
     JobListResponse,
+    RankedJobItem,
+    RankedJobsResponse,
+    RankRequest,
     ReminderItem,
     ReminderListResponse,
     SourceStats,
@@ -56,9 +65,11 @@ from careeros.presenters import (
     application_item_dict,
     group_dict,
     job_dict,
+    ranked_job_item_dict,
     reminder_item_dict,
     source_stats_dict,
 )
+from careeros.ranking.scorer import CandidateProfile
 from careeros.reminders.models import (
     ValidationError as ReminderValidationError,
 )
@@ -66,6 +77,7 @@ from careeros.reminders.models import (
     parse_due_at,
 )
 from careeros.reminders.service import list_reminders
+from careeros.saved_searches.execution import rank_candidates
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
 DEFAULT_LIMIT = 20
@@ -108,6 +120,27 @@ def _no_reminder_found_message(reminder_id: int) -> str:
 def _no_group_found_message(group_id: str) -> str:
     """Return the canonical "no such group" message for a group id."""
     return f"No group found with ID {group_id}."
+
+
+def _to_profile(request_profile: CandidateProfileRequest) -> CandidateProfile:
+    """Build a scorer profile from validated inline request fields.
+
+    Maps the API request model onto the shared ``CandidateProfile`` dataclass.
+    Whitespace-stripping and empty-after-strip rejection are enforced by the
+    request schema; a whitespace-only ``remote_preference`` is stored stripped
+    and collapses to ``None`` here, mirroring the profile loader.
+    """
+    return CandidateProfile(
+        desired_titles=tuple(request_profile.desired_titles),
+        skills=tuple(request_profile.skills),
+        preferred_locations=tuple(request_profile.preferred_locations),
+        remote_preference=request_profile.remote_preference or None,
+        excluded_terms=tuple(request_profile.excluded_terms),
+        required_skills=tuple(request_profile.required_skills),
+        hard_excluded_terms=tuple(request_profile.hard_excluded_terms),
+        preferred_employment_types=tuple(request_profile.preferred_employment_types),
+        preferred_seniority=tuple(request_profile.preferred_seniority),
+    )
 
 
 def _read_schema_version(connection: sqlite3.Connection) -> int | None:
@@ -441,6 +474,55 @@ def create_app() -> FastAPI:
                 )
                 return Group.model_validate(group_dict(grouped))
         raise HTTPException(status_code=404, detail=_no_group_found_message(group_id))
+
+    @app.post("/ranked-jobs", response_model=RankedJobsResponse)
+    def rank_jobs(
+        payload: RankRequest,
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        query: str = "",
+        source: str | None = None,
+        remote: bool | None = None,
+        location: str | None = None,
+        employment_type: str | None = None,
+        minimum_score: Annotated[int, Query(ge=0, le=100)] = 0,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+    ) -> RankedJobsResponse:
+        """Rank stored jobs against an inline candidate profile (computation-only).
+
+        Review feedback is always excluded (``feedback=None``), so stored
+        review decisions never influence API scores. Results are flat raw jobs
+        only, deterministically ordered by ``match_score DESC, published_at DESC
+        NULLS LAST, id ASC``. ``total`` reflects the ranked count after
+        ``minimum_score`` filtering and before pagination. A missing database
+        yields an empty envelope without creating a file, directory, or schema.
+        """
+        if connection is None:
+            return RankedJobsResponse(items=[], total=0, offset=offset, limit=limit)
+        profile = _to_profile(payload.profile)
+        outcome = rank_candidates(
+            connection,
+            query=query,
+            profile=profile,
+            remote=remote,
+            location=location,
+            source=source,
+            employment_type=employment_type,
+            limit=None,
+            grouped=False,
+            min_score=minimum_score,
+            feedback=None,
+        )
+        ranked = outcome.flat_ranked
+        return RankedJobsResponse(
+            items=[
+                RankedJobItem.model_validate(ranked_job_item_dict(item))
+                for item in ranked[offset : offset + limit]
+            ],
+            total=len(ranked),
+            offset=offset,
+            limit=limit,
+        )
 
     return app
 

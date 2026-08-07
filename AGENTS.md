@@ -656,7 +656,10 @@ codes: `0` success, `1` output/profile/database failure, `2` usage errors
 `src/careeros/api/` is a read-only FastAPI slice (optional `api` extra). Serve
 with `uv run uvicorn careeros.api:app`. The slice never fetches jobs, never
 writes, never creates a database file, directory, or schema, and never contacts
-external services. The database path comes from `CAREEROS_DATABASE` (see
+external services. Its single POST endpoint, `POST /ranked-jobs`, is
+computation-only: it ranks stored jobs against a candidate profile submitted
+inline in the request body and creates no resource. The database path comes
+from `CAREEROS_DATABASE` (see
 `src/careeros/settings.py`), read per request with the standard library; a
 missing database is treated as empty. Each request opens one SQLite connection
 with `mode=ro` and closes it deterministically; no connection is shared across
@@ -777,6 +780,28 @@ canonical `No job found with ID {id}.` message locally.
   message; singleton entries (`group_id` null) are list-only and not
   addressable here. A missing database returns the same canonical `404`
   without creating a file or directory.
+- `POST /ranked-jobs` — rank stored jobs against a candidate profile submitted
+  inline in the request body (`{"profile": {...}}`). Computation-only: it never
+  creates a resource, never writes, never reads a profile file (no
+  `profile_path` is ever accepted), and never persists or logs the submitted
+  profile. Profile fields mirror the candidate-profile file semantics: all
+  optional, unknown fields silently ignored, list entries whitespace-stripped
+  (empty-after-strip rejected), up to 100 entries per list and 100 characters
+  per entry, `remote_preference` up to 50 characters (empty-after-strip
+  collapses to null), duplicates preserved, empty profile valid. Query
+  parameters mirror the `/jobs` filters plus `minimum_score` (0–100, default
+  0) and `query` (default `""`, which ranks every stored job); `offset`/`limit`
+  paginate with defaults 0/20 (`limit` capped at 100). Review feedback is
+  always excluded (`feedback=None`), so stored review decisions never affect
+  API scores. Results are flat raw jobs only (no grouping); deterministic
+  order is `match_score DESC, published_at DESC NULLS LAST, id ASC`. Each item
+  carries exactly `job` (the canonical `job_dict` projection), `match_score`,
+  and `score`; `reasons`, `score_components`, profile terms, and all workflow
+  state are deliberately omitted. The envelope is `{items, total, offset,
+  limit}`; `total` is the count after `minimum_score` filtering and before
+  pagination. A missing database returns `200` with an empty envelope without
+  creating a file or directory; an uninitialized or malformed database returns
+  the canonical privacy-safe `500`.
 
 A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict read-only policy (no DDL on read paths).

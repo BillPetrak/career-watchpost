@@ -1,8 +1,22 @@
-"""Pydantic response schemas for the CareerOS API."""
+"""Pydantic request and response schemas for the CareerOS API."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+# Bounds for inline candidate-profile fields submitted to POST /ranked-jobs.
+# They mirror the candidate-profile file semantics (all optional, unknown
+# fields ignored, entries stripped, empty-after-strip rejected, duplicates
+# preserved) while bounding request size on the network surface.
+MAX_PROFILE_ITEMS = 100
+MAX_PROFILE_TERM = 100
+MAX_REMOTE_PREFERENCE = 50
+
+ProfileTerm = Annotated[
+    str, StringConstraints(min_length=1, max_length=MAX_PROFILE_TERM)
+]
 
 
 class HealthResponse(BaseModel):
@@ -195,9 +209,90 @@ class GroupSummaryResponse(BaseModel):
     distinct_opportunities: int
 
 
+class CandidateProfileRequest(BaseModel):
+    """Candidate preferences submitted inline for a ranking request.
+
+    Mirrors the candidate-profile file semantics: every field is optional,
+    unknown fields are silently ignored, list entries are whitespace-stripped
+    (entries that become empty after stripping are rejected), duplicates are
+    preserved, and an empty profile is valid. The API never reads profile
+    files, never persists the submitted profile, and never logs its contents.
+    """
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    desired_titles: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    skills: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    required_skills: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    preferred_locations: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    remote_preference: Annotated[
+        str | None, StringConstraints(max_length=MAX_REMOTE_PREFERENCE)
+    ] = None
+    excluded_terms: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    hard_excluded_terms: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    preferred_employment_types: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    preferred_seniority: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+
+
+class RankRequest(BaseModel):
+    """Request body for ``POST /ranked-jobs``: an inline candidate profile.
+
+    Unknown top-level fields are silently ignored, so an attempted
+    ``profile_path`` (or any other probe) is inert and never acted upon.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    profile: CandidateProfileRequest
+
+
+class RankedJobItem(BaseModel):
+    """One scored job in a ranked response.
+
+    Mirrors the shared ``ranked_job_item_dict`` projection. ``reasons`` and
+    ``score_components`` are deliberately omitted: they can echo submitted
+    profile terms or embed private review-feedback text, and the HTTP API never
+    exposes profile contents or workflow state.
+    """
+
+    job: Job
+    match_score: int
+    score: int
+
+
+class RankedJobsResponse(BaseModel):
+    """A paginated page of profile-ranked jobs, best match first.
+
+    ``total`` is the count of ranked results after ``minimum_score`` filtering
+    and before ``offset``/``limit`` pagination.
+    """
+
+    items: list[RankedJobItem]
+    total: int
+    offset: int
+    limit: int
+
+
 __all__: tuple[str, ...] = (
     "ApplicationItem",
     "ApplicationListResponse",
+    "CandidateProfileRequest",
     "CollectionRun",
     "CollectionRunListResponse",
     "FieldCoverageStats",
@@ -207,6 +302,12 @@ __all__: tuple[str, ...] = (
     "HealthResponse",
     "Job",
     "JobListResponse",
+    "MAX_PROFILE_ITEMS",
+    "MAX_PROFILE_TERM",
+    "MAX_REMOTE_PREFERENCE",
+    "RankRequest",
+    "RankedJobItem",
+    "RankedJobsResponse",
     "ReminderItem",
     "ReminderListResponse",
     "SourceStats",
