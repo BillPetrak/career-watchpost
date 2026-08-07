@@ -328,14 +328,31 @@ class RankedJobItem(BaseModel):
     score: int
 
 
-class RankedJobsResponse(BaseModel):
-    """A paginated page of profile-ranked jobs, best match first.
+class RankedGroupItem(BaseModel):
+    """One scored canonical group in a grouped ranked response.
 
-    ``total`` is the count of ranked results after ``minimum_score`` filtering
-    and before ``offset``/``limit`` pagination.
+    Mirrors the shared ``ranked_group_item_dict`` projection. ``reasons`` and
+    ``score_components`` are deliberately omitted: they can echo submitted
+    profile terms or embed private review-feedback text, and the HTTP API never
+    exposes profile contents or workflow state. Review decisions, application
+    status, notes, and reminder messages are likewise never exposed.
     """
 
-    items: list[RankedJobItem]
+    group: Group
+    match_score: int
+    score: int
+
+
+class RankedJobsResponse(BaseModel):
+    """A paginated page of ranked results, best match first.
+
+    ``items`` are flat raw jobs when ``grouped`` is false and one entry per
+    canonical duplicate group when ``grouped`` is true (matching the shared
+    grouped ranking pipeline). ``total`` is the count of ranked results after
+    ``minimum_score`` filtering and before ``offset``/``limit`` pagination.
+    """
+
+    items: list[RankedJobItem | RankedGroupItem]
     total: int
     offset: int
     limit: int
@@ -404,6 +421,7 @@ __all__: tuple[str, ...] = (
     "MAX_PROFILE_TERM",
     "MAX_REMOTE_PREFERENCE",
     "RankRequest",
+    "RankedGroupItem",
     "RankedJobItem",
     "RankedJobsResponse",
     "ReminderItem",

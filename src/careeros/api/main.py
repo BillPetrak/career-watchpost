@@ -14,14 +14,16 @@ a database file, directory, or schema, nothing writes, and nothing makes network
 calls. Both ``POST`` endpoints compute a ranking from a candidate profile
 submitted inline in the request body and create no resource; they never read
 profile files, never persist or log the submitted profile, and never apply
-review feedback. ``POST /review-queue`` ranks the personalized daily review
-queue (opportunities needing review) against the inline profile, collapsing
-cross-source duplicates per canonical group by default. The review-decisions
-endpoints expose current review decisions and their append-only transition
-history joined with the canonical job projection. Application notes, event
-history (beyond the resolved decision values and transition times), review
-decision notes, reminder messages, group matcher diagnostics, and ranking
-reasons are never exposed over HTTP.
+review feedback. ``POST /ranked-jobs`` ranks stored jobs against the inline
+profile as flat raw jobs by default, or one result per canonical duplicate
+group when ``grouped=true``. ``POST /review-queue`` ranks the personalized
+daily review queue (opportunities needing review) against the inline profile,
+collapsing cross-source duplicates per canonical group by default. The
+review-decisions endpoints expose current review decisions and their
+append-only transition history joined with the canonical job projection.
+Application notes, event history (beyond the resolved decision values and
+transition times), review decision notes, reminder messages, group matcher
+diagnostics, and ranking reasons are never exposed over HTTP.
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ from careeros.api.schemas import (
     HealthResponse,
     Job,
     JobListResponse,
+    RankedGroupItem,
     RankedJobItem,
     RankedJobsResponse,
     RankRequest,
@@ -81,6 +84,7 @@ from careeros.presenters import (
     application_item_dict,
     group_dict,
     job_dict,
+    ranked_group_item_dict,
     ranked_job_item_dict,
     reminder_item_dict,
     review_decision_event_dict,
@@ -614,6 +618,7 @@ def create_app() -> FastAPI:
         payload: RankRequest,
         connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
         query: str = "",
+        grouped: bool = False,
         source: str | None = None,
         remote: bool | None = None,
         location: str | None = None,
@@ -625,9 +630,13 @@ def create_app() -> FastAPI:
         """Rank stored jobs against an inline candidate profile (computation-only).
 
         Review feedback is always excluded (``feedback=None``), so stored
-        review decisions never influence API scores. Results are flat raw jobs
-        only, deterministically ordered by ``match_score DESC, published_at DESC
-        NULLS LAST, id ASC``. ``total`` reflects the ranked count after
+        review decisions never influence API scores. ``grouped`` is false by
+        default, yielding flat raw jobs deterministically ordered by
+        ``match_score DESC, published_at DESC NULLS LAST, id ASC``. With
+        ``grouped=true`` results are one entry per canonical duplicate group
+        through the shared grouped ranking pipeline, deterministically ordered
+        by ``match_score DESC``, then newest member publication time, then
+        representative job ID. ``total`` reflects the ranked count after
         ``minimum_score`` filtering and before pagination. A missing database
         yields an empty envelope without creating a file, directory, or schema.
         """
@@ -643,17 +652,28 @@ def create_app() -> FastAPI:
             source=source,
             employment_type=employment_type,
             limit=None,
-            grouped=False,
+            grouped=grouped,
             min_score=minimum_score,
             feedback=None,
         )
-        ranked = outcome.flat_ranked
+        if grouped:
+            grouped_ranked = outcome.grouped_ranked
+            return RankedJobsResponse(
+                items=[
+                    RankedGroupItem.model_validate(ranked_group_item_dict(item))
+                    for item in grouped_ranked[offset : offset + limit]
+                ],
+                total=len(grouped_ranked),
+                offset=offset,
+                limit=limit,
+            )
+        flat_ranked = outcome.flat_ranked
         return RankedJobsResponse(
             items=[
                 RankedJobItem.model_validate(ranked_job_item_dict(item))
-                for item in ranked[offset : offset + limit]
+                for item in flat_ranked[offset : offset + limit]
             ],
-            total=len(ranked),
+            total=len(flat_ranked),
             offset=offset,
             limit=limit,
         )

@@ -821,17 +821,27 @@ canonical `No job found with ID {id}.` message locally.
   (empty-after-strip rejected), up to 100 entries per list and 100 characters
   per entry, `remote_preference` up to 50 characters (empty-after-strip
   collapses to null), duplicates preserved, empty profile valid. Query
-  parameters mirror the `/jobs` filters plus `minimum_score` (0–100, default
-  0) and `query` (default `""`, which ranks every stored job); `offset`/`limit`
-  paginate with defaults 0/20 (`limit` capped at 100). Review feedback is
-  always excluded (`feedback=None`), so stored review decisions never affect
-  API scores. Results are flat raw jobs only (no grouping); deterministic
-  order is `match_score DESC, published_at DESC NULLS LAST, id ASC`. Each item
-  carries exactly `job` (the canonical `job_dict` projection), `match_score`,
-  and `score`; `reasons`, `score_components`, profile terms, and all workflow
-  state are deliberately omitted. The envelope is `{items, total, offset,
-  limit}`; `total` is the count after `minimum_score` filtering and before
-  pagination. A missing database returns `200` with an empty envelope without
+  parameters mirror the `/jobs` filters plus `grouped` (default `false`),
+  `minimum_score` (0–100, default 0) and `query` (default `""`, which ranks
+  every stored job); `offset`/`limit` paginate with defaults 0/20 (`limit`
+  capped at 100). Review feedback is always excluded (`feedback=None`), so
+  stored review decisions never affect API scores. With `grouped=false`
+  (the default) results are flat raw jobs only; deterministic
+  order is `match_score DESC, published_at DESC NULLS LAST, id ASC` and each
+  item carries exactly `job` (the canonical `job_dict` projection),
+  `match_score`, and `score`. With `grouped=true` results are one entry per
+  canonical duplicate group through the shared grouped ranking pipeline
+  (`rank_candidates(... grouped=True)` / `score_groups`): the `/jobs` filters
+  and `query` apply to candidate member rows BEFORE grouping, deterministic
+  order is `match_score DESC`, then newest member publication time
+  (`NULLS LAST`), then representative (lowest member) job ID, and each item
+  carries exactly `group` (the canonical `group_dict` projection with nested
+  `job_dict` members), `match_score`, and `score`. In both modes `reasons`,
+  `score_components`, profile terms, review decisions, application status,
+  notes, and all other workflow state are deliberately omitted. The envelope is
+  `{items, total, offset, limit}`; `total` is the count after `minimum_score`
+  filtering and before pagination. A missing database returns `200` with an
+  empty envelope without
   creating a file or directory; an uninitialized or malformed database returns
   the canonical privacy-safe `500`.
 - `POST /review-queue` — rank the personalized daily review queue (opportunities

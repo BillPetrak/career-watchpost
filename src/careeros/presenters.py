@@ -136,6 +136,23 @@ def ranked_job_item_dict(ranked: RankedJob) -> dict[str, Any]:
     }
 
 
+def ranked_group_item_dict(ranked: RankedGroup) -> dict[str, Any]:
+    """Serialize one scored canonical group for the HTTP API.
+
+    A narrowly scoped subset of ``ranked_group_dict``: the HTTP API exposes
+    only the canonical group and its two score values. ``reasons`` and
+    ``score_components`` are deliberately omitted because they can echo
+    submitted profile terms or embed private review-feedback text, which the
+    HTTP API never exposes. Review decisions, application status, notes, and
+    reminder messages are likewise never exposed.
+    """
+    return {
+        "group": group_dict(ranked.group),
+        "match_score": ranked.match_score,
+        "score": ranked.score,
+    }
+
+
 def review_queue_item_dict(item: QueueItem) -> dict[str, Any]:
     """Serialize one ranked review-queue entry for the HTTP API.
 
@@ -228,6 +245,7 @@ __all__: tuple[str, ...] = (
     "job_dict",
     "location_display",
     "ranked_group_dict",
+    "ranked_group_item_dict",
     "ranked_job_dict",
     "ranked_job_item_dict",
     "reminder_item_dict",
