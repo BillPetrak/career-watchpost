@@ -22,14 +22,19 @@ executes a stored saved-search workflow (search or rank mode) through the shared
 execution pipeline against the current database, honoring the stored definition
 including its ``result_limit`` cap; it never reads the stored ``profile_path``
 and rank mode requires the candidate profile inline (search mode rejects one).
-``PUT /review-decisions/{job_id}`` is the slice's first mutation endpoint: it
-sets or replaces one job's current review decision through the shared
-``review.service.set_decision`` domain service, which owns the transaction and
-audit event. The mutation runs on a writable connection under the per-database
-``collection_lock`` (contention maps to a privacy-safe ``503``) and requires an
+``PUT /review-decisions/{job_id}`` and ``PUT /applications/{job_id}`` are the
+slice's mutation endpoints: ``PUT /review-decisions/{job_id}`` sets or replaces
+one job's current review decision through the shared ``review.service.set_decision``
+domain service, and ``PUT /applications/{job_id}`` starts tracking a job or moves
+it through the application lifecycle through the shared
+``applications.service.set_application_status`` domain service. Each domain
+service owns the transaction and audit event. The mutations run on a writable
+connection under the per-database
+``collection_lock`` (contention maps to a privacy-safe ``503``) and require an
 already-initialized database (missing/uninitialized/malformed databases are the
-canonical privacy-safe ``500``); it never initializes the database and never
-accepts or exposes review notes. ``POST /ranked-jobs`` ranks stored jobs against
+canonical privacy-safe ``500``); they never initialize the database and never
+accept or expose review notes or application notes. ``POST /ranked-jobs``
+ranks stored jobs against
 the inline profile as flat raw jobs by default, or one result per canonical
 duplicate group when ``grouped=true``. ``POST /review-queue`` ranks the
 personalized daily review queue (opportunities needing review) against the
@@ -65,6 +70,7 @@ from careeros.api.schemas import (
     ApplicationHistoryResponse,
     ApplicationItem,
     ApplicationListResponse,
+    ApplicationStatusRequest,
     CandidateProfileRequest,
     CollectionRun,
     CollectionRunListResponse,
@@ -96,6 +102,10 @@ from careeros.api.schemas import (
     SourceStatsListResponse,
 )
 from careeros.applications.models import validate_status
+from careeros.applications.service import (
+    UnknownJobError as ApplicationUnknownJobError,
+)
+from careeros.applications.service import set_application_status
 from careeros.database.applications import (
     ApplicationListItem,
     get_application,
@@ -253,9 +263,10 @@ def create_app() -> FastAPI:
         title="CareerOS API",
         description=(
             "REST access to stored CareerOS state. Reads and computations are "
-            "read-only; the single mutation endpoint "
-            "PUT /review-decisions/{job_id} writes through the shared "
-            "review-decision service under the collection lock. Never fetches "
+            "read-only; the mutation endpoints "
+            "PUT /review-decisions/{job_id} and PUT /applications/{job_id} write "
+            "through the shared review-decision and application-tracking services "
+            "under the collection lock. Never fetches "
             "jobs, never initializes the database, and never contacts external "
             "services."
         ),
@@ -476,6 +487,58 @@ def create_app() -> FastAPI:
                 )
         raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
 
+    @app.put("/applications/{job_id}", response_model=ApplicationItem)
+    def set_application_status_endpoint(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        job_id: int,
+        payload: ApplicationStatusRequest,
+    ) -> ApplicationItem:
+        """Start tracking a job or move it through the application lifecycle.
+
+        All decision logic lives in the shared
+        ``applications.service.set_application_status`` domain service: this
+        route only validates the request body, translates known domain errors,
+        and returns the canonical ``ApplicationItem`` projection (exactly the
+        shape ``GET /applications/{job_id}`` returns). The writable connection
+        runs under the per-database collection lock, so this endpoint
+        coordinates with every CLI/collector writer; lock contention maps to a
+        privacy-safe ``503`` and a missing or uninitialized database to the
+        canonical privacy-safe ``500``. Repeating the same status is idempotent
+        (no new event, no timestamp mutation) and every real transition is
+        recorded in the append-only application history. ``note`` is never
+        accepted or exposed.
+        """
+        try:
+            set_application_status(
+                connection,
+                job_id=job_id,
+                status=payload.status,
+            )
+        except ApplicationUnknownJobError:
+            raise HTTPException(
+                status_code=404, detail=_no_job_found_message(job_id)
+            ) from None
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        stored = get_job_by_id(connection, job_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
+        application = get_application(connection, job_id)
+        if application is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No application found for job {job_id}.",
+            )
+        return ApplicationItem.model_validate(
+            application_item_dict(
+                ApplicationListItem(
+                    application=application,
+                    job=stored,
+                    latest_note=None,
+                )
+            )
+        )
+
     @app.get("/reminders", response_model=ReminderListResponse)
     def list_reminders_endpoint(
         connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
@@ -606,7 +669,7 @@ def create_app() -> FastAPI:
     ) -> ReviewDecisionItem:
         """Set or replace the current review decision for one job (write).
 
-        The first mutation endpoint in the CareerOS API. All decision logic
+        All decision logic
         lives in the shared ``review.service.set_decision`` domain service:
         this route only validates the request body, translates known domain
         errors, and returns the canonical ``ReviewDecisionItem`` projection

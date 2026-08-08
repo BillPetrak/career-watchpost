@@ -327,6 +327,23 @@ class ReviewDecisionHistoryResponse(BaseModel):
     limit: int
 
 
+class ApplicationStatusRequest(BaseModel):
+    """Request body for ``PUT /applications/{job_id}``.
+
+    ``status`` is validated against the shared application-status vocabulary
+    (``interested``, ``applied``, ``interview``, ``offer``, ``rejected``,
+    ``withdrawn``) by the existing domain validator; no other field is
+    supported. Unknown body fields — including any ``note`` — are rejected
+    with ``422``: this mutation request uses ``extra="forbid"`` so an
+    unsupported field is never silently accepted and discarded, and the HTTP
+    contract never accepts user-written free text.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+
+
 class ReviewDecisionRequest(BaseModel):
     """Request body for ``PUT /review-decisions/{job_id}``.
 
@@ -532,6 +549,7 @@ __all__: tuple[str, ...] = (
     "ApplicationHistoryResponse",
     "ApplicationItem",
     "ApplicationListResponse",
+    "ApplicationStatusRequest",
     "CandidateProfileRequest",
     "CollectionRun",
     "CollectionRunListResponse",

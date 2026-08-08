@@ -662,25 +662,32 @@ computation-only: `POST /ranked-jobs` and `POST /review-queue` rank stored jobs
 against a candidate profile submitted inline in the request body, and
 `POST /saved-searches/{name}/execute` executes a stored saved-search workflow
 (search or rank mode) through the shared execution pipeline. All three create
-no resource. `PUT /review-decisions/{job_id}` is the slice's **first mutation
-endpoint**: it sets or replaces one job's current review decision through the
-shared `careeros.review.service.set_decision` domain service, which owns the
-transaction and audit event. HTTP writes run on a `writable_connection` (see
+no resource. `PUT /review-decisions/{job_id}` and
+`PUT /applications/{job_id}` are the slice's mutation endpoints:
+`PUT /review-decisions/{job_id}` sets or replaces one job's current review
+decision through the shared `careeros.review.service.set_decision` domain
+service, and `PUT /applications/{job_id}` starts tracking a job or moves it
+through the application lifecycle through the shared
+`careeros.applications.service.set_application_status` domain service; each
+domain service owns the transaction and audit event. HTTP writes run on a
+`writable_connection` (see
 `src/careeros/api/deps.py`): the configured database file must already exist (a
 missing/uninitialized/malformed database is the canonical privacy-safe `500`
 and nothing is ever created), the per-database `collection_lock` is acquired
 before the connection is opened and held for the whole request (cross-process
 `flock`, same lock the CLI/collector writers use), lock contention maps to a
 privacy-safe `503`, and the domain service — never the connection dependency —
-owns commit/rollback. The mutation returns the same privacy-safe
-`ReviewDecisionItem` representation as `GET /review-decisions/{job_id}` and
-never accepts or exposes review notes (`note` in the request body is a `422`).
+owns commit/rollback. The mutations return the same privacy-safe
+`ReviewDecisionItem` / `ApplicationItem` representations as
+`GET /review-decisions/{job_id}` / `GET /applications/{job_id}` and
+never accept or expose review or application notes (`note` in either request
+body is a `422`).
 The database path comes
 from `CAREEROS_DATABASE` (see
 `src/careeros/settings.py`), read per request with the standard library; a
 missing database is treated as empty by the read endpoints. Each request opens
 one SQLite connection (`mode=ro` for reads, `mode=rw` under the lock for the
-write endpoint) and closes it deterministically; no connection is shared across
+write endpoints) and closes it deterministically; no connection is shared across
 requests. Endpoints reuse the shared database/presenter layers and the canonical
 job projection (`presenters.job_dict`). API code must never import `careeros.cli`
 (an AST test enforces this); the `/jobs/{job_id}` 404 detail reproduces the
@@ -752,6 +759,36 @@ canonical `No job found with ID {id}.` message locally.
   `application_id` are deliberately omitted. The envelope is
   `{items, total, offset, limit}`; `total` is the event count before
   `offset`/`limit` slicing.
+- `PUT /applications/{job_id}` — the slice's application-status mutation
+  endpoint. Starts tracking a job or moves it through the application lifecycle
+  through the shared `careeros.applications.service.set_application_status`
+  domain service, which owns the transaction, commit/rollback, the append-only
+  `application_events` audit, and idempotent same-status no-op behavior; the
+  route performs no SQL. The request body is `{"status": "applied"}` via a
+  dedicated `ApplicationStatusRequest` model with `extra="forbid"`: unknown
+  body fields — including any `note` — are rejected with `422`, and application
+  notes are never accepted or exposed by this endpoint. `status` is validated
+  by the existing shared `validate_status` vocabulary (`interested`, `applied`,
+  `interview`, `offer`, `rejected`, `withdrawn`); an invalid value returns
+  `422` with the canonical domain validation text. An unknown job returns
+  `404` with the canonical `No job found with ID {job_id}.` message;
+  non-integer path input returns FastAPI's normal `422`. Every successful
+  `PUT` returns `200` with the canonical `ApplicationItem` projection
+  (identical to the `GET` detail shape, exact field order `application_id`,
+  `job_id`, `current_status`, `created_at`, `updated_at`, `job`). First
+  assignment creates the application and one event with `old_status` `null`;
+  a real transition updates the current status and appends one event while
+  preserving `application_id`; repeating the identical status is idempotent
+  under the domain model (no new event, no `updated_at` mutation, equivalent
+  response body). The mutation runs on `writable_connection`: the configured
+  database must already exist (missing/uninitialized/malformed databases are
+  the canonical privacy-safe `500` and nothing is ever created), the
+  per-database `collection_lock` is held for the whole request (lock
+  contention maps to a privacy-safe `503` with a fixed retry-later message
+  that never exposes lock internals), and the domain service — never the
+  dependency — owns commit/rollback. A failure between writing the current
+  status and its audit event rolls the entire mutation back, and the lock is
+  always releasable.
 - `GET /reminders` — reminders soonest first (`due_at ASC, id ASC`, the shared
   `database.reminders.list_reminders` order) with deterministic
   `offset`/`limit` pagination (defaults 0/20, `limit` capped at 100) and
@@ -816,14 +853,15 @@ canonical `No job found with ID {id}.` message locally.
   `created_at`, `updated_at`, `job`). Repeating the same decision is idempotent
   under the domain model: no new event is appended and timestamps are not
   mutated, so repeated identical `PUT` requests return equivalent bodies. The
-  mutation runs on `writable_connection`: the configured database must already
-  exist (missing/uninitialized/malformed databases are the canonical
-  privacy-safe `500` and nothing is ever created), the per-database
-  `collection_lock` is held for the whole request (lock contention maps to a
-  privacy-safe `503` with a fixed retry-later message that never exposes lock
-  internals), and the domain service — never the dependency — owns
-  commit/rollback. A failure between writing the current decision and its audit
-  event rolls the entire mutation back, and the lock is always releasable.
+  mutation runs on `writable_connection` like `PUT /applications/{job_id}`: the
+  configured database must already exist (missing/uninitialized/malformed
+  databases are the canonical privacy-safe `500` and nothing is ever created),
+  the per-database `collection_lock` is held for the whole request (lock
+  contention maps to a privacy-safe `503` with a fixed retry-later message that
+  never exposes lock internals), and the domain service — never the dependency
+  — owns commit/rollback. A failure between writing the current decision and its
+  audit event rolls the entire mutation back, and the lock is always
+  releasable.
 - `GET /review-decisions/{job_id}/history` — a job's append-only review-decision
   transition history newest first (`created_at DESC, id DESC`, the shared
   `database.review.list_decision_events` order) with deterministic
