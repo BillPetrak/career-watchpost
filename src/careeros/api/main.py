@@ -22,22 +22,27 @@ executes a stored saved-search workflow (search or rank mode) through the shared
 execution pipeline against the current database, honoring the stored definition
 including its ``result_limit`` cap; it never reads the stored ``profile_path``
 and rank mode requires the candidate profile inline (search mode rejects one).
-``PUT /review-decisions/{job_id}``, ``DELETE /review-decisions/{job_id}``, and
-``PUT /applications/{job_id}`` are the slice's mutation endpoints:
+``PUT /review-decisions/{job_id}``, ``DELETE /review-decisions/{job_id}``,
+``PUT /applications/{job_id}``, and
+``POST /reminders`` are the slice's mutation endpoints:
 ``PUT /review-decisions/{job_id}`` sets or replaces
 one job's current review decision through the shared ``review.service.set_decision``
 domain service, ``DELETE /review-decisions/{job_id}`` clears one job's current
 review decision through the shared ``review.service.clear_decision`` domain
-service, and ``PUT /applications/{job_id}`` starts tracking a job or moves
+service, ``PUT /applications/{job_id}`` starts tracking a job or moves
 it through the application lifecycle through the shared
-``applications.service.set_application_status`` domain service. Each domain
+``applications.service.set_application_status`` domain service, and
+``POST /reminders`` adds a local follow-up reminder for a stored job through
+the shared ``reminders.service.add_reminder`` domain service (intentionally
+non-idempotent, never accepts a message, and never triggers notification
+delivery). Each domain
 service owns the transaction and audit event. The mutations run on a writable
 connection under the per-database
 ``collection_lock`` (contention maps to a privacy-safe ``503``) and require an
 already-initialized database (missing/uninitialized/malformed databases are the
 canonical privacy-safe ``500``); they never initialize the database and never
-accept or expose review notes or application notes. ``POST /ranked-jobs``
-ranks stored jobs against
+accept or expose review notes, application notes, or reminder messages.
+``POST /ranked-jobs`` ranks stored jobs against
 the inline profile as flat raw jobs by default, or one result per canonical
 duplicate group when ``grouped=true``. ``POST /review-queue`` ranks the
 personalized daily review queue (opportunities needing review) against the
@@ -88,6 +93,7 @@ from careeros.api.schemas import (
     RankedJobItem,
     RankedJobsResponse,
     RankRequest,
+    ReminderCreateRequest,
     ReminderItem,
     ReminderListResponse,
     ReviewDecisionEvent,
@@ -142,12 +148,18 @@ from careeros.presenters import (
 )
 from careeros.ranking.scorer import CandidateProfile
 from careeros.reminders.models import (
+    UnknownJobError as ReminderUnknownJobError,
+)
+from careeros.reminders.models import (
     ValidationError as ReminderValidationError,
 )
 from careeros.reminders.models import (
     parse_due_at,
 )
-from careeros.reminders.service import list_reminders
+from careeros.reminders.service import (
+    add_reminder,
+    list_reminders,
+)
 from careeros.review.models import (
     UnknownJobError,
     validate_decision,
@@ -270,8 +282,9 @@ def create_app() -> FastAPI:
             "REST access to stored CareerOS state. Reads and computations are "
             "read-only; the mutation endpoints "
             "PUT /review-decisions/{job_id}, DELETE /review-decisions/{job_id}, "
-            "and PUT /applications/{job_id} write "
-            "through the shared review-decision and application-tracking services "
+            "PUT /applications/{job_id}, and POST /reminders write "
+            "through the shared review-decision, application-tracking, and "
+            "reminder domain services "
             "under the collection lock. Never fetches "
             "jobs, never initializes the database, and never contacts external "
             "services."
@@ -606,6 +619,48 @@ def create_app() -> FastAPI:
                 )
         raise HTTPException(
             status_code=404, detail=_no_reminder_found_message(reminder_id)
+        )
+
+    @app.post("/reminders", response_model=ReminderItem)
+    def create_reminder(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        payload: ReminderCreateRequest,
+    ) -> ReminderItem:
+        """Add a reminder for an existing stored job (write).
+
+        All logic lives in the shared ``reminders.service.add_reminder`` domain
+        service: this route only validates the request body, translates known
+        domain errors, and returns the canonical ``ReminderItem`` projection
+        (exactly the shape ``GET /reminders/{reminder_id}`` returns). The
+        writable connection runs under the per-database collection lock, so
+        this endpoint coordinates with every CLI/collector writer; lock
+        contention maps to a privacy-safe ``503`` and a missing or uninitialized
+        database to the canonical privacy-safe ``500``. Creation is
+        intentionally non-idempotent: two identical POSTs create two distinct
+        reminders. ``message`` is never accepted, and creation never creates
+        notification attempts or triggers notification delivery.
+        """
+        try:
+            stored = add_reminder(
+                connection,
+                job_id=payload.job_id,
+                kind=payload.kind,
+                due_at=payload.due_at,
+                message=None,
+            )
+        except ReminderValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        except ReminderUnknownJobError:
+            raise HTTPException(
+                status_code=404, detail=_no_job_found_message(payload.job_id)
+            ) from None
+        job = get_job_by_id(connection, payload.job_id)
+        if job is None:
+            raise HTTPException(
+                status_code=404, detail=_no_job_found_message(payload.job_id)
+            )
+        return ReminderItem.model_validate(
+            reminder_item_dict(ReminderListEntry(reminder=stored, job=job))
         )
 
     @app.get("/review-decisions", response_model=ReviewDecisionListResponse)

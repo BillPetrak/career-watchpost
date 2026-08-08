@@ -1,0 +1,948 @@
+"""Tests for the CareerOS reminder-creation write API.
+
+Covers ``POST /reminders``: a successful creation returning the canonical
+``ReminderItem`` projection (exact field order, null ``completed_at``, nested
+canonical job projection, message structurally absent), current-state
+reflection through ``GET /reminders`` and ``GET /reminders/{reminder_id}``,
+intentionally non-idempotent duplicate creation (two identical POSTs create two
+distinct reminders), the full 422 validation matrix (invalid kind, invalid due
+timestamps including naive/date-only/empty/malformed, invalid ``job_id``,
+malformed JSON, missing body, missing required fields, and unknown fields
+including ``message``/``note`` — with no mutation occurring and the stored
+message staying NULL), unknown-job 404, missing/uninitialized/malformed
+database 500s without any file/parent/lock creation, cross-process lock
+contention mapped to a privacy-safe 503 with lock cleanup and recovery
+afterwards, transaction rollback on insert failure, notification separation
+(creation never creates ``reminder_notifications`` rows), a privacy leak scan
+over every response, deterministic structural behavior, prior-endpoint
+regression, and the shared no-``careeros.cli`` import guarantee.
+"""
+
+from __future__ import annotations
+
+import ast
+import os
+import sqlite3
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from careeros.api import app
+from careeros.applications.service import set_application_status
+from careeros.collectors import COLLECTORS
+from careeros.collectors.arbeitnow import CollectedJob
+from careeros.database.connection import connect
+from careeros.database.jobs import save_jobs
+from careeros.database.schema import SCHEMA_VERSION, initialize_schema
+from careeros.locking import lock_path_for
+from careeros.reminders.models import REMINDER_KINDS
+from careeros.reminders.service import add_reminder
+from careeros.review.service import set_decision
+
+_EPOCH = datetime.fromisoformat("2026-08-03T12:00:00+00:00")
+
+_SRC = Path(__file__).resolve().parents[1] / "src"
+
+_JOB_FIELDS = [
+    "id",
+    "source",
+    "source_job_id",
+    "title",
+    "company",
+    "location",
+    "remote_status",
+    "employment_type",
+    "published_at",
+    "url",
+]
+
+_ITEM_FIELDS = [
+    "reminder_id",
+    "job_id",
+    "kind",
+    "due_at",
+    "completed_at",
+    "created_at",
+    "updated_at",
+    "job",
+]
+
+_DUE = "2026-08-10T14:00:00Z"
+
+
+def _set_database(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    monkeypatch.setenv("CAREEROS_DATABASE", str(path))
+
+
+def _make_job(
+    source: str,
+    source_job_id: str,
+    title: str,
+    company: str,
+    location: str,
+) -> CollectedJob:
+    return CollectedJob(
+        source=source,
+        source_job_id=source_job_id,
+        title=title,
+        company=company,
+        location=location,
+        description="Build things.",
+        url=f"https://example.com/{source_job_id}",
+        employment_type="Full-time",
+        remote_status="remote",
+        published_at="2026-08-01T10:00:00Z",
+        collected_at="2026-08-02T08:00:00+00:00",
+    )
+
+
+def _seed_jobs(path: Path) -> dict[str, int]:
+    """Seed three distinct jobs and return a source-job-id to jobs.id mapping."""
+    connection = connect(path)
+    initialize_schema(connection)
+    save_jobs(
+        connection,
+        [
+            _make_job("arbeitnow", "a-1", "Senior Engineer", "Acme GmbH", "Berlin"),
+            _make_job("remoteok", "b-1", "Data Scientist", "Other Co", "Munich"),
+            _make_job("jobicy", "c-1", "Frontend Developer", "Frontend Labs", "Berlin"),
+        ],
+    )
+    job_ids = {
+        row["source_job_id"]: row["id"]
+        for row in connection.execute("SELECT id, source_job_id FROM jobs")
+    }
+    connection.close()
+    return job_ids
+
+
+def _payload(
+    job_id: int,
+    kind: str = "follow_up",
+    due_at: str = _DUE,
+) -> dict[str, object]:
+    return {"job_id": job_id, "kind": kind, "due_at": due_at}
+
+
+def _row_count(path: Path, table: str) -> int:
+    with connect(path) as connection:
+        return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def _reminder_messages(path: Path) -> list[object]:
+    with connect(path) as connection:
+        return [
+            row["message"]
+            for row in connection.execute("SELECT message FROM reminders")
+        ]
+
+
+def _reminder_ids(path: Path) -> list[int]:
+    with connect(path) as connection:
+        return [
+            int(row["id"])
+            for row in connection.execute("SELECT id FROM reminders ORDER BY id")
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# Child-process lock helper (cross-process flock semantics)
+# --------------------------------------------------------------------------- #
+
+_CHILD_HOLD = """\
+import sys
+from pathlib import Path
+from careeros.locking import collection_lock
+database = Path(sys.argv[1])
+with collection_lock(database, command="collect due"):
+    print("LOCKED", flush=True)
+    sys.stdin.readline()
+"""
+
+
+def _src_on_pythonpath() -> str:
+    existing = os.environ.get("PYTHONPATH")
+    return str(_SRC) + (os.pathsep + existing if existing else "")
+
+
+def _start_child(database: Path) -> subprocess.Popen:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = _src_on_pythonpath()
+    return subprocess.Popen(
+        [sys.executable, "-c", _CHILD_HOLD, str(database)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+
+def _wait_for_lock_line(child: subprocess.Popen) -> None:
+    assert child.stdout is not None
+    line = child.stdout.readline().strip()
+    if line != "LOCKED":
+        assert child.stderr is not None
+        pytest.fail(f"child did not acquire lock: {child.stderr.read()}")
+
+
+def _release_child(child: subprocess.Popen) -> None:
+    assert child.stdin is not None
+    child.stdin.write("release\n")
+    child.stdin.close()
+    child.wait(timeout=10)
+
+
+# --------------------------------------------------------------------------- #
+# Happy path, reflection, and duplicate-request semantics
+# --------------------------------------------------------------------------- #
+
+
+def test_creation_returns_canonical_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders", json=_payload(job_ids["a-1"]))
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert list(payload) == _ITEM_FIELDS
+    assert payload["reminder_id"] > 0
+    assert payload["job_id"] == job_ids["a-1"]
+    assert payload["kind"] == "follow_up"
+    assert payload["due_at"] == "2026-08-10T14:00:00+00:00"
+    assert payload["completed_at"] is None
+    assert "message" not in payload
+    assert list(payload["job"]) == _JOB_FIELDS
+    assert payload["job"]["title"] == "Senior Engineer"
+    assert "description" not in payload["job"]
+    assert _reminder_ids(path) == [payload["reminder_id"]]
+
+
+def test_current_get_reflects_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        created = client.post("/reminders", json=_payload(job_ids["a-1"]))
+        listing = client.get("/reminders")
+        detail = client.get(f"/reminders/{created.json()['reminder_id']}")
+
+    assert created.status_code == 200
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 1
+    assert listing.json()["items"][0] == created.json()
+    assert detail.status_code == 200
+    assert detail.json() == created.json()
+
+
+def test_duplicate_posts_create_distinct_reminders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Intentionally NON-IDEMPOTENT: two identical valid POSTs create two
+    # distinct reminder rows; there is no idempotency key or duplicate
+    # suppression in the reminder domain.
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        first = client.post("/reminders", json=_payload(job_ids["a-1"]))
+        second = client.post("/reminders", json=_payload(job_ids["a-1"]))
+        listing = client.get("/reminders")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["reminder_id"] != second.json()["reminder_id"]
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 2
+    assert _reminder_ids(path) == [
+        first.json()["reminder_id"],
+        second.json()["reminder_id"],
+    ]
+
+
+def test_all_reminder_kinds_are_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        for kind in REMINDER_KINDS:
+            response = client.post(
+                "/reminders", json=_payload(job_ids["a-1"], kind=kind)
+            )
+            assert response.status_code == 200
+            assert response.json()["kind"] == kind
+
+    assert _row_count(path, "reminders") == len(REMINDER_KINDS)
+
+
+def test_due_at_explicit_offset_is_normalized_to_utc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/reminders",
+            json=_payload(job_ids["a-1"], due_at="2026-08-10T14:00:00+02:00"),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["due_at"] == "2026-08-10T12:00:00+00:00"
+
+
+def test_due_at_z_suffix_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders", json=_payload(job_ids["a-1"]))
+
+    assert response.status_code == 200
+    assert response.json()["due_at"] == "2026-08-10T14:00:00+00:00"
+
+
+# --------------------------------------------------------------------------- #
+# Request validation
+# --------------------------------------------------------------------------- #
+
+
+def test_invalid_kind_422(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/reminders", json=_payload(job_ids["a-1"], kind="bogus")
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Invalid reminder kind 'bogus'; expected one of: "
+        "follow_up, interview, offer, review, custom."
+    )
+    assert _row_count(path, "reminders") == 0
+
+
+@pytest.mark.parametrize(
+    ("due_at", "detail"),
+    [
+        (
+            "2026-08-10T14:00:00",
+            "Invalid due timestamp '2026-08-10T14:00:00': a naive timestamp "
+            "without an explicit UTC offset is not accepted (CareerOS never "
+            "guesses a timezone).",
+        ),
+        (
+            "2026-08-10",
+            "Due timestamp must include a time component; date-only values are "
+            "not accepted (CareerOS never picks a midnight or a timezone).",
+        ),
+        (
+            "",
+            "Due timestamp must be a non-empty ISO-8601 string.",
+        ),
+        (
+            "not-a-date",
+            "Due timestamp must include a time component; date-only values are "
+            "not accepted (CareerOS never picks a midnight or a timezone).",
+        ),
+    ],
+)
+def test_invalid_due_at_cases_422(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    due_at: str,
+    detail: str,
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/reminders", json=_payload(job_ids["a-1"], due_at=due_at)
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == detail
+    assert _row_count(path, "reminders") == 0
+
+
+@pytest.mark.parametrize("job_id", [0, -1, "not-an-int"])
+def test_invalid_job_id_422(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    job_id: object,
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders", json=_payload(job_id))  # type: ignore[arg-type]
+
+    assert response.status_code == 422
+    assert _row_count(path, "reminders") == 0
+
+
+def test_malformed_json_422(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders", content="not json{{")
+
+    assert response.status_code == 422
+    assert _row_count(path, "reminders") == 0
+
+
+def test_missing_body_422(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders")
+
+    assert response.status_code == 422
+    assert _row_count(path, "reminders") == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"kind": "follow_up", "due_at": _DUE},
+        {"job_id": 1, "due_at": _DUE},
+        {"job_id": 1, "kind": "follow_up"},
+    ],
+)
+def test_missing_required_field_422(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, object],
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders", json=payload)
+
+    assert response.status_code == 422
+    assert _row_count(path, "reminders") == 0
+
+
+def test_unknown_fields_rejected_422_no_mutation_and_message_stays_null(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    sentinel_payloads = [
+        {
+            "job_id": job_ids["a-1"],
+            "kind": "follow_up",
+            "due_at": _DUE,
+            "message": "secret-free-text",
+        },
+        {
+            "job_id": job_ids["a-1"],
+            "kind": "follow_up",
+            "due_at": _DUE,
+            "note": "secret-note",
+        },
+        {"job_id": job_ids["a-1"], "kind": "follow_up", "due_at": _DUE, "bogus": 1},
+    ]
+    with TestClient(app) as client:
+        for payload in sentinel_payloads:
+            response = client.post("/reminders", json=payload)
+            assert response.status_code == 422
+        listing = client.get("/reminders")
+
+    # No mutation occurred and no sentinel free text reached the database.
+    assert _row_count(path, "reminders") == 0
+    assert _reminder_messages(path) == []
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 0
+    for leaked in ("secret-free-text", "secret-note"):
+        assert leaked not in listing.text
+
+    # A successful POST through this endpoint never stores a message.
+    with TestClient(app) as client:
+        ok = client.post("/reminders", json=_payload(job_ids["a-1"]))
+    assert ok.status_code == 200
+    assert _reminder_messages(path) == [None]
+
+
+# --------------------------------------------------------------------------- #
+# Unknown job
+# --------------------------------------------------------------------------- #
+
+
+def test_unknown_job_404(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders", json=_payload(9999))
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "No job found with ID 9999."}
+    assert _row_count(path, "reminders") == 0
+
+
+# --------------------------------------------------------------------------- #
+# Database availability
+# --------------------------------------------------------------------------- #
+
+
+def test_missing_database_500_without_creating_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "nested" / "missing.sqlite3"
+    _set_database(monkeypatch, database_path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders", json=_payload(1))
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "detail": (
+            "The database schema is unavailable (run 'careeros collect "
+            "<source>' to initialize it)."
+        )
+    }
+    assert not database_path.exists()
+    assert not database_path.parent.exists()
+    assert not lock_path_for(database_path).exists()
+
+
+def test_uninitialized_database_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "empty.sqlite3"
+    database_path.write_bytes(b"")
+    _set_database(monkeypatch, database_path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders", json=_payload(1))
+
+    assert response.status_code == 500
+    assert "run 'careeros collect" in response.json()["detail"]
+
+
+def test_malformed_database_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "garbage.sqlite3"
+    database_path.write_bytes(b"this is not a sqlite database")
+    _set_database(monkeypatch, database_path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders", json=_payload(1))
+
+    assert response.status_code == 500
+    assert "run 'careeros collect" in response.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# Locking / concurrency
+# --------------------------------------------------------------------------- #
+
+
+def test_lock_contention_503_unchanged_database_and_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    child = _start_child(path)
+    try:
+        _wait_for_lock_line(child)
+        with TestClient(app) as client:
+            response = client.post("/reminders", json=_payload(job_ids["a-1"]))
+        # Only the approved generic message, never lock internals.
+        assert response.status_code == 503
+        assert response.json() == {
+            "detail": "The database is temporarily busy; retry the request later."
+        }
+        for leaked in (
+            str(path.resolve()),
+            str(lock_path_for(path)),
+            "pid",
+            "command",
+            "acquired_at",
+            "collection",
+            "flock",
+            "Traceback",
+            "sqlite3",
+        ):
+            assert leaked not in response.text
+    finally:
+        _release_child(child)
+
+    # The contested POST changed nothing and the lock is releasable.
+    with TestClient(app) as client:
+        listing = client.get("/reminders")
+        recovery = client.post("/reminders", json=_payload(job_ids["a-1"]))
+
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 0
+    assert recovery.status_code == 200
+    assert _row_count(path, "reminders") == 1
+
+
+def test_lock_cleanup_after_error_responses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    # Trigger domain validation, schema-level, and unknown-job errors while the
+    # lock is held; the lock must be released so the next request succeeds.
+    with TestClient(app) as client:
+        invalid = client.post("/reminders", json=_payload(job_ids["a-1"], kind="bogus"))
+        schema_invalid = client.post("/reminders", json=_payload(0))
+        unknown = client.post("/reminders", json=_payload(9999))
+        valid = client.post("/reminders", json=_payload(job_ids["a-1"]))
+
+    assert invalid.status_code == 422
+    assert schema_invalid.status_code == 422
+    assert unknown.status_code == 404
+    assert valid.status_code == 200
+    assert _row_count(path, "reminders") == 1
+
+
+def test_transaction_rollback_on_insert_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+
+    def fail_insert(*args: object, **kwargs: object) -> int:
+        raise sqlite3.OperationalError("simulated insert failure")
+
+    monkeypatch.setattr("careeros.reminders.service._insert_reminder", fail_insert)
+    _set_database(monkeypatch, path)
+    with TestClient(app) as client:
+        response = client.post("/reminders", json=_payload(job_ids["a-1"]))
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "The database schema is unavailable (run 'careeros collect "
+        "<source>' to initialize it)."
+    )
+
+    monkeypatch.undo()
+    _set_database(monkeypatch, path)
+
+    # The whole mutation rolled back: no partial reminder row survives.
+    assert _row_count(path, "reminders") == 0
+
+    # The lock is releasable and a later valid request succeeds.
+    with TestClient(app) as client:
+        recovery = client.post("/reminders", json=_payload(job_ids["a-1"]))
+    assert recovery.status_code == 200
+    assert _row_count(path, "reminders") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Notification separation
+# --------------------------------------------------------------------------- #
+
+
+def test_creation_creates_no_notification_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.post("/reminders", json=_payload(job_ids["a-1"]))
+
+    assert response.status_code == 200
+    # Reminder creation never creates notification rows; delivery stays out of
+    # scope and is claimed later only by the notification worker.
+    assert _row_count(path, "reminder_notifications") == 0
+
+
+# --------------------------------------------------------------------------- #
+# Privacy
+# --------------------------------------------------------------------------- #
+
+
+def test_privacy_leak_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    with connect(path) as connection:
+        set_application_status(
+            connection,
+            job_id=job_ids["a-1"],
+            status="applied",
+            note="secret-cv-note",
+            now=_EPOCH,
+        )
+        set_decision(
+            connection,
+            job_id=job_ids["b-1"],
+            decision="shortlist",
+            note="secret-review-note",
+            now=_EPOCH,
+        )
+        add_reminder(
+            connection,
+            job_id=job_ids["c-1"],
+            kind="follow_up",
+            due_at="2026-08-10T14:00:00+00:00",
+            message="secret-reminder-message",
+            now=_EPOCH,
+        )
+    _set_database(monkeypatch, path)
+
+    responses = []
+    with TestClient(app) as client:
+        created = client.post("/reminders", json=_payload(job_ids["a-1"]))
+        responses.append(created)
+        responses.append(client.get("/reminders"))
+        responses.append(client.get(f"/reminders/{created.json()['reminder_id']}"))
+        responses.append(client.post("/reminders", json=_payload(9999)))
+        responses.append(
+            client.post("/reminders", json=_payload(job_ids["a-1"], kind="bogus"))
+        )
+        responses.append(client.get("/applications"))
+        responses.append(client.get(f"/applications/{job_ids['a-1']}"))
+        responses.append(client.get(f"/applications/{job_ids['a-1']}/history"))
+        responses.append(client.get("/review-decisions"))
+
+    for response in responses:
+        for leaked in (
+            "secret-cv-note",
+            "secret-review-note",
+            "secret-reminder-message",
+            "note",
+            "latest_note",
+            "message",
+            "description",
+            "profile_path",
+            "profile",
+            "reasons",
+            "score_components",
+            "feedback",
+            "conflict",
+            "notification",
+            "attempt",
+            "backend",
+            str(path),
+            str(lock_path_for(path)),
+            "Traceback",
+            "sqlite3",
+            "pid",
+            "command",
+        ):
+            assert leaked not in response.text, (
+                f"{leaked!r} leaked in {response.status_code} response"
+            )
+
+
+# --------------------------------------------------------------------------- #
+# Determinism
+# --------------------------------------------------------------------------- #
+
+
+def _exercise_sequence(client: TestClient, job_id: int) -> tuple:
+    first = client.post("/reminders", json=_payload(job_id))
+    second = client.post("/reminders", json=_payload(job_id))
+    listing = client.get("/reminders")
+    return (
+        first.status_code,
+        first.json(),
+        second.status_code,
+        second.json(),
+        listing.status_code,
+        listing.json()["total"],
+    )
+
+
+def test_repeated_posts_and_reads_are_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    left = tmp_path / "left.sqlite3"
+    right = tmp_path / "right.sqlite3"
+    left_ids = _seed_jobs(left)
+    right_ids = _seed_jobs(right)
+    _set_database(monkeypatch, left)
+    with TestClient(app) as client:
+        left_result = _exercise_sequence(client, left_ids["a-1"])
+    _set_database(monkeypatch, right)
+    with TestClient(app) as client:
+        right_result = _exercise_sequence(client, right_ids["a-1"])
+
+    # Structurally deterministic across equivalent databases: identical shapes
+    # and values except naturally generated identifiers/timestamps, which the
+    # reminder domain does not freeze.
+    assert left_result[0] == right_result[0] == 200
+    assert left_result[2] == right_result[2] == 200
+    assert left_result[4] == right_result[4] == 200
+    assert left_result[5] == right_result[5] == 2
+    for result in (left_result, right_result):
+        assert result[1]["kind"] == "follow_up"
+        assert result[1]["due_at"] == "2026-08-10T14:00:00+00:00"
+        assert result[1]["completed_at"] is None
+        assert list(result[1]) == _ITEM_FIELDS
+        assert result[1]["reminder_id"] != result[3]["reminder_id"]
+
+
+# --------------------------------------------------------------------------- #
+# Regression: prior endpoints unchanged
+# --------------------------------------------------------------------------- #
+
+
+def test_prior_endpoints_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids = _seed_jobs(path)
+    with connect(path) as connection:
+        set_application_status(
+            connection,
+            job_id=job_ids["a-1"],
+            status="applied",
+            now=_EPOCH,
+        )
+        set_decision(
+            connection,
+            job_id=job_ids["b-1"],
+            decision="shortlist",
+            now=_EPOCH,
+        )
+        add_reminder(
+            connection,
+            job_id=job_ids["c-1"],
+            kind="follow_up",
+            due_at="2026-08-11T09:00:00+00:00",
+            now=_EPOCH,
+        )
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        health = client.get("/health")
+        jobs = client.get("/jobs")
+        show = client.get(f"/jobs/{job_ids['a-1']}")
+        missing = client.get("/jobs/9999")
+        stats = client.get("/sources/stats")
+        applications = client.get("/applications")
+        detail = client.get(f"/applications/{job_ids['a-1']}")
+        history = client.get(f"/applications/{job_ids['a-1']}/history")
+        application_put = client.put(
+            f"/applications/{job_ids['c-1']}", json={"status": "interested"}
+        )
+        reminders = client.get("/reminders")
+        created = client.post("/reminders", json=_payload(job_ids["a-1"]))
+        groups = client.get("/groups")
+        summary = client.get("/groups/summary")
+        ranked = client.post("/ranked-jobs", json={"profile": {}})
+        queue = client.post("/review-queue", json={"profile": {}})
+        decisions = client.get("/review-decisions")
+        decision_detail = client.get(f"/review-decisions/{job_ids['b-1']}")
+        decision_put = client.put(
+            f"/review-decisions/{job_ids['c-1']}", json={"decision": "shortlist"}
+        )
+        decision_delete = client.delete(f"/review-decisions/{job_ids['c-1']}")
+        saved = client.get("/saved-searches")
+        saved_detail = client.get("/saved-searches/none")
+        execute_missing = client.post("/saved-searches/none/execute", json={})
+
+    assert health.status_code == 200
+    assert health.json() == {
+        "status": "ok",
+        "database": "present",
+        "schema_version": SCHEMA_VERSION,
+    }
+    assert jobs.status_code == 200
+    assert jobs.json()["total"] == 3
+    assert show.status_code == 200
+    assert show.json()["title"] == "Senior Engineer"
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "No job found with ID 9999."}
+    assert stats.status_code == 200
+    assert stats.json()["total"] == len(COLLECTORS)
+    assert applications.status_code == 200
+    assert applications.json()["total"] == 1
+    assert detail.status_code == 200
+    assert detail.json()["current_status"] == "applied"
+    assert history.status_code == 200
+    assert history.json()["total"] == 1
+    assert application_put.status_code == 200
+    assert reminders.status_code == 200
+    assert reminders.json()["total"] == 1
+    assert created.status_code == 200
+    assert created.json()["kind"] == "follow_up"
+    assert groups.status_code == 200
+    assert groups.json()["total"] == 3
+    assert summary.status_code == 200
+    assert summary.json()["distinct_opportunities"] == 3
+    assert ranked.status_code == 200
+    assert ranked.json()["total"] == 3
+    assert queue.status_code == 200
+    assert decisions.status_code == 200
+    assert decision_detail.status_code == 200
+    assert decision_detail.json()["decision"] == "shortlist"
+    assert decision_put.status_code == 200
+    assert decision_delete.status_code == 200
+    assert saved.status_code == 200
+    assert saved.json()["total"] == 0
+    assert saved_detail.status_code == 404
+    assert execute_missing.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# No CLI import
+# --------------------------------------------------------------------------- #
+
+
+def test_api_does_not_import_careeros_cli() -> None:
+    api_root = _SRC / "careeros" / "api"
+    violations: list[str] = []
+    for path in sorted(api_root.rglob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                if name == "careeros.cli" or name.startswith("careeros.cli."):
+                    violations.append(f"{path.relative_to(_SRC)}: {name}")
+    assert violations == []

@@ -195,6 +195,26 @@ class ReminderListResponse(BaseModel):
     limit: int
 
 
+class ReminderCreateRequest(BaseModel):
+    """Request body for ``POST /reminders``.
+
+    ``job_id`` must reference an existing stored job; ``kind`` and ``due_at``
+    are validated by the existing reminder domain (``validate_kind`` and
+    ``parse_due_at``), which this schema deliberately does not duplicate.
+    ``due_at`` must be a full ISO-8601 timestamp with an explicit UTC offset
+    (``Z`` accepted); naive and date-only values are rejected by the domain.
+    Unknown body fields — including any ``message`` or ``note`` — are rejected
+    with ``422``: this mutation request uses ``extra="forbid"`` so reminder
+    free text is never accepted, persisted, or returned by the HTTP API.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: Annotated[int, Field(ge=1)]
+    kind: str
+    due_at: str
+
+
 class SavedSearchItem(BaseModel):
     """One stored saved-search definition for the HTTP API.
 
@@ -583,6 +603,7 @@ __all__: tuple[str, ...] = (
     "RankedGroupItem",
     "RankedJobItem",
     "RankedJobsResponse",
+    "ReminderCreateRequest",
     "ReminderItem",
     "ReminderListResponse",
     "ReviewDecisionEvent",

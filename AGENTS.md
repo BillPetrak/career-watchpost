@@ -663,15 +663,20 @@ against a candidate profile submitted inline in the request body, and
 `POST /saved-searches/{name}/execute` executes a stored saved-search workflow
 (search or rank mode) through the shared execution pipeline. All three create
 no resource. `PUT /review-decisions/{job_id}`,
-`DELETE /review-decisions/{job_id}`, and
-`PUT /applications/{job_id}` are the slice's mutation endpoints:
+`DELETE /review-decisions/{job_id}`,
+`PUT /applications/{job_id}`, and
+`POST /reminders` are the slice's mutation endpoints:
 `PUT /review-decisions/{job_id}` sets or replaces one job's current review
 decision through the shared `careeros.review.service.set_decision` domain
 service, `DELETE /review-decisions/{job_id}` clears one job's current review
 decision through the shared `careeros.review.service.clear_decision` domain
-service, and `PUT /applications/{job_id}` starts tracking a job or moves it
+service, `PUT /applications/{job_id}` starts tracking a job or moves it
 through the application lifecycle through the shared
-`careeros.applications.service.set_application_status` domain service; each
+`careeros.applications.service.set_application_status` domain service, and
+`POST /reminders` adds a local follow-up reminder for a stored job through the
+shared `careeros.reminders.service.add_reminder` domain service
+(intentionally non-idempotent, never accepts a message, and never creates
+notification attempts or triggers notification delivery); each
 domain service owns the transaction and audit event. HTTP writes run on a
 `writable_connection` (see
 `src/careeros/api/deps.py`): the configured database file must already exist (a
@@ -681,10 +686,12 @@ before the connection is opened and held for the whole request (cross-process
 `flock`, same lock the CLI/collector writers use), lock contention maps to a
 privacy-safe `503`, and the domain service — never the connection dependency —
 owns commit/rollback. The mutations return the same privacy-safe
-`ReviewDecisionItem` / `ApplicationItem` representations as
-`GET /review-decisions/{job_id}` / `GET /applications/{job_id}` and
+`ReviewDecisionItem` / `ApplicationItem` / `ReminderItem` representations as
+`GET /review-decisions/{job_id}` / `GET /applications/{job_id}` /
+`GET /reminders/{reminder_id}` and
 never accept or expose review or application notes (`note` in either request
-body is a `422`).
+body is a `422`), nor reminder messages (`message` in a `POST /reminders` body
+is a `422`).
 The database path comes
 from `CAREEROS_DATABASE` (see
 `src/careeros/settings.py`), read per request with the standard library; a
@@ -819,6 +826,38 @@ canonical `No job found with ID {id}.` message locally.
   `No reminder found with ID {reminder_id}.` message; a defensively-detected
   reminder whose job is missing returns `404` with `No job found with ID
   {job_id}.`. Non-integer path input returns FastAPI's normal `422`.
+- `POST /reminders` — the slice's reminder-creation mutation endpoint. Adds a
+  local follow-up reminder for an existing stored job through the shared
+  `careeros.reminders.service.add_reminder` domain service, which owns the
+  insert, the transaction commit, and rollback on any `sqlite3.Error`; the
+  route performs no SQL. The request body is
+  `{"job_id": N, "kind": "interview", "due_at": "2026-08-10T14:00:00Z"}` via a
+  dedicated `ReminderCreateRequest` model with `extra="forbid"`: unknown body
+  fields — including any `message` or `note` — are rejected with `422`, and
+  reminder free text is never accepted, persisted, or returned by this
+  endpoint. `job_id` must be `>= 1` (`422` otherwise); `kind` is validated by
+  the shared `validate_kind` vocabulary (`follow_up`, `interview`, `offer`,
+  `review`, `custom`) and `due_at` by the shared `parse_due_at` rules (a full
+  ISO-8601 timestamp with an explicit UTC offset; `Z` accepted; naive and
+  date-only values rejected), so an invalid value returns `422` with the
+  canonical domain validation text. An unknown job returns `404` with the
+  canonical `No job found with ID {job_id}.` message. Every successful `POST`
+  returns `200` with the canonical `ReminderItem` projection (identical to the
+  `GET` detail shape, exact field order `reminder_id`, `job_id`, `kind`,
+  `due_at`, `completed_at` (`null` on creation), `created_at`, `updated_at`,
+  `job`). Creation is **intentionally non-idempotent**: two identical valid
+  POSTs create two distinct reminder rows with distinct `reminder_id`s (there
+  is no idempotency key, uniqueness constraint, or duplicate suppression, and
+  multiple reminders per job are supported). Creation never creates
+  `reminder_notifications` rows, never triggers notification delivery, and
+  never contacts any external service. The mutation runs on
+  `writable_connection` like the other write endpoints: the configured database
+  must already exist (missing/uninitialized/malformed databases are the
+  canonical privacy-safe `500` and nothing is ever created), the per-database
+  `collection_lock` is held for the whole request (lock contention maps to a
+  privacy-safe `503` with a fixed retry-later message that never exposes lock
+  internals), and the domain service — never the dependency — owns
+  commit/rollback. The lock is always releasable after 404/422/500 responses.
 - `GET /review-decisions` — current review decisions joined with their jobs,
   newest first (`updated_at DESC, id DESC`, the shared
   `database.review.list_decisions` order) with deterministic `offset`/`limit`
