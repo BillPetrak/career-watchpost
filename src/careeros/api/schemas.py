@@ -327,6 +327,22 @@ class ReviewDecisionHistoryResponse(BaseModel):
     limit: int
 
 
+class ReviewDecisionRequest(BaseModel):
+    """Request body for ``PUT /review-decisions/{job_id}``.
+
+    ``decision`` is validated against the shared review-decision vocabulary
+    (``shortlist``, ``dismiss``, ``review_later``) by the existing domain
+    validator; no other field is supported. Unknown body fields — including any
+    ``note`` — are rejected with ``422``: this mutation request uses
+    ``extra="forbid"`` so an unsupported field is never silently accepted and
+    discarded.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str
+
+
 class Group(BaseModel):
     """A distinct opportunity: one canonical duplicate group, or one ungrouped job.
 
@@ -539,6 +555,7 @@ __all__: tuple[str, ...] = (
     "ReviewDecisionHistoryResponse",
     "ReviewDecisionItem",
     "ReviewDecisionListResponse",
+    "ReviewDecisionRequest",
     "ReviewQueueItem",
     "ReviewQueueRequest",
     "ReviewQueueResponse",

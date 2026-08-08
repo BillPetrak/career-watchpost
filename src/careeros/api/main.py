@@ -11,7 +11,7 @@ and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /review-decisions/{job_id}/history``, ``GET /saved-searches``, and
 ``GET /saved-searches/{name}``) plus three computation-only ``POST``
 endpoints: ``POST /ranked-jobs``, ``POST /review-queue``, and
-``POST /saved-searches/{name}/execute``. Every endpoint is
+``POST /saved-searches/{name}/execute``. Every read and computation endpoint is
 strictly read-only with respect to the database and filesystem: nothing creates
 a database file, directory, or schema, nothing writes, and nothing makes network
 calls. Both ``POST /ranked-jobs`` and ``POST /review-queue`` compute a ranking
@@ -22,14 +22,21 @@ executes a stored saved-search workflow (search or rank mode) through the shared
 execution pipeline against the current database, honoring the stored definition
 including its ``result_limit`` cap; it never reads the stored ``profile_path``
 and rank mode requires the candidate profile inline (search mode rejects one).
-``POST /ranked-jobs`` ranks stored jobs against the inline
-profile as flat raw jobs by default, or one result per canonical duplicate
-group when ``grouped=true``. ``POST /review-queue`` ranks the personalized
-daily review queue (opportunities needing review) against the inline profile,
-collapsing cross-source duplicates per canonical group by default. The
-review-decisions endpoints expose current review decisions and their
-append-only transition history joined with the canonical job projection, the
-applications endpoints expose tracked applications and their append-only
+``PUT /review-decisions/{job_id}`` is the slice's first mutation endpoint: it
+sets or replaces one job's current review decision through the shared
+``review.service.set_decision`` domain service, which owns the transaction and
+audit event. The mutation runs on a writable connection under the per-database
+``collection_lock`` (contention maps to a privacy-safe ``503``) and requires an
+already-initialized database (missing/uninitialized/malformed databases are the
+canonical privacy-safe ``500``); it never initializes the database and never
+accepts or exposes review notes. ``POST /ranked-jobs`` ranks stored jobs against
+the inline profile as flat raw jobs by default, or one result per canonical
+duplicate group when ``grouped=true``. ``POST /review-queue`` ranks the
+personalized daily review queue (opportunities needing review) against the
+inline profile, collapsing cross-source duplicates per canonical group by
+default. The review-decisions endpoints expose current review decisions and
+their append-only transition history joined with the canonical job projection,
+the applications endpoints expose tracked applications and their append-only
 status-transition history, and the saved-searches endpoints expose stored
 saved-search definitions for viewing only (list and detail; execution is a
 separate computation endpoint). Application notes, event notes (beyond status
@@ -48,7 +55,11 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from careeros.api.deps import read_only_connection
+from careeros.api.deps import (
+    DATABASE_UNAVAILABLE_MESSAGE,
+    read_only_connection,
+    writable_connection,
+)
 from careeros.api.schemas import (
     ApplicationHistoryEvent,
     ApplicationHistoryResponse,
@@ -73,6 +84,7 @@ from careeros.api.schemas import (
     ReviewDecisionHistoryResponse,
     ReviewDecisionItem,
     ReviewDecisionListResponse,
+    ReviewDecisionRequest,
     ReviewQueueItem,
     ReviewQueueRequest,
     ReviewQueueResponse,
@@ -123,16 +135,18 @@ from careeros.reminders.models import (
 )
 from careeros.reminders.service import list_reminders
 from careeros.review.models import (
-    ValidationError as ReviewValidationError,
+    UnknownJobError,
+    validate_decision,
 )
 from careeros.review.models import (
-    validate_decision,
+    ValidationError as ReviewValidationError,
 )
 from careeros.review.service import (
     build_queue,
     get_decision,
     list_decision_events,
     list_decisions,
+    set_decision,
 )
 from careeros.saved_searches.execution import (
     execute_rank,
@@ -174,11 +188,6 @@ MAX_FETCH_QUEUE = 1_000_000
 # endpoints). Decision and event counts are bounded by the stored jobs they
 # attach to; this mirrors the export package's record cap without importing it.
 MAX_FETCH_DECISIONS = 1_000_000
-
-DATABASE_UNAVAILABLE_MESSAGE = (
-    "The database schema is unavailable (run 'careeros collect <source>' to "
-    "initialize it)."
-)
 
 
 def _no_job_found_message(job_id: int) -> str:
@@ -243,8 +252,12 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="CareerOS API",
         description=(
-            "Read-only REST access to stored CareerOS state. Never writes, "
-            "never fetches jobs, and never contacts external services."
+            "REST access to stored CareerOS state. Reads and computations are "
+            "read-only; the single mutation endpoint "
+            "PUT /review-decisions/{job_id} writes through the shared "
+            "review-decision service under the collection lock. Never fetches "
+            "jobs, never initializes the database, and never contacts external "
+            "services."
         ),
         version="0.1.0",
     )
@@ -584,6 +597,53 @@ def create_app() -> FastAPI:
                     detail=f"No review decision found for job {job_id}.",
                 )
         raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
+
+    @app.put("/review-decisions/{job_id}", response_model=ReviewDecisionItem)
+    def set_review_decision(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        job_id: int,
+        payload: ReviewDecisionRequest,
+    ) -> ReviewDecisionItem:
+        """Set or replace the current review decision for one job (write).
+
+        The first mutation endpoint in the CareerOS API. All decision logic
+        lives in the shared ``review.service.set_decision`` domain service:
+        this route only validates the request body, translates known domain
+        errors, and returns the canonical ``ReviewDecisionItem`` projection
+        (exactly the shape ``GET /review-decisions/{job_id}`` returns). The
+        writable connection runs under the per-database collection lock, so
+        this endpoint coordinates with every CLI/collector writer; lock
+        contention maps to a privacy-safe ``503`` and a missing or uninitialized
+        database to the canonical privacy-safe ``500``. Repeating the same
+        decision is idempotent (no new event, no timestamp mutation). ``note``
+        is never accepted or exposed.
+        """
+        try:
+            set_decision(connection, job_id=job_id, decision=payload.decision)
+        except ReviewValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        except UnknownJobError:
+            raise HTTPException(
+                status_code=404, detail=_no_job_found_message(job_id)
+            ) from None
+        stored = get_job_by_id(connection, job_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
+        decision = get_decision(connection, job_id=job_id)
+        if decision is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No review decision found for job {job_id}.",
+            )
+        return ReviewDecisionItem.model_validate(
+            review_decision_item_dict(
+                DecisionListItem(
+                    decision=decision,
+                    job=stored,
+                    latest_note=None,
+                )
+            )
+        )
 
     @app.get(
         "/review-decisions/{job_id}/history",
