@@ -327,6 +327,21 @@ class ReviewDecisionHistoryResponse(BaseModel):
     limit: int
 
 
+class ClearReviewDecisionResponse(BaseModel):
+    """The result of clearing one job's current review decision.
+
+    ``job_id`` echoes the cleared job and ``changed`` is ``True`` when a current
+    decision actually existed and was removed, ``False`` when the job was
+    already unreviewed (an idempotent no-op that appends no event and mutates no
+    row). The response carries only these two fields: review decision notes and
+    the decision event history are local workflow state the HTTP API never
+    exposes, and after a clear there is no current decision to project.
+    """
+
+    job_id: int
+    changed: bool
+
+
 class ApplicationStatusRequest(BaseModel):
     """Request body for ``PUT /applications/{job_id}``.
 
@@ -551,6 +566,7 @@ __all__: tuple[str, ...] = (
     "ApplicationListResponse",
     "ApplicationStatusRequest",
     "CandidateProfileRequest",
+    "ClearReviewDecisionResponse",
     "CollectionRun",
     "CollectionRunListResponse",
     "FieldCoverageStats",

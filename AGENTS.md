@@ -662,10 +662,13 @@ computation-only: `POST /ranked-jobs` and `POST /review-queue` rank stored jobs
 against a candidate profile submitted inline in the request body, and
 `POST /saved-searches/{name}/execute` executes a stored saved-search workflow
 (search or rank mode) through the shared execution pipeline. All three create
-no resource. `PUT /review-decisions/{job_id}` and
+no resource. `PUT /review-decisions/{job_id}`,
+`DELETE /review-decisions/{job_id}`, and
 `PUT /applications/{job_id}` are the slice's mutation endpoints:
 `PUT /review-decisions/{job_id}` sets or replaces one job's current review
 decision through the shared `careeros.review.service.set_decision` domain
+service, `DELETE /review-decisions/{job_id}` clears one job's current review
+decision through the shared `careeros.review.service.clear_decision` domain
 service, and `PUT /applications/{job_id}` starts tracking a job or moves it
 through the application lifecycle through the shared
 `careeros.applications.service.set_application_status` domain service; each
@@ -862,6 +865,28 @@ canonical `No job found with ID {id}.` message locally.
   — owns commit/rollback. A failure between writing the current decision and its
   audit event rolls the entire mutation back, and the lock is always
   releasable.
+- `DELETE /review-decisions/{job_id}` — clear one job's current review decision,
+  returning it to unreviewed. All logic lives in the shared
+  `review.service.clear_decision` domain service, which owns the job existence
+  check, the decision-row deletion, the append-only audit event, transaction
+  commit, and rollback; the route performs no SQL and declares no request body
+  (a sent body is never parsed, stored, or logged, and `clear_decision` always
+  writes a `note` of `NULL`). A real clear removes the current `review_decisions`
+  row and appends exactly one `review_events` row with `old_decision` set to the
+  prior value and `new_decision` `NULL`, committing atomically; afterwards
+  `GET /review-decisions/{job_id}` returns the canonical no-current-decision
+  `404`, the history endpoint shows the clear as the newest event, and the job
+  becomes eligible again under the unreviewed review-queue semantics. Clearing
+  an already-unreviewed job is an idempotent no-op that appends no event and
+  mutates no row. Every successful `DELETE` on a valid existing job returns
+  `200` with the exact `ClearReviewDecisionResponse` field order `job_id`,
+  `changed` (`true` when a decision was actually cleared, `false` for the
+  idempotent no-op); `204` is never used. An unknown job returns `404` with the
+  canonical `No job found with ID {job_id}.` message; non-integer path input
+  returns FastAPI's normal `422`. The mutation runs on `writable_connection`
+  like the other write endpoints (missing/uninitialized/malformed databases are
+  the canonical privacy-safe `500`, lock contention a privacy-safe `503`, and
+  the domain service — never the dependency — owns commit/rollback).
 - `GET /review-decisions/{job_id}/history` — a job's append-only review-decision
   transition history newest first (`created_at DESC, id DESC`, the shared
   `database.review.list_decision_events` order) with deterministic

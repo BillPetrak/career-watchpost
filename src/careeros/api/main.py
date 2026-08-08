@@ -22,10 +22,13 @@ executes a stored saved-search workflow (search or rank mode) through the shared
 execution pipeline against the current database, honoring the stored definition
 including its ``result_limit`` cap; it never reads the stored ``profile_path``
 and rank mode requires the candidate profile inline (search mode rejects one).
-``PUT /review-decisions/{job_id}`` and ``PUT /applications/{job_id}`` are the
-slice's mutation endpoints: ``PUT /review-decisions/{job_id}`` sets or replaces
+``PUT /review-decisions/{job_id}``, ``DELETE /review-decisions/{job_id}``, and
+``PUT /applications/{job_id}`` are the slice's mutation endpoints:
+``PUT /review-decisions/{job_id}`` sets or replaces
 one job's current review decision through the shared ``review.service.set_decision``
-domain service, and ``PUT /applications/{job_id}`` starts tracking a job or moves
+domain service, ``DELETE /review-decisions/{job_id}`` clears one job's current
+review decision through the shared ``review.service.clear_decision`` domain
+service, and ``PUT /applications/{job_id}`` starts tracking a job or moves
 it through the application lifecycle through the shared
 ``applications.service.set_application_status`` domain service. Each domain
 service owns the transaction and audit event. The mutations run on a writable
@@ -72,6 +75,7 @@ from careeros.api.schemas import (
     ApplicationListResponse,
     ApplicationStatusRequest,
     CandidateProfileRequest,
+    ClearReviewDecisionResponse,
     CollectionRun,
     CollectionRunListResponse,
     Group,
@@ -153,6 +157,7 @@ from careeros.review.models import (
 )
 from careeros.review.service import (
     build_queue,
+    clear_decision,
     get_decision,
     list_decision_events,
     list_decisions,
@@ -264,7 +269,8 @@ def create_app() -> FastAPI:
         description=(
             "REST access to stored CareerOS state. Reads and computations are "
             "read-only; the mutation endpoints "
-            "PUT /review-decisions/{job_id} and PUT /applications/{job_id} write "
+            "PUT /review-decisions/{job_id}, DELETE /review-decisions/{job_id}, "
+            "and PUT /applications/{job_id} write "
             "through the shared review-decision and application-tracking services "
             "under the collection lock. Never fetches "
             "jobs, never initializes the database, and never contacts external "
@@ -707,6 +713,37 @@ def create_app() -> FastAPI:
                 )
             )
         )
+
+    @app.delete(
+        "/review-decisions/{job_id}", response_model=ClearReviewDecisionResponse
+    )
+    def clear_review_decision(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        job_id: int,
+    ) -> ClearReviewDecisionResponse:
+        """Clear one job's review decision, returning it to unreviewed (write).
+
+        All decision logic
+        lives in the shared ``review.service.clear_decision`` domain service:
+        this route only translates the canonical unknown-job error and returns
+        the two-field ``ClearReviewDecisionResponse``. The writable connection
+        runs under the per-database collection lock, so this endpoint
+        coordinates with every CLI/collector writer; lock contention maps to a
+        privacy-safe ``503`` and a missing or uninitialized database to the
+        canonical privacy-safe ``500``. A real clear removes the current
+        decision row and appends one history event whose ``new_decision`` is
+        ``None``, committing atomically; clearing an already-unreviewed job is
+        an idempotent no-op (``changed=false``, no new event, no row mutation).
+        The route declares no request body, never accepts a note, and never
+        exposes decision notes.
+        """
+        try:
+            result = clear_decision(connection, job_id=job_id)
+        except UnknownJobError:
+            raise HTTPException(
+                status_code=404, detail=_no_job_found_message(job_id)
+            ) from None
+        return ClearReviewDecisionResponse(job_id=job_id, changed=result.changed)
 
     @app.get(
         "/review-decisions/{job_id}/history",
