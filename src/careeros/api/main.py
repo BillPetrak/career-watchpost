@@ -23,18 +23,23 @@ execution pipeline against the current database, honoring the stored definition
 including its ``result_limit`` cap; it never reads the stored ``profile_path``
 and rank mode requires the candidate profile inline (search mode rejects one).
 ``PUT /review-decisions/{job_id}``, ``DELETE /review-decisions/{job_id}``,
-``PUT /applications/{job_id}``, and
-``POST /reminders`` are the slice's mutation endpoints:
+``PUT /applications/{job_id}``,
+``POST /reminders``, and
+``PUT /reminders/{reminder_id}/complete`` are the slice's mutation endpoints:
 ``PUT /review-decisions/{job_id}`` sets or replaces
 one job's current review decision through the shared ``review.service.set_decision``
 domain service, ``DELETE /review-decisions/{job_id}`` clears one job's current
 review decision through the shared ``review.service.clear_decision`` domain
 service, ``PUT /applications/{job_id}`` starts tracking a job or moves
 it through the application lifecycle through the shared
-``applications.service.set_application_status`` domain service, and
+``applications.service.set_application_status`` domain service,
 ``POST /reminders`` adds a local follow-up reminder for a stored job through
 the shared ``reminders.service.add_reminder`` domain service (intentionally
 non-idempotent, never accepts a message, and never triggers notification
+delivery), and
+``PUT /reminders/{reminder_id}/complete`` marks an open reminder completed
+through the shared ``reminders.service.complete_reminder`` domain service
+(idempotent, never accepts a message, and never triggers notification
 delivery). Each domain
 service owns the transaction and audit event. The mutations run on a writable
 connection under the per-database
@@ -151,6 +156,9 @@ from careeros.reminders.models import (
     UnknownJobError as ReminderUnknownJobError,
 )
 from careeros.reminders.models import (
+    UnknownReminderError as ReminderUnknownReminderError,
+)
+from careeros.reminders.models import (
     ValidationError as ReminderValidationError,
 )
 from careeros.reminders.models import (
@@ -158,6 +166,7 @@ from careeros.reminders.models import (
 )
 from careeros.reminders.service import (
     add_reminder,
+    complete_reminder,
     list_reminders,
 )
 from careeros.review.models import (
@@ -282,7 +291,8 @@ def create_app() -> FastAPI:
             "REST access to stored CareerOS state. Reads and computations are "
             "read-only; the mutation endpoints "
             "PUT /review-decisions/{job_id}, DELETE /review-decisions/{job_id}, "
-            "PUT /applications/{job_id}, and POST /reminders write "
+            "PUT /applications/{job_id}, POST /reminders, and "
+            "PUT /reminders/{reminder_id}/complete write "
             "through the shared review-decision, application-tracking, and "
             "reminder domain services "
             "under the collection lock. Never fetches "
@@ -658,6 +668,41 @@ def create_app() -> FastAPI:
         if job is None:
             raise HTTPException(
                 status_code=404, detail=_no_job_found_message(payload.job_id)
+            )
+        return ReminderItem.model_validate(
+            reminder_item_dict(ReminderListEntry(reminder=stored, job=job))
+        )
+
+    @app.put("/reminders/{reminder_id}/complete", response_model=ReminderItem)
+    def complete_reminder_endpoint(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        reminder_id: int,
+    ) -> ReminderItem:
+        """Mark an open reminder completed (write).
+
+        All logic lives in the shared ``reminders.service.complete_reminder``
+        domain service: this route only translates the canonical unknown-reminder
+        error and returns the canonical ``ReminderItem`` projection (exactly the
+        shape ``GET /reminders/{reminder_id}`` returns). The writable connection
+        runs under the per-database collection lock, so this endpoint
+        coordinates with every CLI/collector writer; lock contention maps to a
+        privacy-safe ``503`` and a missing or uninitialized database to the
+        canonical privacy-safe ``500``. Completing an already-completed reminder
+        is an idempotent no-op (no row mutation, original completion time
+        preserved). The route declares no request body, never accepts a message,
+        and never creates notification attempts or triggers notification
+        delivery.
+        """
+        try:
+            stored, _changed = complete_reminder(connection, reminder_id=reminder_id)
+        except ReminderUnknownReminderError:
+            raise HTTPException(
+                status_code=404, detail=_no_reminder_found_message(reminder_id)
+            ) from None
+        job = get_job_by_id(connection, stored.job_id)
+        if job is None:
+            raise HTTPException(
+                status_code=404, detail=_no_job_found_message(stored.job_id)
             )
         return ReminderItem.model_validate(
             reminder_item_dict(ReminderListEntry(reminder=stored, job=job))

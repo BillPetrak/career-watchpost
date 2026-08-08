@@ -664,19 +664,24 @@ against a candidate profile submitted inline in the request body, and
 (search or rank mode) through the shared execution pipeline. All three create
 no resource. `PUT /review-decisions/{job_id}`,
 `DELETE /review-decisions/{job_id}`,
-`PUT /applications/{job_id}`, and
-`POST /reminders` are the slice's mutation endpoints:
+`PUT /applications/{job_id}`,
+`POST /reminders`, and
+`PUT /reminders/{reminder_id}/complete` are the slice's mutation endpoints:
 `PUT /review-decisions/{job_id}` sets or replaces one job's current review
 decision through the shared `careeros.review.service.set_decision` domain
 service, `DELETE /review-decisions/{job_id}` clears one job's current review
 decision through the shared `careeros.review.service.clear_decision` domain
 service, `PUT /applications/{job_id}` starts tracking a job or moves it
 through the application lifecycle through the shared
-`careeros.applications.service.set_application_status` domain service, and
+`careeros.applications.service.set_application_status` domain service,
 `POST /reminders` adds a local follow-up reminder for a stored job through the
 shared `careeros.reminders.service.add_reminder` domain service
 (intentionally non-idempotent, never accepts a message, and never creates
-notification attempts or triggers notification delivery); each
+notification attempts or triggers notification delivery), and
+`PUT /reminders/{reminder_id}/complete` marks an open reminder completed
+through the shared `careeros.reminders.service.complete_reminder` domain
+service (idempotent, never accepts a message, and never creates notification
+attempts or triggers notification delivery); each
 domain service owns the transaction and audit event. HTTP writes run on a
 `writable_connection` (see
 `src/careeros/api/deps.py`): the configured database file must already exist (a
@@ -858,6 +863,35 @@ canonical `No job found with ID {id}.` message locally.
   privacy-safe `503` with a fixed retry-later message that never exposes lock
   internals), and the domain service — never the dependency — owns
   commit/rollback. The lock is always releasable after 404/422/500 responses.
+- `PUT /reminders/{reminder_id}/complete` — the slice's reminder-completion
+  mutation endpoint. Marks an open reminder completed through the shared
+  `careeros.reminders.service.complete_reminder` domain service, which owns the
+  `UPDATE`, the transaction commit, and rollback on any `sqlite3.Error`; the
+  route performs no SQL, no commit, and no rollback. The route declares no
+  request body and no request schema: a sent HTTP request body is never
+  parsed, validated, stored, logged, or used, so reminder free text (and any
+  other sentinel field) can never influence the operation or appear in any
+  response. An unknown reminder returns `404` with the canonical `No reminder
+  found with ID {reminder_id}.` message; non-integer path input returns
+  FastAPI's normal `422`. Every successful `PUT` returns `200` with the
+  canonical `ReminderItem` projection (identical to the `GET` detail shape,
+  exact field order `reminder_id`, `job_id`, `kind`, `due_at`, `completed_at`,
+  `created_at`, `updated_at`, `job`); `completed_at` equals `updated_at` after
+  a first completion (the domain sets both to the same completion timestamp).
+  Completion is **idempotent**: repeating the identical PUT on an already
+  completed reminder is a true domain no-op that mutates no row, preserves the
+  original `completed_at`/`updated_at`, and returns a byte-deterministic
+  response for identical stored database state. Completion never creates
+  `reminder_notifications` rows, never triggers notification delivery, never
+  accepts a message, and never contacts any external service. The mutation
+  runs on `writable_connection` like the other write endpoints: the configured
+  database must already exist (missing/uninitialized/malformed databases are
+  the canonical privacy-safe `500` and nothing is ever created), the
+  per-database `collection_lock` is held for the whole request (lock
+  contention maps to a privacy-safe `503` with a fixed retry-later message
+  that never exposes lock internals), and the domain service — never the
+  dependency — owns commit/rollback. The lock is always releasable after
+  404/500/503 responses.
 - `GET /review-decisions` — current review decisions joined with their jobs,
   newest first (`updated_at DESC, id DESC`, the shared
   `database.review.list_decisions` order) with deterministic `offset`/`limit`
