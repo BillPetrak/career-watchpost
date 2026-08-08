@@ -9,14 +9,20 @@ and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /groups/{group_id}``, ``GET /review-decisions``,
 ``GET /review-decisions/{job_id}``,
 ``GET /review-decisions/{job_id}/history``, ``GET /saved-searches``, and
-``GET /saved-searches/{name}``) plus two computation-only ``POST``
-endpoints: ``POST /ranked-jobs`` and ``POST /review-queue``. Every endpoint is
+``GET /saved-searches/{name}``) plus three computation-only ``POST``
+endpoints: ``POST /ranked-jobs``, ``POST /review-queue``, and
+``POST /saved-searches/{name}/execute``. Every endpoint is
 strictly read-only with respect to the database and filesystem: nothing creates
 a database file, directory, or schema, nothing writes, and nothing makes network
-calls. Both ``POST`` endpoints compute a ranking from a candidate profile
-submitted inline in the request body and create no resource; they never read
-profile files, never persist or log the submitted profile, and never apply
-review feedback. ``POST /ranked-jobs`` ranks stored jobs against the inline
+calls. Both ``POST /ranked-jobs`` and ``POST /review-queue`` compute a ranking
+from a candidate profile submitted inline in the request body and create no
+resource; they never read profile files, never persist or log the submitted
+profile, and never apply review feedback. ``POST /saved-searches/{name}/execute``
+executes a stored saved-search workflow (search or rank mode) through the shared
+execution pipeline against the current database, honoring the stored definition
+including its ``result_limit`` cap; it never reads the stored ``profile_path``
+and rank mode requires the candidate profile inline (search mode rejects one).
+``POST /ranked-jobs`` ranks stored jobs against the inline
 profile as flat raw jobs by default, or one result per canonical duplicate
 group when ``grouped=true``. ``POST /review-queue`` ranks the personalized
 daily review queue (opportunities needing review) against the inline profile,
@@ -25,11 +31,12 @@ review-decisions endpoints expose current review decisions and their
 append-only transition history joined with the canonical job projection, the
 applications endpoints expose tracked applications and their append-only
 status-transition history, and the saved-searches endpoints expose stored
-saved-search definitions for viewing only (list and detail; execution is out of
-scope). Application notes, event notes (beyond status transition values and
-times), review decision notes, reminder messages, group matcher diagnostics,
-ranking reasons, saved-search ``profile_path`` values (local filesystem paths),
-and saved-search ``description`` values are never exposed over HTTP.
+saved-search definitions for viewing only (list and detail; execution is a
+separate computation endpoint). Application notes, event notes (beyond status
+transition values and times), review decision notes, reminder messages, group
+matcher diagnostics, ranking reasons, saved-search ``profile_path`` values
+(local filesystem paths), and saved-search ``description`` values are never
+exposed over HTTP.
 """
 
 from __future__ import annotations
@@ -69,6 +76,8 @@ from careeros.api.schemas import (
     ReviewQueueItem,
     ReviewQueueRequest,
     ReviewQueueResponse,
+    SavedSearchExecuteRequest,
+    SavedSearchExecutionResponse,
     SavedSearchItem,
     SavedSearchListResponse,
     SourceStats,
@@ -125,7 +134,11 @@ from careeros.review.service import (
     list_decision_events,
     list_decisions,
 )
-from careeros.saved_searches.execution import rank_candidates
+from careeros.saved_searches.execution import (
+    execute_rank,
+    execute_search,
+    rank_candidates,
+)
 from careeros.saved_searches.service import get_search, list_searches
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
@@ -614,7 +627,8 @@ def create_app() -> FastAPI:
 
         Viewing only: definitions are listed exactly as stored through the
         shared ``list_searches`` service (ordered case-insensitively by name
-        then id); execution is out of scope. ``profile_path`` and
+        then id); execution is a separate computation endpoint.
+        ``profile_path`` and
         ``description`` are never exposed. A missing database yields an empty
         envelope without creating a file, directory, or schema.
         """
@@ -651,6 +665,113 @@ def create_app() -> FastAPI:
                 return SavedSearchItem.model_validate(saved_search_item_dict(stored))
         raise HTTPException(
             status_code=404, detail=_no_saved_search_found_message(name)
+        )
+
+    @app.post(
+        "/saved-searches/{name}/execute",
+        response_model=SavedSearchExecutionResponse,
+    )
+    def execute_saved_search(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        name: str,
+        payload: SavedSearchExecuteRequest | None = None,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+    ) -> SavedSearchExecutionResponse:
+        """Execute a stored saved search (computation-only).
+
+        Runs the shared execution pipeline (``execute_search`` for search mode,
+        ``execute_rank`` for rank mode) against the current database, honoring
+        every stored filter, ``grouped`` flag, rank ``min_score``, and the
+        stored ``result_limit`` cap exactly as ``saved-search run`` does. The
+        stored definition is authoritative: only ``offset``/``limit`` pagination
+        is accepted, and no query override of the workflow is possible. Rank
+        mode requires an inline candidate profile (``422`` when absent) and
+        never reads the stored ``profile_path``; search mode rejects a profile
+        (``422``). Review feedback is always disabled (``feedback=None``), so
+        stored review decisions never affect scores. ``total`` is the pipeline
+        output length after the stored caps and before slicing. A missing
+        database yields the canonical saved-search ``404`` without creating a
+        file, directory, or schema; an uninitialized or malformed database
+        yields the canonical privacy-safe ``500``.
+        """
+        if connection is None:
+            raise HTTPException(
+                status_code=404, detail=_no_saved_search_found_message(name)
+            )
+        stored = get_search(connection, name)
+        if stored is None:
+            raise HTTPException(
+                status_code=404, detail=_no_saved_search_found_message(name)
+            )
+        if stored.mode == "rank":
+            request = payload or SavedSearchExecuteRequest()
+            if request.profile is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="profile is required to execute a rank-mode saved search.",
+                )
+            outcome = execute_rank(
+                connection,
+                stored,
+                profile=_to_profile(request.profile),
+                feedback=None,
+            )
+            if outcome.grouped:
+                ranked = outcome.grouped_ranked
+                return SavedSearchExecutionResponse(
+                    mode="rank",
+                    grouped=True,
+                    items=[
+                        RankedGroupItem.model_validate(ranked_group_item_dict(item))
+                        for item in ranked[offset : offset + limit]
+                    ],
+                    total=len(ranked),
+                    offset=offset,
+                    limit=limit,
+                )
+            ranked_jobs = outcome.flat_ranked
+            return SavedSearchExecutionResponse(
+                mode="rank",
+                grouped=False,
+                items=[
+                    RankedJobItem.model_validate(ranked_job_item_dict(item))
+                    for item in ranked_jobs[offset : offset + limit]
+                ],
+                total=len(ranked_jobs),
+                offset=offset,
+                limit=limit,
+            )
+        if payload is not None and payload.profile is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="profile is only valid for rank-mode saved searches.",
+            )
+        search_outcome = execute_search(connection, stored)
+        if search_outcome.grouped:
+            groups = search_outcome.groups
+            return SavedSearchExecutionResponse(
+                mode="search",
+                grouped=True,
+                items=[
+                    Group.model_validate(group_dict(group))
+                    for group in groups[offset : offset + limit]
+                ],
+                total=len(groups),
+                offset=offset,
+                limit=limit,
+            )
+        flat = search_outcome.flat
+        return SavedSearchExecutionResponse(
+            mode="search",
+            grouped=False,
+            items=[
+                Job.model_validate(job_dict(job))
+                for job in flat[offset : offset + limit]
+            ],
+            total=len(flat),
+            offset=offset,
+            limit=limit,
         )
 
     @app.get("/groups", response_model=GroupListResponse)

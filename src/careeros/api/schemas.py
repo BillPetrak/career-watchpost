@@ -237,6 +237,44 @@ class SavedSearchListResponse(BaseModel):
     limit: int
 
 
+class SavedSearchExecuteRequest(BaseModel):
+    """Request body for ``POST /saved-searches/{name}/execute``.
+
+    ``profile`` is required only for ``rank``-mode saved searches (mirroring the
+    candidate-profile file semantics through the shared
+    :class:`CandidateProfileRequest`); it must be absent for ``search``-mode
+    ones. Unknown top-level fields, including an attempted ``profile_path``
+    probe, are silently ignored and never cause filesystem access: the stored
+    ``profile_path`` of a saved search is never read or dereferenced.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    profile: CandidateProfileRequest | None = None
+
+
+class SavedSearchExecutionResponse(BaseModel):
+    """The result of executing one stored saved search.
+
+    ``mode`` is the stored definition's mode (``search`` or ``rank``) and
+    ``grouped`` the stored definition's grouping flag, echoed so the envelope is
+    self-describing. ``items`` are exactly one of the four approved shapes per
+    mode/grouping combination: canonical :class:`Job` projections (search,
+    flat), canonical :class:`Group` projections (search, grouped),
+    :class:`RankedJobItem` values (rank, flat), or :class:`RankedGroupItem`
+    values (rank, grouped). ``total`` is the length of the pipeline output
+    after the stored ``result_limit`` (and stored rank ``min_score``) caps and
+    before ``offset``/``limit`` slicing.
+    """
+
+    mode: str
+    grouped: bool
+    items: list[Job | Group | RankedJobItem | RankedGroupItem]
+    total: int
+    offset: int
+    limit: int
+
+
 class ReviewDecisionItem(BaseModel):
     """One current review decision joined with its job.
 
@@ -506,6 +544,8 @@ __all__: tuple[str, ...] = (
     "ReviewQueueResponse",
     "SavedSearchItem",
     "SavedSearchListResponse",
+    "SavedSearchExecuteRequest",
+    "SavedSearchExecutionResponse",
     "SourceStats",
     "SourceStatsListResponse",
 )

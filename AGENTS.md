@@ -656,9 +656,13 @@ codes: `0` success, `1` output/profile/database failure, `2` usage errors
 `src/careeros/api/` is a read-only FastAPI slice (optional `api` extra). Serve
 with `uv run uvicorn careeros.api:app`. The slice never fetches jobs, never
 writes, never creates a database file, directory, or schema, and never contacts
-external services. Its two POST endpoints, `POST /ranked-jobs` and
-`POST /review-queue`, are computation-only: they rank stored jobs against a
-candidate profile submitted inline in the request body and create no resource.
+external services. Its three POST endpoints, `POST /ranked-jobs`,
+`POST /review-queue`, and `POST /saved-searches/{name}/execute`, are
+computation-only: `POST /ranked-jobs` and `POST /review-queue` rank stored jobs
+against a candidate profile submitted inline in the request body, and
+`POST /saved-searches/{name}/execute` executes a stored saved-search workflow
+(search or rank mode) through the shared execution pipeline. All three create
+no resource.
 The database path comes
 from `CAREEROS_DATABASE` (see
 `src/careeros/settings.py`), read per request with the standard library; a
@@ -794,7 +798,9 @@ canonical `No job found with ID {id}.` message locally.
   are deliberately omitted. The envelope is `{items, total, offset, limit}`;
   `total` is the event count before `offset`/`limit` slicing.
 - `GET /saved-searches` — stored saved-search **definitions** for viewing only
-  (execution is out of scope; see `saved-search run` for the CLI path). Listing
+  (execution is a separate computation endpoint; see
+  `POST /saved-searches/{name}/execute` below, or `saved-search run` for the CLI
+  path). Listing
   is deterministic: ascending case-insensitive `name` then ascending `id` (the
   shared `saved_searches.service.list_searches` order, `name COLLATE NOCASE, id`),
   with standard `offset`/`limit` pagination (defaults 0/20, `limit` capped at
@@ -819,6 +825,42 @@ canonical `No job found with ID {id}.` message locally.
   same `404` without creating the file. Viewing only: the request never
   dereferences `profile_path`, never loads a profile, and never executes the
   saved search.
+- `POST /saved-searches/{name}/execute` — execute a stored saved-search
+  workflow (search or rank mode) through the shared execution pipeline
+  (`execute_search` / `execute_rank`), computation-only with the same guarantees
+  as `POST /ranked-jobs`: it never creates a resource, never writes, never reads
+  a profile file (no `profile_path` is ever accepted), and never persists or
+  logs the submitted profile. The stored definition is authoritative: its
+  query, filters, `grouped` flag, rank `min_score`, and `result_limit` cap are
+  honored exactly as `saved-search run` does, and only `offset`/`limit`
+  pagination is accepted — no query override of the workflow is possible. The
+  request body carries the optional `{"profile": {...}}` (same
+  `CandidateProfileRequest` semantics as `POST /ranked-jobs`) and is itself
+  optional: rank mode requires a non-null inline profile (`422` when absent;
+  a body of `{}` or no body at all is equivalent and still rejected for rank
+  mode), while search mode rejects a non-null profile (`422`). Unknown body
+  fields, including `profile_path` probes, are silently ignored and never cause
+  filesystem access; the stored `profile_path` of a rank-mode saved search is
+  never read or dereferenced. Review feedback is always excluded
+  (`feedback=None`), so stored review decisions never affect scores. The
+  envelope is `{items, total, offset, limit}` wrapped with the echoed `mode`
+  (`search`/`rank`) and `grouped` flags, so the response is self-describing;
+  `total` is the pipeline output length after the stored `result_limit` (and
+  stored rank `min_score`) caps and before slicing. `items` are exactly one of
+  the four approved shapes per mode/grouping combination: canonical `job_dict`
+  projections (search, flat), canonical `group_dict` projections (search,
+  grouped), `ranked_job_dict` values (rank, flat), or `ranked_group_dict`
+  values (rank, grouped). Deterministic order matches the shared pipeline:
+  search order (`published_at DESC NULLS LAST, id ASC`; grouped: ascending
+  representative job ID) for search mode, and `match_score DESC`, then newest
+  member publication time (`NULLS LAST`), then representative (lowest member)
+  job ID for rank mode. Names resolve case-insensitively; an unknown name
+  returns `404` with the canonical `No saved search named '{name}'.` message,
+  and a missing database returns the same `404` without creating a file,
+  directory, or schema. An uninitialized or malformed database returns the
+  canonical privacy-safe `500`. Ranking `reasons`, `score_components`, profile
+  terms, review decisions, application status, notes, and all other private
+  free text are deliberately omitted from every response.
 - `GET /groups` — distinct opportunities (canonical duplicate groups plus
   ungrouped jobs as singletons), reusing the shared `database.groups`
   `list_all_groups` service with the canonical `presenters.group_dict`
