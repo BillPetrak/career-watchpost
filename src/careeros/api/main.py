@@ -29,6 +29,7 @@ and rank mode requires the candidate profile inline (search mode rejects one).
 ``PUT /reminders/{reminder_id}/complete``,
 ``PUT /reminders/{reminder_id}/reopen``,
 ``DELETE /reminders/{reminder_id}``,
+``POST /saved-searches``,
 ``DELETE /saved-searches/{name}``, and
 ``PATCH /saved-searches/{name}`` are the slice's mutation endpoints:
 ``PUT /review-decisions/{job_id}`` sets or replaces
@@ -79,6 +80,14 @@ already-initialized database (missing/uninitialized/malformed databases are the
 canonical privacy-safe ``500``); they never initialize the database and never
 accept or expose review notes, application notes, reminder messages, or
 saved-search ``profile_path``/``description`` values.
+``POST /saved-searches`` creates a new search-mode saved-search definition
+through the shared ``saved_searches.service.create_search`` domain service
+(search-mode authoring only: the request schema restricts ``mode`` to the
+single literal ``"search"``, rank-mode creation is impossible over HTTP
+because it would require a local ``profile_path``, and ``profile_path`` /
+``description`` / ``min_score`` are never accepted; duplicate names are a
+domain validation conflict mapped to ``422`` and creation is intentionally
+non-idempotent), and
 ``POST /ranked-jobs`` ranks stored jobs against
 the inline profile as flat raw jobs by default, or one result per canonical
 duplicate group when ``grouped=true``. ``POST /review-queue`` ranks the
@@ -142,6 +151,7 @@ from careeros.api.schemas import (
     ReviewQueueItem,
     ReviewQueueRequest,
     ReviewQueueResponse,
+    SavedSearchCreateRequest,
     SavedSearchExecuteRequest,
     SavedSearchExecutionResponse,
     SavedSearchItem,
@@ -228,12 +238,14 @@ from careeros.saved_searches.execution import (
 )
 from careeros.saved_searches.models import (
     DuplicateNameError,
+    SavedSearchFields,
     UnknownSearchError,
 )
 from careeros.saved_searches.models import (
     ValidationError as SavedSearchValidationError,
 )
 from careeros.saved_searches.service import (
+    create_search,
     delete_search,
     get_search,
     list_searches,
@@ -345,6 +357,7 @@ def create_app() -> FastAPI:
             "PUT /reminders/{reminder_id}/complete, "
             "PUT /reminders/{reminder_id}/reopen, "
             "DELETE /reminders/{reminder_id}, "
+            "POST /saved-searches, "
             "DELETE /saved-searches/{name}, and "
             "PATCH /saved-searches/{name} write "
             "through the shared review-decision, application-tracking, reminder, "
@@ -1102,6 +1115,56 @@ def create_app() -> FastAPI:
         raise HTTPException(
             status_code=404, detail=_no_saved_search_found_message(name)
         )
+
+    @app.post("/saved-searches", response_model=SavedSearchItem)
+    def create_saved_search(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        payload: SavedSearchCreateRequest,
+    ) -> SavedSearchItem:
+        """Create a search-mode saved-search definition (write).
+
+        HTTP authoring supports only ``mode="search"``: the request schema
+        structurally restricts ``mode`` to the single literal ``"search"``
+        (and defaults to it), so rank-mode creation is impossible over HTTP and
+        no ``profile_path``, ``description``, or ``min_score`` is ever
+        accepted. All logic lives in the shared
+        ``saved_searches.service.create_search`` domain service: this route
+        only validates the request body, forces the safe HTTP contract
+        (``mode="search"``, ``profile_path=None``, ``description=None``,
+        ``min_score=None``), translates known domain errors, and returns the
+        canonical ``SavedSearchItem`` projection (exactly the shape
+        ``GET /saved-searches/{name}`` returns). The writable connection runs
+        under the per-database collection lock, so this endpoint coordinates
+        with every CLI/collector writer; lock contention maps to a privacy-safe
+        ``503`` and a missing or uninitialized database to the canonical
+        privacy-safe ``500``. Creation is intentionally non-idempotent: a
+        repeated identical POST fails with the canonical duplicate-name ``422``
+        and creates no second row. The route performs no SQL, no commit, and no
+        rollback; the domain service owns the transaction.
+        """
+        fields = SavedSearchFields(
+            name=payload.name,
+            query=payload.query,
+            mode="search",
+            description=None,
+            profile_path=None,
+            grouped=payload.grouped,
+            source=payload.source,
+            remote=payload.remote,
+            location=payload.location,
+            untracked=payload.untracked,
+            include_statuses=tuple(payload.include_statuses),
+            exclude_statuses=tuple(payload.exclude_statuses),
+            min_score=None,
+            result_limit=payload.result_limit,
+        )
+        try:
+            stored = create_search(connection, fields=fields)
+        except DuplicateNameError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        except SavedSearchValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        return SavedSearchItem.model_validate(saved_search_item_dict(stored))
 
     @app.post(
         "/saved-searches/{name}/execute",

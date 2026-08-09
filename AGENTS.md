@@ -670,6 +670,7 @@ no resource. `PUT /review-decisions/{job_id}`,
 `PUT /reminders/{reminder_id}/complete`,
 `PUT /reminders/{reminder_id}/reopen`, and
 `DELETE /reminders/{reminder_id}`,
+and `POST /saved-searches`,
 and `DELETE /saved-searches/{name}`,
 and `PATCH /saved-searches/{name}` are the slice's mutation endpoints:
 `PUT /review-decisions/{job_id}` sets or replaces one job's current review
@@ -701,6 +702,15 @@ through the shared `careeros.reminders.service.update_reminder` domain service
 (a genuine partial update that requires at least one of `kind`/`due_at`, is
 idempotent for repeated identical values, and never accepts, clears, or
 exposes the stored reminder message), and
+`POST /saved-searches` creates a new **search-mode** saved-search definition
+through the shared `careeros.saved_searches.service.create_search` domain
+service (search-mode authoring only: the request schema restricts `mode` to the
+single literal `"search"`, which also defaults it, so rank-mode creation is
+impossible over HTTP because a rank workflow requires a local `profile_path`;
+`profile_path`, `description`, and `min_score` are never accepted, duplicate
+names are a domain validation conflict mapped to `422`, and creation is
+intentionally non-idempotent — a repeated identical POST fails with the
+canonical duplicate-name `422` and creates no second row), and
 `DELETE /saved-searches/{name}` deletes one saved-search definition through the
 shared `careeros.saved_searches.service.delete_search` domain service
 (body-less, returning the deleted canonical `SavedSearchItem`; a repeated
@@ -1137,6 +1147,48 @@ canonical `No job found with ID {id}.` message locally.
   same `404` without creating the file. Viewing only: the request never
   dereferences `profile_path`, never loads a profile, and never executes the
   saved search.
+- `POST /saved-searches` — the slice's saved-search-creation mutation
+  endpoint. Creates a new **search-mode** saved-search definition through the
+  shared `careeros.saved_searches.service.create_search` domain service, which
+  owns the insert, the transaction commit, and rollback on any `sqlite3.Error`;
+  the route performs no SQL, no commit, and no rollback. The request body is
+  `{"name": "x", "query": "python"}` (optionally plus the search-mode filter
+  fields) via a dedicated `SavedSearchCreateRequest` model with
+  `extra="forbid"`: the accepted fields are `name`, `query`, `mode` (the single
+  literal `"search"`, defaulting to it), `grouped` (default `false`), `source`,
+  `remote`, `location`, `untracked` (default `false`), `include_statuses`,
+  `exclude_statuses`, and `result_limit` (default 20). `mode="rank"` and any
+  other mode value are rejected with `422` by the schema, so rank-mode
+  authoring is impossible over HTTP and `create_search` is never called;
+  unknown body fields — including any `profile_path`, `description`,
+  `min_score`, `message`, `note`, `id`, `created_at`, or `updated_at` — are
+  likewise rejected with `422` and never persisted. All definition validation
+  (name normalization, query validation, source/location validation, status
+  validation, include/exclude and untracked conflicts, `result_limit`
+  validity) lives in the domain (`validate_fields`), which the schema
+  deliberately does not duplicate; the route only forces the safe HTTP
+  contract (`mode="search"`, `profile_path=None`, `description=None`,
+  `min_score=None`) when building the domain input. A duplicate name is a
+  domain validation conflict mapped to `422` with the canonical
+  `A saved search named '{name}' already exists.` text — **never `409`** — and
+  creation is intentionally non-idempotent, so a repeated identical POST
+  creates no second row. Every successful `POST` returns `200` with the
+  canonical `SavedSearchItem` projection (identical to the `GET` detail shape,
+  exact field order `id`, `name`, `mode`, `query`, `grouped`, `source`,
+  `remote`, `location`, `untracked`, `include_statuses`, `exclude_statuses`,
+  `min_score`, `result_limit`, `created_at`, `updated_at`) with
+  `profile_path`/`description` structurally absent, `mode` `"search"`,
+  `min_score` `null`, and `created_at`/`updated_at` following the domain's
+  creation semantics. Creation involves no filesystem access (no profile file
+  is ever read, and `profile_path` cannot be supplied), no schema change, no
+  notification rows, and no external side effects. The mutation runs on
+  `writable_connection` like the other write endpoints: the configured database
+  must already exist (missing/uninitialized/malformed databases are the
+  canonical privacy-safe `500` and nothing is ever created), the per-database
+  `collection_lock` is held for the whole request (lock contention maps to a
+  privacy-safe `503` with a fixed retry-later message that never exposes lock
+  internals), and the domain service — never the dependency — owns
+  commit/rollback. The lock is always releasable after 422/500/503 responses.
 - `POST /saved-searches/{name}/execute` — execute a stored saved-search
   workflow (search or rank mode) through the shared execution pipeline
   (`execute_search` / `execute_rank`), computation-only with the same guarantees

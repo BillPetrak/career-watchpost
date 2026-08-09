@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -300,6 +300,39 @@ class SavedSearchRenameRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+
+
+class SavedSearchCreateRequest(BaseModel):
+    """Request body for ``POST /saved-searches``.
+
+    Search-mode saved-search authoring only: ``mode`` is structurally restricted
+    to the single literal ``"search"`` (and defaults to it), so rank-mode
+    creation is impossible over HTTP — rank workflows require a local
+    ``profile_path``, which the HTTP API never accepts. All definition fields
+    (name normalization, query validation, source/location validation, status
+    validation, include/exclude and untracked conflicts, ``result_limit``
+    validity, and duplicate-name handling) are validated by the existing
+    saved-search domain (``validate_fields`` / ``create_search``), which this
+    schema deliberately does not duplicate. Unknown body fields — including any
+    ``profile_path``, ``description``, ``min_score``, ``message``, ``note``,
+    ``id``, ``created_at``, or ``updated_at`` — are rejected with ``422``: this
+    mutation request uses ``extra="forbid"`` so no private or local-only field
+    is ever accepted, persisted, or returned.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    query: str
+    mode: Literal["search"] = "search"
+    grouped: bool = False
+    source: str | None = None
+    remote: bool | None = None
+    location: str | None = None
+    untracked: bool = False
+    include_statuses: list[str] = Field(default_factory=list)
+    exclude_statuses: list[str] = Field(default_factory=list)
+    result_limit: int = 20
 
 
 class SavedSearchExecuteRequest(BaseModel):
@@ -660,10 +693,11 @@ __all__: tuple[str, ...] = (
     "ReviewQueueItem",
     "ReviewQueueRequest",
     "ReviewQueueResponse",
-    "SavedSearchItem",
-    "SavedSearchListResponse",
+    "SavedSearchCreateRequest",
     "SavedSearchExecuteRequest",
     "SavedSearchExecutionResponse",
+    "SavedSearchItem",
+    "SavedSearchListResponse",
     "SavedSearchRenameRequest",
     "SourceStats",
     "SourceStatsListResponse",
