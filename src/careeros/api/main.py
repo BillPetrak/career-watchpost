@@ -25,6 +25,7 @@ and rank mode requires the candidate profile inline (search mode rejects one).
 ``PUT /review-decisions/{job_id}``, ``DELETE /review-decisions/{job_id}``,
 ``PUT /applications/{job_id}``,
 ``POST /reminders``,
+``PATCH /reminders/{reminder_id}``,
 ``PUT /reminders/{reminder_id}/complete``,
 ``PUT /reminders/{reminder_id}/reopen``, and
 ``DELETE /reminders/{reminder_id}`` are the slice's mutation endpoints:
@@ -51,7 +52,12 @@ delivery), and
 through the shared ``reminders.service.delete_reminder`` domain service
 (returning the deleted ``ReminderItem``; a repeated DELETE is a canonical
 ``404`` and a reminder referenced by ``reminder_notifications`` is protected
-by the existing ``ON DELETE RESTRICT`` constraint). Each domain
+by the existing ``ON DELETE RESTRICT`` constraint), and
+``PATCH /reminders/{reminder_id}`` updates a reminder's kind and/or due time
+through the shared ``reminders.service.update_reminder`` domain service (a
+genuine partial update that requires at least one of ``kind``/``due_at``, is
+idempotent for repeated identical values, and never accepts, clears, or
+exposes the stored reminder message). Each domain
 service owns the transaction and audit event. The mutations run on a writable
 connection under the per-database
 ``collection_lock`` (contention maps to a privacy-safe ``503``) and require an
@@ -112,6 +118,7 @@ from careeros.api.schemas import (
     ReminderCreateRequest,
     ReminderItem,
     ReminderListResponse,
+    ReminderUpdateRequest,
     ReviewDecisionEvent,
     ReviewDecisionHistoryResponse,
     ReviewDecisionItem,
@@ -181,6 +188,7 @@ from careeros.reminders.service import (
     delete_reminder,
     list_reminders,
     reopen_reminder,
+    update_reminder,
 )
 from careeros.review.models import (
     UnknownJobError,
@@ -305,6 +313,7 @@ def create_app() -> FastAPI:
             "read-only; the mutation endpoints "
             "PUT /review-decisions/{job_id}, DELETE /review-decisions/{job_id}, "
             "PUT /applications/{job_id}, POST /reminders, "
+            "PATCH /reminders/{reminder_id}, "
             "PUT /reminders/{reminder_id}/complete, "
             "PUT /reminders/{reminder_id}/reopen, and "
             "DELETE /reminders/{reminder_id} write "
@@ -786,6 +795,56 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=404, detail=_no_reminder_found_message(reminder_id)
             ) from None
+        job = get_job_by_id(connection, stored.job_id)
+        if job is None:
+            raise HTTPException(
+                status_code=404, detail=_no_job_found_message(stored.job_id)
+            )
+        return ReminderItem.model_validate(
+            reminder_item_dict(ReminderListEntry(reminder=stored, job=job))
+        )
+
+    @app.patch("/reminders/{reminder_id}", response_model=ReminderItem)
+    def update_reminder_endpoint(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        reminder_id: int,
+        payload: ReminderUpdateRequest,
+    ) -> ReminderItem:
+        """Update a reminder's kind and/or due time (write).
+
+        A genuine partial update: the request body may supply ``kind``,
+        ``due_at``, or both (at least one is required), and omitted fields
+        retain their stored values. All logic lives in the shared
+        ``reminders.service.update_reminder`` domain service: this route only
+        validates the request body, translates known domain errors, and
+        returns the canonical ``ReminderItem`` projection (exactly the shape
+        ``GET /reminders/{reminder_id}`` returns). The stored reminder message
+        is never accepted, cleared, inspected, or returned: the route always
+        calls the domain with ``message=None`` and ``clear_message=False``, so
+        a message previously created through the CLI survives HTTP updates
+        byte-identically. The writable connection runs under the per-database
+        collection lock, so this endpoint coordinates with every CLI/collector
+        writer; lock contention maps to a privacy-safe ``503`` and a missing or
+        uninitialized database to the canonical privacy-safe ``500``.
+        Re-PATCHing identical values is an idempotent no-op (no row mutation,
+        original ``updated_at`` preserved), and the update never creates
+        notification attempts or triggers notification delivery.
+        """
+        try:
+            stored, _changed = update_reminder(
+                connection,
+                reminder_id=reminder_id,
+                kind=payload.kind,
+                due_at=payload.due_at,
+                message=None,
+                clear_message=False,
+            )
+        except ReminderUnknownReminderError:
+            raise HTTPException(
+                status_code=404, detail=_no_reminder_found_message(reminder_id)
+            ) from None
+        except ReminderValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
         job = get_job_by_id(connection, stored.job_id)
         if job is None:
             raise HTTPException(

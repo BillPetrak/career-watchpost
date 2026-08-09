@@ -666,6 +666,7 @@ no resource. `PUT /review-decisions/{job_id}`,
 `DELETE /review-decisions/{job_id}`,
 `PUT /applications/{job_id}`,
 `POST /reminders`,
+`PATCH /reminders/{reminder_id}`,
 `PUT /reminders/{reminder_id}/complete`,
 `PUT /reminders/{reminder_id}/reopen`, and
 `DELETE /reminders/{reminder_id}` are the slice's mutation endpoints:
@@ -692,7 +693,12 @@ notification delivery), and
 shared `careeros.reminders.service.delete_reminder` domain service (returning
 the deleted `ReminderItem`; a repeated DELETE is a canonical `404`, and a
 reminder referenced by `reminder_notifications` is protected by the existing
-`ON DELETE RESTRICT` constraint); each
+`ON DELETE RESTRICT` constraint), and
+`PATCH /reminders/{reminder_id}` updates a reminder's kind and/or due time
+through the shared `careeros.reminders.service.update_reminder` domain service
+(a genuine partial update that requires at least one of `kind`/`due_at`, is
+idempotent for repeated identical values, and never accepts, clears, or
+exposes the stored reminder message); each
 domain service owns the transaction and audit event. HTTP writes run on a
 `writable_connection` (see
 `src/careeros/api/deps.py`): the configured database file must already exist (a
@@ -706,8 +712,8 @@ owns commit/rollback. The mutations return the same privacy-safe
 `GET /review-decisions/{job_id}` / `GET /applications/{job_id}` /
 `GET /reminders/{reminder_id}` and
 never accept or expose review or application notes (`note` in either request
-body is a `422`), nor reminder messages (`message` in a `POST /reminders` body
-is a `422`).
+body is a `422`), nor reminder messages (`message` in a `POST /reminders` or
+`PATCH /reminders/{reminder_id}` body is a `422`).
 The database path comes
 from `CAREEROS_DATABASE` (see
 `src/careeros/settings.py`), read per request with the standard library; a
@@ -966,6 +972,45 @@ canonical `No job found with ID {id}.` message locally.
   with a fixed retry-later message that never exposes lock internals), and the
   domain service — never the dependency — owns commit/rollback. The lock is
   always releasable after 404/500/503 responses.
+- `PATCH /reminders/{reminder_id}` — the slice's reminder-update mutation
+  endpoint. Updates a reminder's `kind` and/or `due_at` only through the
+  shared `careeros.reminders.service.update_reminder` domain service, which
+  owns the `UPDATE`, the transaction commit, and rollback on any
+  `sqlite3.Error`; the route performs no SQL, no commit, and no rollback.
+  The request body is `{"kind": "offer"}` and/or `{"due_at":
+  "2026-08-11T09:00:00Z"}` via a dedicated `ReminderUpdateRequest` model with
+  `extra="forbid"`; at least one non-null field is required, so `{}`,
+  `{"kind": null}`, `{"due_at": null}`, and `{"kind": null, "due_at": null}`
+  all return `422`, and unknown body fields — including any `message`, `note`,
+  `description`, `profile_path`, `clear_message`, `completed_at`, or `job_id`
+  — are rejected with `422`. Reminder free text is never accepted, cleared,
+  inspected, or returned by this endpoint: the route always calls the domain
+  with `message=None` and `clear_message=False`, so a message previously
+  created through the CLI survives HTTP updates byte-identically. `kind` is
+  validated by the shared `validate_kind` vocabulary (`follow_up`, `interview`,
+  `offer`, `review`, `custom`) and `due_at` by the shared `parse_due_at` rules
+  (a full ISO-8601 timestamp with an explicit UTC offset; `Z` accepted; naive
+  and date-only values rejected), so an invalid value returns `422` with the
+  canonical domain validation text. An unknown reminder returns `404` with the
+  canonical `No reminder found with ID {reminder_id}.` message; non-integer
+  path input returns FastAPI's normal `422`. Every successful `PATCH` returns
+  `200` with the canonical `ReminderItem` projection (identical to the `GET`
+  detail shape, exact field order `reminder_id`, `job_id`, `kind`, `due_at`,
+  `completed_at`, `created_at`, `updated_at`, `job`); omitted fields retain
+  their stored values and a genuine change updates `updated_at` per the domain
+  semantics. Re-PATCHing identical values is an **idempotent no-op**: the
+  domain issues no `UPDATE`, `updated_at` is preserved, and the response is
+  byte-deterministic for identical stored database state. Updating never
+  creates `reminder_notifications` rows, never triggers notification delivery,
+  and never contacts any external service. The mutation runs on
+  `writable_connection` like the other write endpoints: the configured database
+  must already exist (missing/uninitialized/malformed databases are the
+  canonical privacy-safe `500` and nothing is ever created), the per-database
+  `collection_lock` is held for the whole request (lock contention maps to a
+  privacy-safe `503` with a fixed retry-later message that never exposes lock
+  internals), and the domain service — never the dependency — owns
+  commit/rollback. The lock is always releasable after 404/422/500/503
+  responses. The update introduces no schema change and no migration.
 - `GET /review-decisions` — current review decisions joined with their jobs,
   newest first (`updated_at DESC, id DESC`, the shared
   `database.review.list_decisions` order) with deterministic `offset`/`limit`

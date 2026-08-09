@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 # Bounds for inline candidate-profile fields submitted to POST /ranked-jobs.
 # They mirror the candidate-profile file semantics (all optional, unknown
@@ -213,6 +213,33 @@ class ReminderCreateRequest(BaseModel):
     job_id: Annotated[int, Field(ge=1)]
     kind: str
     due_at: str
+
+
+class ReminderUpdateRequest(BaseModel):
+    """Request body for ``PATCH /reminders/{reminder_id}``.
+
+    A genuine partial update: ``kind`` and/or ``due_at`` may be supplied, and
+    omitted fields retain their stored values. At least one non-null field is
+    required: an empty body or a body whose only fields are ``null`` is
+    rejected with ``422``. ``kind`` and ``due_at`` are validated by the
+    existing reminder domain (``validate_kind`` and ``parse_due_at``), which
+    this schema deliberately does not duplicate. Unknown body fields —
+    including any ``message``, ``note``, ``description``, ``profile_path``,
+    ``clear_message``, ``completed_at``, or ``job_id`` — are rejected with
+    ``422``: this mutation request uses ``extra="forbid"`` so reminder free
+    text is never accepted, cleared, or returned by the HTTP API.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str | None = None
+    due_at: str | None = None
+
+    @model_validator(mode="after")
+    def _require_at_least_one_field(self) -> ReminderUpdateRequest:
+        if self.kind is None and self.due_at is None:
+            raise ValueError("At least one of 'kind' or 'due_at' must be provided.")
+        return self
 
 
 class SavedSearchItem(BaseModel):
@@ -606,6 +633,7 @@ __all__: tuple[str, ...] = (
     "ReminderCreateRequest",
     "ReminderItem",
     "ReminderListResponse",
+    "ReminderUpdateRequest",
     "ReviewDecisionEvent",
     "ReviewDecisionHistoryResponse",
     "ReviewDecisionItem",
