@@ -25,8 +25,9 @@ and rank mode requires the candidate profile inline (search mode rejects one).
 ``PUT /review-decisions/{job_id}``, ``DELETE /review-decisions/{job_id}``,
 ``PUT /applications/{job_id}``,
 ``POST /reminders``,
-``PUT /reminders/{reminder_id}/complete``, and
-``PUT /reminders/{reminder_id}/reopen`` are the slice's mutation endpoints:
+``PUT /reminders/{reminder_id}/complete``,
+``PUT /reminders/{reminder_id}/reopen``, and
+``DELETE /reminders/{reminder_id}`` are the slice's mutation endpoints:
 ``PUT /review-decisions/{job_id}`` sets or replaces
 one job's current review decision through the shared ``review.service.set_decision``
 domain service, ``DELETE /review-decisions/{job_id}`` clears one job's current
@@ -45,7 +46,12 @@ delivery), and
 ``PUT /reminders/{reminder_id}/reopen`` reopens a completed reminder
 through the shared ``reminders.service.reopen_reminder`` domain service
 (idempotent, never accepts a message, and never triggers notification
-delivery). Each domain
+delivery), and
+``DELETE /reminders/{reminder_id}`` deletes one reminder
+through the shared ``reminders.service.delete_reminder`` domain service
+(returning the deleted ``ReminderItem``; a repeated DELETE is a canonical
+``404`` and a reminder referenced by ``reminder_notifications`` is protected
+by the existing ``ON DELETE RESTRICT`` constraint). Each domain
 service owns the transaction and audit event. The mutations run on a writable
 connection under the per-database
 ``collection_lock`` (contention maps to a privacy-safe ``503``) and require an
@@ -172,6 +178,7 @@ from careeros.reminders.models import (
 from careeros.reminders.service import (
     add_reminder,
     complete_reminder,
+    delete_reminder,
     list_reminders,
     reopen_reminder,
 )
@@ -298,8 +305,9 @@ def create_app() -> FastAPI:
             "read-only; the mutation endpoints "
             "PUT /review-decisions/{job_id}, DELETE /review-decisions/{job_id}, "
             "PUT /applications/{job_id}, POST /reminders, "
-            "PUT /reminders/{reminder_id}/complete, and "
-            "PUT /reminders/{reminder_id}/reopen write "
+            "PUT /reminders/{reminder_id}/complete, "
+            "PUT /reminders/{reminder_id}/reopen, and "
+            "DELETE /reminders/{reminder_id} write "
             "through the shared review-decision, application-tracking, and "
             "reminder domain services "
             "under the collection lock. Never fetches "
@@ -736,6 +744,44 @@ def create_app() -> FastAPI:
         """
         try:
             stored, _changed = reopen_reminder(connection, reminder_id=reminder_id)
+        except ReminderUnknownReminderError:
+            raise HTTPException(
+                status_code=404, detail=_no_reminder_found_message(reminder_id)
+            ) from None
+        job = get_job_by_id(connection, stored.job_id)
+        if job is None:
+            raise HTTPException(
+                status_code=404, detail=_no_job_found_message(stored.job_id)
+            )
+        return ReminderItem.model_validate(
+            reminder_item_dict(ReminderListEntry(reminder=stored, job=job))
+        )
+
+    @app.delete("/reminders/{reminder_id}", response_model=ReminderItem)
+    def delete_reminder_endpoint(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        reminder_id: int,
+    ) -> ReminderItem:
+        """Delete a reminder (write).
+
+        All logic lives in the shared ``reminders.service.delete_reminder``
+        domain service: this route only translates the canonical
+        unknown-reminder error and returns the canonical ``ReminderItem``
+        projection of the deleted reminder (built from the row the domain
+        service returns; the reminder is never re-read after deletion). The
+        writable connection runs under the per-database collection lock, so
+        this endpoint coordinates with every CLI/collector writer; lock
+        contention maps to a privacy-safe ``503`` and a missing or uninitialized
+        database to the canonical privacy-safe ``500``. A repeated DELETE of an
+        already-deleted reminder is a canonical ``404`` (the resource no longer
+        exists); a reminder referenced by ``reminder_notifications`` is
+        protected by the existing ``ON DELETE RESTRICT`` constraint and its
+        deletion surfaces as the canonical privacy-safe ``500``. The route
+        declares no request body, never accepts a message, and never touches
+        notification rows.
+        """
+        try:
+            stored = delete_reminder(connection, reminder_id=reminder_id)
         except ReminderUnknownReminderError:
             raise HTTPException(
                 status_code=404, detail=_no_reminder_found_message(reminder_id)

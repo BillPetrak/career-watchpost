@@ -666,8 +666,9 @@ no resource. `PUT /review-decisions/{job_id}`,
 `DELETE /review-decisions/{job_id}`,
 `PUT /applications/{job_id}`,
 `POST /reminders`,
-`PUT /reminders/{reminder_id}/complete`, and
-`PUT /reminders/{reminder_id}/reopen` are the slice's mutation endpoints:
+`PUT /reminders/{reminder_id}/complete`,
+`PUT /reminders/{reminder_id}/reopen`, and
+`DELETE /reminders/{reminder_id}` are the slice's mutation endpoints:
 `PUT /review-decisions/{job_id}` sets or replaces one job's current review
 decision through the shared `careeros.review.service.set_decision` domain
 service, `DELETE /review-decisions/{job_id}` clears one job's current review
@@ -686,7 +687,12 @@ attempts or triggers notification delivery), and
 `PUT /reminders/{reminder_id}/reopen` reopens a completed reminder through the
 shared `careeros.reminders.service.reopen_reminder` domain service (idempotent,
 never accepts a message, and never creates notification attempts or triggers
-notification delivery); each
+notification delivery), and
+`DELETE /reminders/{reminder_id}` deletes one reminder through the
+shared `careeros.reminders.service.delete_reminder` domain service (returning
+the deleted `ReminderItem`; a repeated DELETE is a canonical `404`, and a
+reminder referenced by `reminder_notifications` is protected by the existing
+`ON DELETE RESTRICT` constraint); each
 domain service owns the transaction and audit event. HTTP writes run on a
 `writable_connection` (see
 `src/careeros/api/deps.py`): the configured database file must already exist (a
@@ -920,6 +926,40 @@ canonical `No job found with ID {id}.` message locally.
   accepts a message, never touches `reminder.message`, and never contacts any
   external service. The mutation runs on `writable_connection` like the other
   write endpoints: the configured database must already exist
+  (missing/uninitialized/malformed databases are the canonical privacy-safe
+  `500` and nothing is ever created), the per-database `collection_lock` is
+  held for the whole request (lock contention maps to a privacy-safe `503`
+  with a fixed retry-later message that never exposes lock internals), and the
+  domain service — never the dependency — owns commit/rollback. The lock is
+  always releasable after 404/500/503 responses.
+- `DELETE /reminders/{reminder_id}` — the slice's reminder-deletion mutation
+  endpoint. Deletes one reminder through the shared
+  `careeros.reminders.service.delete_reminder` domain service, which owns the
+  `DELETE`, the transaction commit, and rollback on any `sqlite3.Error`; the
+  route performs no SQL, no commit, and no rollback. The route declares no
+  request body and no request schema: a sent HTTP request body is never
+  parsed, validated, stored, logged, or used, so reminder free text (and any
+  other sentinel field) can never influence the operation or appear in any
+  response. An unknown reminder returns `404` with the canonical `No reminder
+  found with ID {reminder_id}.` message; non-integer path input returns
+  FastAPI's normal `422`. Every successful `DELETE` returns `200` with the
+  canonical `ReminderItem` projection of the **deleted** reminder (identical to
+  the `GET` detail shape, exact field order `reminder_id`, `job_id`, `kind`,
+  `due_at`, `completed_at`, `created_at`, `updated_at`, `job`), built from the
+  row the domain service returns — the reminder is never re-read after
+  deletion. Deletion is genuinely destructive, not an idempotent no-op: a
+  repeated `DELETE` of an already-deleted reminder is a canonical `404` (the
+  resource no longer exists), and `204` is never used. Deleting a completed
+  reminder is allowed and the returned representation preserves its pre-delete
+  `completed_at`. A reminder referenced by `reminder_notifications` is
+  protected by the existing `ON DELETE RESTRICT` constraint, so its deletion
+  raises `sqlite3.IntegrityError`, the domain service rolls back, and the
+  app-level `sqlite3.Error` handler returns the canonical privacy-safe `500`
+  with both rows preserved (an existing domain/schema constraint, not a new
+  HTTP status). Deletion never creates `reminder_notifications` rows, never
+  triggers notification delivery, never accepts a message, and never contacts
+  any external service. The mutation runs on `writable_connection` like the
+  other write endpoints: the configured database must already exist
   (missing/uninitialized/malformed databases are the canonical privacy-safe
   `500` and nothing is ever created), the per-database `collection_lock` is
   held for the whole request (lock contention maps to a privacy-safe `503`
