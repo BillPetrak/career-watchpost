@@ -27,8 +27,9 @@ and rank mode requires the candidate profile inline (search mode rejects one).
 ``POST /reminders``,
 ``PATCH /reminders/{reminder_id}``,
 ``PUT /reminders/{reminder_id}/complete``,
-``PUT /reminders/{reminder_id}/reopen``, and
-``DELETE /reminders/{reminder_id}`` are the slice's mutation endpoints:
+``PUT /reminders/{reminder_id}/reopen``,
+``DELETE /reminders/{reminder_id}``, and
+``DELETE /saved-searches/{name}`` are the slice's mutation endpoints:
 ``PUT /review-decisions/{job_id}`` sets or replaces
 one job's current review decision through the shared ``review.service.set_decision``
 domain service, ``DELETE /review-decisions/{job_id}`` clears one job's current
@@ -57,13 +58,19 @@ by the existing ``ON DELETE RESTRICT`` constraint), and
 through the shared ``reminders.service.update_reminder`` domain service (a
 genuine partial update that requires at least one of ``kind``/``due_at``, is
 idempotent for repeated identical values, and never accepts, clears, or
-exposes the stored reminder message). Each domain
+exposes the stored reminder message), and
+``DELETE /saved-searches/{name}`` deletes one saved-search definition
+through the shared ``saved_searches.service.delete_search`` domain service
+(returning the deleted ``SavedSearchItem``; a repeated DELETE is a canonical
+``404`` and the route never accepts or exposes ``profile_path`` or
+``description``). Each domain
 service owns the transaction and audit event. The mutations run on a writable
 connection under the per-database
 ``collection_lock`` (contention maps to a privacy-safe ``503``) and require an
 already-initialized database (missing/uninitialized/malformed databases are the
 canonical privacy-safe ``500``); they never initialize the database and never
-accept or expose review notes, application notes, or reminder messages.
+accept or expose review notes, application notes, reminder messages, or
+saved-search ``profile_path``/``description`` values.
 ``POST /ranked-jobs`` ranks stored jobs against
 the inline profile as flat raw jobs by default, or one result per canonical
 duplicate group when ``grouped=true``. ``POST /review-queue`` ranks the
@@ -210,7 +217,10 @@ from careeros.saved_searches.execution import (
     execute_search,
     rank_candidates,
 )
-from careeros.saved_searches.service import get_search, list_searches
+from careeros.saved_searches.models import (
+    UnknownSearchError,
+)
+from careeros.saved_searches.service import delete_search, get_search, list_searches
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
 DEFAULT_LIMIT = 20
@@ -315,10 +325,11 @@ def create_app() -> FastAPI:
             "PUT /applications/{job_id}, POST /reminders, "
             "PATCH /reminders/{reminder_id}, "
             "PUT /reminders/{reminder_id}/complete, "
-            "PUT /reminders/{reminder_id}/reopen, and "
-            "DELETE /reminders/{reminder_id} write "
-            "through the shared review-decision, application-tracking, and "
-            "reminder domain services "
+            "PUT /reminders/{reminder_id}/reopen, "
+            "DELETE /reminders/{reminder_id}, and "
+            "DELETE /saved-searches/{name} write "
+            "through the shared review-decision, application-tracking, reminder, "
+            "and saved-search domain services "
             "under the collection lock. Never fetches "
             "jobs, never initializes the database, and never contacts external "
             "services."
@@ -1179,6 +1190,37 @@ def create_app() -> FastAPI:
             offset=offset,
             limit=limit,
         )
+
+    @app.delete("/saved-searches/{name}", response_model=SavedSearchItem)
+    def delete_saved_search(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        name: str,
+    ) -> SavedSearchItem:
+        """Delete a saved-search definition (write).
+
+        All logic lives in the shared ``saved_searches.service.delete_search``
+        domain service: this route only translates the canonical unknown-search
+        error and returns the canonical ``SavedSearchItem`` projection of the
+        deleted definition (built from the row the domain service returns; the
+        definition is never re-read after deletion, and the stored/original
+        name casing is preserved). Lookup is case-insensitive through the
+        shared service, exactly like ``GET /saved-searches/{name}``. The
+        writable connection runs under the per-database collection lock, so
+        this endpoint coordinates with every CLI/collector writer; lock
+        contention maps to a privacy-safe ``503`` and a missing or
+        uninitialized database to the canonical privacy-safe ``500``. A
+        repeated DELETE of an already-deleted saved search is a canonical
+        ``404`` (the resource no longer exists). The route declares no request
+        body, performs no SQL, and never accepts or exposes ``profile_path``
+        or ``description``.
+        """
+        try:
+            stored = delete_search(connection, name=name)
+        except UnknownSearchError:
+            raise HTTPException(
+                status_code=404, detail=_no_saved_search_found_message(name)
+            ) from None
+        return SavedSearchItem.model_validate(saved_search_item_dict(stored))
 
     @app.get("/groups", response_model=GroupListResponse)
     def list_groups_endpoint(

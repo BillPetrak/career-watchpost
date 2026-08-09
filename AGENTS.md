@@ -669,7 +669,8 @@ no resource. `PUT /review-decisions/{job_id}`,
 `PATCH /reminders/{reminder_id}`,
 `PUT /reminders/{reminder_id}/complete`,
 `PUT /reminders/{reminder_id}/reopen`, and
-`DELETE /reminders/{reminder_id}` are the slice's mutation endpoints:
+`DELETE /reminders/{reminder_id}`,
+and `DELETE /saved-searches/{name}` are the slice's mutation endpoints:
 `PUT /review-decisions/{job_id}` sets or replaces one job's current review
 decision through the shared `careeros.review.service.set_decision` domain
 service, `DELETE /review-decisions/{job_id}` clears one job's current review
@@ -698,7 +699,13 @@ reminder referenced by `reminder_notifications` is protected by the existing
 through the shared `careeros.reminders.service.update_reminder` domain service
 (a genuine partial update that requires at least one of `kind`/`due_at`, is
 idempotent for repeated identical values, and never accepts, clears, or
-exposes the stored reminder message); each
+exposes the stored reminder message), and
+`DELETE /saved-searches/{name}` deletes one saved-search definition through the
+shared `careeros.saved_searches.service.delete_search` domain service
+(body-less, returning the deleted canonical `SavedSearchItem`; a repeated
+DELETE is a canonical `404`, name lookup is case-insensitive through the shared
+service and the response preserves the stored/original name casing, and
+`profile_path`/`description` remain structurally absent); each
 domain service owns the transaction and audit event. HTTP writes run on a
 `writable_connection` (see
 `src/careeros/api/deps.py`): the configured database file must already exist (a
@@ -708,9 +715,10 @@ before the connection is opened and held for the whole request (cross-process
 `flock`, same lock the CLI/collector writers use), lock contention maps to a
 privacy-safe `503`, and the domain service — never the connection dependency —
 owns commit/rollback. The mutations return the same privacy-safe
-`ReviewDecisionItem` / `ApplicationItem` / `ReminderItem` representations as
+`ReviewDecisionItem` / `ApplicationItem` / `ReminderItem` / `SavedSearchItem`
+representations as
 `GET /review-decisions/{job_id}` / `GET /applications/{job_id}` /
-`GET /reminders/{reminder_id}` and
+`GET /reminders/{reminder_id}` / `GET /saved-searches/{name}` and
 never accept or expose review or application notes (`note` in either request
 body is a `422`), nor reminder messages (`message` in a `POST /reminders` or
 `PATCH /reminders/{reminder_id}` body is a `422`).
@@ -1154,6 +1162,38 @@ canonical `No job found with ID {id}.` message locally.
   canonical privacy-safe `500`. Ranking `reasons`, `score_components`, profile
   terms, review decisions, application status, notes, and all other private
   free text are deliberately omitted from every response.
+- `DELETE /saved-searches/{name}` — the slice's saved-search-deletion mutation
+  endpoint. Deletes one saved-search definition through the shared
+  `careeros.saved_searches.service.delete_search` domain service, which owns the
+  `DELETE`, the transaction commit, and rollback on any `sqlite3.Error`; the
+  route performs no SQL, no commit, and no rollback. The route declares no
+  request body and no request schema: a sent HTTP request body is never
+  parsed, validated, stored, logged, or used, so saved-search free text (and
+  any other sentinel field) can never influence the operation or appear in any
+  response. Name lookup is case-insensitive through the shared service (`name
+  COLLATE NOCASE`; the API never re-folds case itself), exactly like
+  `GET /saved-searches/{name}`; no artificial regex/length/name validation is
+  applied to the path parameter. An unknown name returns `404` with the
+  canonical `No saved search named '{name}'.` message. Every successful
+  `DELETE` returns `200` with the canonical `SavedSearchItem` projection of the
+  **deleted** definition (identical to the `GET` detail shape, exact field
+  order `id`, `name`, `mode`, `query`, `grouped`, `source`, `remote`,
+  `location`, `untracked`, `include_statuses`, `exclude_statuses`,
+  `min_score`, `result_limit`, `created_at`, `updated_at`), built from the row
+  the domain service returns — the definition is never re-read after deletion,
+  and the response preserves the stored/original name casing. `profile_path`
+  (a local filesystem path) and `description` (unused free text) remain
+  structurally absent. Deletion is genuinely destructive, not an idempotent
+  no-op: a repeated `DELETE` of an already-deleted saved search is a canonical
+  `404` (the resource no longer exists), and `204` is never used. Deletion
+  introduces no schema change and no migration. The mutation runs on
+  `writable_connection` like the other write endpoints: the configured database
+  must already exist (missing/uninitialized/malformed databases are the
+  canonical privacy-safe `500` and nothing is ever created), the per-database
+  `collection_lock` is held for the whole request (lock contention maps to a
+  privacy-safe `503` with a fixed retry-later message that never exposes lock
+  internals), and the domain service — never the dependency — owns
+  commit/rollback. The lock is always releasable after 404/500/503 responses.
 - `GET /groups` — distinct opportunities (canonical duplicate groups plus
   ungrouped jobs as singletons), reusing the shared `database.groups`
   `list_all_groups` service with the canonical `presenters.group_dict`
