@@ -28,8 +28,9 @@ and rank mode requires the candidate profile inline (search mode rejects one).
 ``PATCH /reminders/{reminder_id}``,
 ``PUT /reminders/{reminder_id}/complete``,
 ``PUT /reminders/{reminder_id}/reopen``,
-``DELETE /reminders/{reminder_id}``, and
-``DELETE /saved-searches/{name}`` are the slice's mutation endpoints:
+``DELETE /reminders/{reminder_id}``,
+``DELETE /saved-searches/{name}``, and
+``PATCH /saved-searches/{name}`` are the slice's mutation endpoints:
 ``PUT /review-decisions/{job_id}`` sets or replaces
 one job's current review decision through the shared ``review.service.set_decision``
 domain service, ``DELETE /review-decisions/{job_id}`` clears one job's current
@@ -63,7 +64,14 @@ exposes the stored reminder message), and
 through the shared ``saved_searches.service.delete_search`` domain service
 (returning the deleted ``SavedSearchItem``; a repeated DELETE is a canonical
 ``404`` and the route never accepts or exposes ``profile_path`` or
-``description``). Each domain
+``description``), and
+``PATCH /saved-searches/{name}`` renames one saved-search definition through
+the shared ``saved_searches.service.rename_search`` domain service (a
+rename-only body carrying exactly the replacement ``name``; source-name
+lookup is case-insensitive, a same-name or case-only rename is an idempotent
+no-op preserving ``updated_at``, a duplicate target is a domain validation
+conflict mapped to ``422``, and the route never accepts or exposes
+``profile_path``, ``description``, or any free text). Each domain
 service owns the transaction and audit event. The mutations run on a writable
 connection under the per-database
 ``collection_lock`` (contention maps to a privacy-safe ``503``) and require an
@@ -138,6 +146,7 @@ from careeros.api.schemas import (
     SavedSearchExecutionResponse,
     SavedSearchItem,
     SavedSearchListResponse,
+    SavedSearchRenameRequest,
     SourceStats,
     SourceStatsListResponse,
 )
@@ -218,9 +227,18 @@ from careeros.saved_searches.execution import (
     rank_candidates,
 )
 from careeros.saved_searches.models import (
+    DuplicateNameError,
     UnknownSearchError,
 )
-from careeros.saved_searches.service import delete_search, get_search, list_searches
+from careeros.saved_searches.models import (
+    ValidationError as SavedSearchValidationError,
+)
+from careeros.saved_searches.service import (
+    delete_search,
+    get_search,
+    list_searches,
+    rename_search,
+)
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
 DEFAULT_LIMIT = 20
@@ -326,8 +344,9 @@ def create_app() -> FastAPI:
             "PATCH /reminders/{reminder_id}, "
             "PUT /reminders/{reminder_id}/complete, "
             "PUT /reminders/{reminder_id}/reopen, "
-            "DELETE /reminders/{reminder_id}, and "
-            "DELETE /saved-searches/{name} write "
+            "DELETE /reminders/{reminder_id}, "
+            "DELETE /saved-searches/{name}, and "
+            "PATCH /saved-searches/{name} write "
             "through the shared review-decision, application-tracking, reminder, "
             "and saved-search domain services "
             "under the collection lock. Never fetches "
@@ -1220,6 +1239,45 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=404, detail=_no_saved_search_found_message(name)
             ) from None
+        return SavedSearchItem.model_validate(saved_search_item_dict(stored))
+
+    @app.patch("/saved-searches/{name}", response_model=SavedSearchItem)
+    def rename_saved_search(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        name: str,
+        payload: SavedSearchRenameRequest,
+    ) -> SavedSearchItem:
+        """Rename a saved-search definition (write).
+
+        A rename-only endpoint: the request body carries exactly the
+        replacement ``name``. All logic lives in the shared
+        ``saved_searches.service.rename_search`` domain service: this route
+        only validates the request body, translates known domain errors, and
+        returns the canonical ``SavedSearchItem`` projection of the renamed
+        definition (built from the row the domain service returns; the
+        definition is never re-read after the rename). Source-name lookup is
+        case-insensitive through the shared service, exactly like
+        ``GET /saved-searches/{name}``. Renaming to the stored name (or a
+        case-only variant) is an idempotent no-op that preserves ``updated_at``;
+        a duplicate target is a domain validation conflict mapped to ``422``
+        with the canonical domain text. The writable connection runs under the
+        per-database collection lock, so this endpoint coordinates with every
+        CLI/collector writer; lock contention maps to a privacy-safe ``503``
+        and a missing or uninitialized database to the canonical privacy-safe
+        ``500``. The route performs no SQL, no commit, and no rollback, and
+        never accepts or exposes ``profile_path``, ``description``, or any free
+        text.
+        """
+        try:
+            stored = rename_search(connection, name=name, new_name=payload.name)
+        except DuplicateNameError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        except UnknownSearchError:
+            raise HTTPException(
+                status_code=404, detail=_no_saved_search_found_message(name)
+            ) from None
+        except SavedSearchValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
         return SavedSearchItem.model_validate(saved_search_item_dict(stored))
 
     @app.get("/groups", response_model=GroupListResponse)

@@ -284,6 +284,24 @@ class SavedSearchListResponse(BaseModel):
     limit: int
 
 
+class SavedSearchRenameRequest(BaseModel):
+    """Request body for ``PATCH /saved-searches/{name}``.
+
+    A rename-only body: the only accepted field is the replacement ``name``.
+    Empty/whitespace names are validated by the existing saved-search domain
+    (``normalize_name``), which this schema deliberately does not duplicate,
+    and duplicate-target and unknown-source semantics live entirely in the
+    domain service. Unknown body fields — including any ``profile_path``,
+    ``description``, ``query``, ``mode``, ``message``, or ``note`` — are
+    rejected with ``422``: this mutation request uses ``extra="forbid"`` so
+    no private or local-only field is ever accepted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+
 class SavedSearchExecuteRequest(BaseModel):
     """Request body for ``POST /saved-searches/{name}/execute``.
 
@@ -646,6 +664,7 @@ __all__: tuple[str, ...] = (
     "SavedSearchListResponse",
     "SavedSearchExecuteRequest",
     "SavedSearchExecutionResponse",
+    "SavedSearchRenameRequest",
     "SourceStats",
     "SourceStatsListResponse",
 )

@@ -670,7 +670,8 @@ no resource. `PUT /review-decisions/{job_id}`,
 `PUT /reminders/{reminder_id}/complete`,
 `PUT /reminders/{reminder_id}/reopen`, and
 `DELETE /reminders/{reminder_id}`,
-and `DELETE /saved-searches/{name}` are the slice's mutation endpoints:
+and `DELETE /saved-searches/{name}`,
+and `PATCH /saved-searches/{name}` are the slice's mutation endpoints:
 `PUT /review-decisions/{job_id}` sets or replaces one job's current review
 decision through the shared `careeros.review.service.set_decision` domain
 service, `DELETE /review-decisions/{job_id}` clears one job's current review
@@ -705,7 +706,17 @@ shared `careeros.saved_searches.service.delete_search` domain service
 (body-less, returning the deleted canonical `SavedSearchItem`; a repeated
 DELETE is a canonical `404`, name lookup is case-insensitive through the shared
 service and the response preserves the stored/original name casing, and
-`profile_path`/`description` remain structurally absent); each
+`profile_path`/`description` remain structurally absent), and
+`PATCH /saved-searches/{name}` renames one saved-search definition through the
+shared `careeros.saved_searches.service.rename_search` domain service (a
+rename-only body carrying exactly the replacement `name`; source-name lookup
+is case-insensitive through the shared service, a same-name or case-only
+rename is an idempotent no-op that preserves the stored casing and `updated_at`,
+a genuine rename updates the stored name and `updated_at`, and a duplicate
+target is a domain validation conflict mapped to `422` with the canonical
+domain text — never `409`; the route never accepts or exposes `profile_path`,
+`description`, or any free text, and there is no general saved-search update
+over HTTP); each
 domain service owns the transaction and audit event. HTTP writes run on a
 `writable_connection` (see
 `src/careeros/api/deps.py`): the configured database file must already exist (a
@@ -1194,6 +1205,44 @@ canonical `No job found with ID {id}.` message locally.
   privacy-safe `503` with a fixed retry-later message that never exposes lock
   internals), and the domain service — never the dependency — owns
   commit/rollback. The lock is always releasable after 404/500/503 responses.
+- `PATCH /saved-searches/{name}` — the slice's saved-search-rename mutation
+  endpoint. Renames one saved-search definition through the shared
+  `careeros.saved_searches.service.rename_search` domain service, which owns
+  the `UPDATE`, the transaction commit, and rollback on any `sqlite3.Error`;
+  the route performs no SQL, no commit, and no rollback. The request body is
+  `{"name": "New name"}` via a dedicated `SavedSearchRenameRequest` model with
+  `extra="forbid"`; only the replacement `name` is accepted, so unknown body
+  fields — including any `profile_path`, `description`, `query`, `mode`,
+  `message`, or `note` — are rejected with `422`, and an empty/whitespace
+  `name` flows through the domain's `normalize_name` to its canonical `422`.
+  Name lookup is case-insensitive through the shared service (`name COLLATE
+  NOCASE`; the API never re-folds case itself), exactly like
+  `GET /saved-searches/{name}`; no artificial regex/length/name validation is
+  applied to the path parameter. An unknown source name returns `404` with the
+  canonical `No saved search named '{name}'.` message; a duplicate target is a
+  domain validation conflict mapped to `422` with the canonical
+  `A saved search named '{name}' already exists.` text — **never `409`**. Every
+  successful `PATCH` returns `200` with the canonical `SavedSearchItem`
+  projection (identical to the `GET` detail shape, exact field order `id`,
+  `name`, `mode`, `query`, `grouped`, `source`, `remote`, `location`,
+  `untracked`, `include_statuses`, `exclude_statuses`, `min_score`,
+  `result_limit`, `created_at`, `updated_at`), built from the row the domain
+  service returns — the definition is never re-read after the rename.
+  Renaming to the stored name (or a case-only variant) is an idempotent no-op:
+  the domain issues no `UPDATE`, `updated_at` is preserved, and the response
+  preserves the stored/original name casing. A genuine rename updates the
+  stored name (with the new name's casing) and `updated_at`. `profile_path`
+  (a local filesystem path) and `description` (unused free text) remain
+  structurally absent, and the response never exposes any free text. The
+  rename introduces no schema change and no migration. The mutation runs on
+  `writable_connection` like the other write endpoints: the configured database
+  must already exist (missing/uninitialized/malformed databases are the
+  canonical privacy-safe `500` and nothing is ever created), the per-database
+  `collection_lock` is held for the whole request (lock contention maps to a
+  privacy-safe `503` with a fixed retry-later message that never exposes lock
+  internals), and the domain service — never the dependency — owns
+  commit/rollback. The lock is always releasable after 404/422/500/503
+  responses.
 - `GET /groups` — distinct opportunities (canonical duplicate groups plus
   ungrouped jobs as singletons), reusing the shared `database.groups`
   `list_all_groups` service with the canonical `presenters.group_dict`
