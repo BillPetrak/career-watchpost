@@ -200,7 +200,7 @@ from careeros.database.groups import (
     list_all_groups,
     list_group_infos,
 )
-from careeros.database.jobs import get_job_by_id, list_jobs
+from careeros.database.jobs import get_job_by_id, list_jobs, search_jobs
 from careeros.database.reminders import ReminderListEntry, get_reminder
 from careeros.database.review import DecisionListItem
 from careeros.database.runs import list_runs
@@ -631,20 +631,43 @@ def create_app() -> FastAPI:
         connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+        query: str = "",
         source: str | None = None,
         remote: bool | None = None,
         location: str | None = None,
         employment_type: str | None = None,
     ) -> JobListResponse:
+        """List stored jobs, optionally narrowed by keyword and filters.
+
+        A non-empty ``query`` routes the listing through the shared
+        ``search_jobs`` pipeline (case-insensitive substring match across title,
+        company, and description); an omitted or empty ``query`` keeps the
+        original ``list_jobs`` behavior byte-identical. Filters compose with the
+        keyword using AND semantics, ``total`` counts the full filtered result
+        set before ``offset``/``limit`` slicing, and ordering stays canonical
+        (``published_at DESC NULLS LAST, id ASC``). Descriptions may
+        participate in matching but are never returned.
+        """
         if connection is None:
             return JobListResponse(items=[], total=0, offset=offset, limit=limit)
-        matches = list_jobs(
-            connection,
-            remote=remote,
-            location=location,
-            source=source,
-            employment_type=employment_type,
-        )
+        if query:
+            matches = search_jobs(
+                connection,
+                query,
+                remote=remote,
+                location=location,
+                source=source,
+                employment_type=employment_type,
+                limit=None,
+            )
+        else:
+            matches = list_jobs(
+                connection,
+                remote=remote,
+                location=location,
+                source=source,
+                employment_type=employment_type,
+            )
         return JobListResponse(
             items=[
                 Job.model_validate(job_dict(job))
