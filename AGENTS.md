@@ -1413,6 +1413,50 @@ canonical `No job found with ID {id}.` message locally.
   before pagination. A missing database returns `200` with an empty envelope
   without creating a file or directory; an uninitialized or malformed database
   returns the canonical privacy-safe `500`; an invalid `state` returns `422`.
+- `GET /report` — a **profile-less** Career Snapshot dashboard backed by the
+  shared `reporting.service.build_report` domain service. It accepts a single
+  query parameter, `limit` (default 10, `ge=1`, `le=100`), which caps the
+  report's list-oriented sections (recently changed applications, each action
+  category, upcoming reminders) exactly as the CLI `report --limit` does. The
+  endpoint never accepts a candidate profile, `profile_path`, or profile
+  contents, never performs profile scoring, and never applies review feedback.
+  It is strictly read-only: it runs on the same `read_only_connection` as the
+  other read endpoints, never acquires the collection lock, never writes,
+  commits, or rolls back, never initializes the schema, and never touches the
+  filesystem or network. The route is orchestration + projection only: it
+  calls `build_report(connection, now=..., limit=...)` with no profile/saved
+  search and projects the immutable `Report` onto an explicit HTTP-safe
+  allow-list of response models (`ReportResponse` and friends in `api/schemas.py`)
+  using shared privacy-pruned presenters in `presenters.py` — never by
+  serializing the internal `Report` wholesale. The response is stable and
+  deterministic except for the server-captured `as_of` timestamp: top-level
+  `as_of`, `overview` (the eleven counters, plus `sources` = privacy-pruned
+  per-source health, `due_sources`, and `source_stats`), `application_pipeline`
+  (`status_counts` zero-filled in canonical `APPLICATION_STATUSES` order and
+  `recently_changed` newest first), `action_items` (`interview`, `offer`,
+  `interested`, `awaiting_progress`), `reminders` (`overdue_count`,
+  `due_today_utc_count`, `open_total`, `upcoming` soonest first), `review_queue`,
+  `recommendations`, and `collection_health` (`sources`). Because the endpoint
+  is profile-less, the profile-dependent `review_queue` and `recommendations`
+  sections stay structurally present with `source` `"none"`, `source_name`
+  `null`, empty `items`/`ranked_jobs`/`ranked_groups`, zero `candidate_count`
+  and `min_score`, and the domain's canonical explanatory `note` — no profile
+  scoring is invented. Privacy/pruning rules are absolute: the HTTP projection
+  omits job descriptions, application/review/reminder notes, reminder messages,
+  `notification_summary` (worker/operational observability), the provider
+  `last_error` text (and any raw/exception/traceback diagnostics), scoring
+  `reasons`/`score_components`, saved-search `description`/`profile_path`,
+  database/filesystem/lock paths, and PID/command metadata. The per-source
+  health projection (`source_status_item_dict`) exposes only the safe
+  operational fields `source`, `min_interval_seconds`, `documented`,
+  `last_attempt`, `last_succeeded`, `fetched`, `inserted`, `updated`,
+  `next_due`, `due`, and `incomplete_runs`. Database semantics match the other
+  read endpoints: a missing database file returns `200` with an all-zero/empty
+  report (and creates no file, parent directory, or lock file), a
+  present-but-uninitialized or malformed database yields the canonical
+  privacy-safe `500`, and `sqlite3.Error` is handled by the existing
+  application-level handler. The endpoint introduces no schema change and no
+  migration (`SCHEMA_VERSION` unchanged).
 
 A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict no-DDL policy (no DDL on read paths, and the

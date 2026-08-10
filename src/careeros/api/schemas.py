@@ -691,6 +691,181 @@ class ReviewQueueResponse(BaseModel):
     limit: int
 
 
+class ReportSourceStatus(BaseModel):
+    """One source's collection status for the Career Snapshot response.
+
+    A privacy-pruned subset of the report's source-status projection: the
+    provider ``last_error`` text is deliberately omitted (it can embed URLs,
+    hostnames, local paths, or tracebacks), as are lock/pid/command metadata.
+    ``last_attempt`` and ``next_due`` are ISO-8601 strings or ``None``.
+    """
+
+    source: str
+    min_interval_seconds: int
+    documented: bool
+    last_attempt: str | None
+    last_succeeded: bool | None
+    fetched: int
+    inserted: int
+    updated: int
+    next_due: str | None
+    due: bool
+    incomplete_runs: int
+
+
+class ReportOverview(BaseModel):
+    """Top-level Career Snapshot counters and per-source snapshot.
+
+    ``sources`` holds the privacy-pruned source-health projections,
+    ``due_sources`` the source names currently due, and ``source_stats`` the
+    unified per-source statistics (mirroring ``GET /sources/stats``).
+    """
+
+    total_jobs: int
+    canonical_groups: int
+    grouped_members: int
+    distinct_opportunities: int
+    tracked_applications: int
+    saved_searches: int
+    reviewed_groups: int
+    unreviewed_groups: int
+    shortlisted_groups: int
+    dismissed_groups: int
+    review_later_groups: int
+    sources: list[ReportSourceStatus]
+    due_sources: list[str]
+    source_stats: list[SourceStats]
+
+
+class ReportRecentlyChangedItem(BaseModel):
+    """One recently-changed tracked application in the Career Snapshot.
+
+    The latest application note is deliberately omitted: it is user-written
+    free text the HTTP API never exposes.
+    """
+
+    job: Job
+    status: str
+    created_at: str
+    updated_at: str
+
+
+class ReportApplicationPipeline(BaseModel):
+    """Application-status counts and the most recently changed applications.
+
+    ``status_counts`` carries one count per canonical ``APPLICATION_STATUSES``
+    entry, zero-filled, preserving the domain order.
+    """
+
+    status_counts: dict[str, int]
+    recently_changed: list[ReportRecentlyChangedItem]
+
+
+class ReportActionItem(BaseModel):
+    """One active action item in the Career Snapshot.
+
+    The latest application note is deliberately omitted: it is user-written
+    free text the HTTP API never exposes.
+    """
+
+    kind: str
+    label: str
+    job: Job
+    status: str
+    updated_at: str
+
+
+class ReportActionItems(BaseModel):
+    """Action items grouped by category, in prominence order."""
+
+    interview: list[ReportActionItem]
+    offer: list[ReportActionItem]
+    interested: list[ReportActionItem]
+    awaiting_progress: list[ReportActionItem]
+
+
+class ReportReminders(BaseModel):
+    """Reminder counts and upcoming reminders in the Career Snapshot.
+
+    ``notification_summary`` is deliberately omitted: it is worker/operational
+    observability the HTTP API never exposes. Upcoming entries use the
+    canonical reminder projection, so reminder messages never appear.
+    """
+
+    overdue_count: int
+    due_today_utc_count: int
+    open_total: int
+    upcoming: list[ReminderItem]
+
+
+class ReportReviewQueueItem(BaseModel):
+    """One ranked review-queue entry in the Career Snapshot.
+
+    ``reasons``, ``score_components``, and feedback are deliberately omitted:
+    they can echo profile terms or embed private review-feedback text.
+    """
+
+    group: Group
+    match_score: int
+
+
+class ReportReviewQueue(BaseModel):
+    """The daily review queue section of the Career Snapshot.
+
+    ``GET /report`` is profile-less, so ``source`` is ``"none"``, ``items`` is
+    empty, and ``candidate_count`` is zero: the section is structurally present
+    without any profile scoring.
+    """
+
+    grouped: bool
+    source: str
+    source_name: str | None
+    candidate_count: int
+    note: str | None
+    items: list[ReportReviewQueueItem]
+
+
+class ReportRecommendations(BaseModel):
+    """The recommended-opportunities section of the Career Snapshot.
+
+    ``GET /report`` is profile-less, so ``source`` is ``"none"``,
+    ``ranked_jobs``/``ranked_groups`` are empty, and ``candidate_count`` is
+    zero: the section is structurally present without any profile scoring.
+    """
+
+    grouped: bool
+    source: str
+    source_name: str | None
+    min_score: int
+    candidate_count: int
+    note: str | None
+    ranked_jobs: list[RankedJobItem]
+    ranked_groups: list[RankedGroupItem]
+
+
+class ReportCollectionHealth(BaseModel):
+    """Per-source collection health, using the privacy-pruned projection."""
+
+    sources: list[ReportSourceStatus]
+
+
+class ReportResponse(BaseModel):
+    """The profile-less Career Snapshot dashboard response.
+
+    Field order is stable and deterministic; ``as_of`` is the only value that
+    changes between requests.
+    """
+
+    as_of: str
+    overview: ReportOverview
+    application_pipeline: ReportApplicationPipeline
+    action_items: ReportActionItems
+    reminders: ReportReminders
+    review_queue: ReportReviewQueue
+    recommendations: ReportRecommendations
+    collection_health: ReportCollectionHealth
+
+
 __all__: tuple[str, ...] = (
     "ApplicationHistoryEvent",
     "ApplicationHistoryResponse",
@@ -716,6 +891,18 @@ __all__: tuple[str, ...] = (
     "RankedJobItem",
     "RankedJobsResponse",
     "ReminderCreateRequest",
+    "ReportActionItem",
+    "ReportActionItems",
+    "ReportApplicationPipeline",
+    "ReportCollectionHealth",
+    "ReportOverview",
+    "ReportRecentlyChangedItem",
+    "ReportRecommendations",
+    "ReportReminders",
+    "ReportResponse",
+    "ReportReviewQueue",
+    "ReportReviewQueueItem",
+    "ReportSourceStatus",
     "ReminderItem",
     "ReminderListResponse",
     "ReminderUpdateRequest",

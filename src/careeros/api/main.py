@@ -1,6 +1,6 @@
 """FastAPI application for the CareerOS API slice.
 
-The slice exposes eighteen read-only GET endpoints backed by the shared database
+The slice exposes nineteen read-only GET endpoints backed by the shared database
 and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``,
 ``GET /applications/{job_id}``, ``GET /applications/{job_id}/history``,
@@ -8,8 +8,9 @@ and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /reminders/{reminder_id}``, ``GET /groups``, ``GET /groups/summary``,
 ``GET /groups/{group_id}``, ``GET /review-decisions``,
 ``GET /review-decisions/{job_id}``,
-``GET /review-decisions/{job_id}/history``, ``GET /saved-searches``, and
-``GET /saved-searches/{name}``) plus three computation-only ``POST``
+``GET /review-decisions/{job_id}/history``, ``GET /saved-searches``,
+``GET /saved-searches/{name}``, and ``GET /report``) plus three
+computation-only ``POST``
 endpoints: ``POST /ranked-jobs``, ``POST /review-queue``, and
 ``POST /saved-searches/{name}/execute``. Every read and computation endpoint is
 strictly read-only with respect to the database and filesystem: nothing creates
@@ -104,17 +105,21 @@ their append-only transition history joined with the canonical job projection,
 the applications endpoints expose tracked applications and their append-only
 status-transition history, and the saved-searches endpoints expose stored
 saved-search definitions for viewing only (list and detail; execution is a
-separate computation endpoint). Application notes, event notes (beyond status
+separate computation endpoint). ``GET /report`` returns a profile-less
+Career Snapshot dashboard backed by the shared
+``reporting.service.build_report`` domain service: it never accepts a profile,
+never performs profile scoring, and projects only an explicit HTTP-safe
+allow-list of report fields. Application notes, event notes (beyond status
 transition values and times), review decision notes, reminder messages, group
-matcher diagnostics, ranking reasons, saved-search ``profile_path`` values
-(local filesystem paths), and saved-search ``description`` values are never
-exposed over HTTP.
+matcher diagnostics, ranking reasons, ``notification_summary``, provider
+collection-error text, saved-search ``profile_path`` values (local filesystem
+paths), and saved-search ``description`` values are never exposed over HTTP.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -149,6 +154,18 @@ from careeros.api.schemas import (
     ReminderItem,
     ReminderListResponse,
     ReminderUpdateRequest,
+    ReportActionItem,
+    ReportActionItems,
+    ReportApplicationPipeline,
+    ReportCollectionHealth,
+    ReportOverview,
+    ReportRecentlyChangedItem,
+    ReportRecommendations,
+    ReportReminders,
+    ReportResponse,
+    ReportReviewQueue,
+    ReportReviewQueueItem,
+    ReportSourceStatus,
     ReviewDecisionEvent,
     ReviewDecisionHistoryResponse,
     ReviewDecisionItem,
@@ -166,7 +183,7 @@ from careeros.api.schemas import (
     SourceStats,
     SourceStatsListResponse,
 )
-from careeros.applications.models import validate_status
+from careeros.applications.models import APPLICATION_STATUSES, validate_status
 from careeros.applications.service import (
     UnknownJobError as ApplicationUnknownJobError,
 )
@@ -188,18 +205,22 @@ from careeros.database.reminders import ReminderListEntry, get_reminder
 from careeros.database.review import DecisionListItem
 from careeros.database.runs import list_runs
 from careeros.presenters import (
+    action_item_dict,
     application_event_dict,
     application_item_dict,
+    application_snapshot_dict,
     group_dict,
     job_dict,
     ranked_group_item_dict,
     ranked_job_item_dict,
     reminder_item_dict,
+    report_review_queue_item_dict,
     review_decision_event_dict,
     review_decision_item_dict,
     review_queue_item_dict,
     saved_search_item_dict,
     source_stats_dict,
+    source_status_item_dict,
 )
 from careeros.ranking.scorer import CandidateProfile
 from careeros.reminders.models import (
@@ -222,6 +243,8 @@ from careeros.reminders.service import (
     reopen_reminder,
     update_reminder,
 )
+from careeros.reporting.models import Report
+from careeros.reporting.service import build_report
 from careeros.review.models import (
     UnknownJobError,
     validate_decision,
@@ -311,6 +334,18 @@ _SAVED_SEARCH_DEFINITION_FIELDS: tuple[str, ...] = (
     "result_limit",
 )
 
+# The canonical profile-less report notes, mirroring
+# ``reporting.service.build_report`` exactly: they describe why the
+# profile-dependent review-queue and recommendations sections are empty. The
+# missing-database empty report reuses them so it matches a seeded
+# profile-less report structurally.
+_NO_PROFILE_REVIEW_QUEUE_NOTE = (
+    "No profile or saved search provided; no review queue computed."
+)
+_NO_PROFILE_RECOMMENDATIONS_NOTE = (
+    "No profile or saved search provided; no recommendations computed."
+)
+
 
 def _no_job_found_message(job_id: int) -> str:
     """Return the canonical "no such job" message for a job id."""
@@ -350,6 +385,183 @@ def _to_profile(request_profile: CandidateProfileRequest) -> CandidateProfile:
         hard_excluded_terms=tuple(request_profile.hard_excluded_terms),
         preferred_employment_types=tuple(request_profile.preferred_employment_types),
         preferred_seniority=tuple(request_profile.preferred_seniority),
+    )
+
+
+def _report_response(report: Report) -> ReportResponse:
+    """Project a domain ``Report`` onto the HTTP-safe response model.
+
+    An explicit positive allow-list: every field is built field-by-field from
+    approved safe values (the shared HTTP-safe job/group/reminder/source-status
+    projections), never by serializing the internal ``Report`` wholesale.
+    ``notification_summary``, provider ``last_error`` text, notes, reminder
+    messages, scoring reasons/components, and feedback are structurally absent.
+    ``GET /report`` is profile-less, so the review-queue items and
+    recommendation jobs/groups the domain service reports are empty; the
+    sections remain present with ``source="none"``.
+    """
+    overview = report.overview
+    pipeline = report.pipeline
+    actions = report.actions
+    review = report.review
+    recommendations = report.recommendations
+    return ReportResponse(
+        as_of=report.now.isoformat(),
+        overview=ReportOverview(
+            total_jobs=overview.total_jobs,
+            canonical_groups=overview.canonical_groups,
+            grouped_members=overview.grouped_members,
+            distinct_opportunities=overview.distinct_opportunities,
+            tracked_applications=overview.tracked_applications,
+            saved_searches=overview.saved_searches,
+            reviewed_groups=overview.reviewed_groups,
+            unreviewed_groups=overview.unreviewed_groups,
+            shortlisted_groups=overview.shortlisted_groups,
+            dismissed_groups=overview.dismissed_groups,
+            review_later_groups=overview.review_later_groups,
+            sources=[
+                ReportSourceStatus.model_validate(source_status_item_dict(status))
+                for status in overview.source_snapshots
+            ],
+            due_sources=list(overview.due_sources),
+            source_stats=[
+                SourceStats.model_validate(source_stats_dict(stats))
+                for stats in overview.source_stats
+            ],
+        ),
+        application_pipeline=ReportApplicationPipeline(
+            status_counts=dict(pipeline.status_counts),
+            recently_changed=[
+                ReportRecentlyChangedItem.model_validate(
+                    application_snapshot_dict(snapshot)
+                )
+                for snapshot in pipeline.recently_changed
+            ],
+        ),
+        action_items=ReportActionItems(
+            interview=[
+                ReportActionItem.model_validate(action_item_dict(item))
+                for item in actions.interview
+            ],
+            offer=[
+                ReportActionItem.model_validate(action_item_dict(item))
+                for item in actions.offer
+            ],
+            interested=[
+                ReportActionItem.model_validate(action_item_dict(item))
+                for item in actions.interested
+            ],
+            awaiting_progress=[
+                ReportActionItem.model_validate(action_item_dict(item))
+                for item in actions.awaiting_progress
+            ],
+        ),
+        reminders=ReportReminders(
+            overdue_count=report.reminders.overdue_count,
+            due_today_utc_count=report.reminders.due_today_utc_count,
+            open_total=report.reminders.open_total,
+            upcoming=[
+                ReminderItem.model_validate(
+                    reminder_item_dict(
+                        ReminderListEntry(reminder=snapshot.reminder, job=snapshot.job)
+                    )
+                )
+                for snapshot in report.reminders.upcoming
+            ],
+        ),
+        review_queue=ReportReviewQueue(
+            grouped=review.grouped,
+            source=review.source,
+            source_name=review.source_name,
+            candidate_count=review.candidate_count,
+            note=review.note,
+            items=[
+                ReportReviewQueueItem.model_validate(
+                    report_review_queue_item_dict(item)
+                )
+                for item in review.items
+            ],
+        ),
+        recommendations=ReportRecommendations(
+            grouped=recommendations.grouped,
+            source=recommendations.source,
+            source_name=recommendations.source_name,
+            min_score=recommendations.min_score,
+            candidate_count=recommendations.candidate_count,
+            note=recommendations.note,
+            ranked_jobs=[
+                RankedJobItem.model_validate(ranked_job_item_dict(item))
+                for item in recommendations.ranked_jobs
+            ],
+            ranked_groups=[
+                RankedGroupItem.model_validate(ranked_group_item_dict(item))
+                for item in recommendations.ranked_groups
+            ],
+        ),
+        collection_health=ReportCollectionHealth(
+            sources=[
+                ReportSourceStatus.model_validate(source_status_item_dict(status))
+                for status in report.health.per_source
+            ],
+        ),
+    )
+
+
+def _empty_report_response(now: datetime) -> ReportResponse:
+    """Build the all-zero/empty report for a missing database.
+
+    ``GET /report`` never creates a database file, parent directory, or lock
+    file: the missing-database report is a fully static all-zero/empty
+    snapshot whose review-queue and recommendations sections match the
+    profile-less seeded report (``source="none"`` with the canonical note).
+    """
+    return ReportResponse(
+        as_of=now.isoformat(),
+        overview=ReportOverview(
+            total_jobs=0,
+            canonical_groups=0,
+            grouped_members=0,
+            distinct_opportunities=0,
+            tracked_applications=0,
+            saved_searches=0,
+            reviewed_groups=0,
+            unreviewed_groups=0,
+            shortlisted_groups=0,
+            dismissed_groups=0,
+            review_later_groups=0,
+            sources=[],
+            due_sources=[],
+            source_stats=[],
+        ),
+        application_pipeline=ReportApplicationPipeline(
+            status_counts=dict.fromkeys(APPLICATION_STATUSES, 0),
+            recently_changed=[],
+        ),
+        action_items=ReportActionItems(
+            interview=[], offer=[], interested=[], awaiting_progress=[]
+        ),
+        reminders=ReportReminders(
+            overdue_count=0, due_today_utc_count=0, open_total=0, upcoming=[]
+        ),
+        review_queue=ReportReviewQueue(
+            grouped=False,
+            source="none",
+            source_name=None,
+            candidate_count=0,
+            note=_NO_PROFILE_REVIEW_QUEUE_NOTE,
+            items=[],
+        ),
+        recommendations=ReportRecommendations(
+            grouped=False,
+            source="none",
+            source_name=None,
+            min_score=0,
+            candidate_count=0,
+            note=_NO_PROFILE_RECOMMENDATIONS_NOTE,
+            ranked_jobs=[],
+            ranked_groups=[],
+        ),
+        collection_health=ReportCollectionHealth(sources=[]),
     )
 
 
@@ -1663,6 +1875,32 @@ def create_app() -> FastAPI:
             offset=offset,
             limit=limit,
         )
+
+    @app.get("/report", response_model=ReportResponse)
+    def report(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = 10,
+    ) -> ReportResponse:
+        """Return a profile-less Career Snapshot dashboard (read-only).
+
+        Builds the report through the shared ``reporting.service.build_report``
+        domain service with no profile and no saved search, then projects the
+        immutable ``Report`` onto an explicit HTTP-safe allow-list. The
+        profile-dependent review-queue and recommendations sections stay
+        structurally present with ``source="none"`` and empty items, and
+        private/internal fields (notes, reminder messages,
+        ``notification_summary``, provider ``last_error`` text, scoring
+        reasons/components, paths, and lock metadata) are never exposed.
+        ``limit`` caps the report's list-oriented sections (recently changed,
+        action items, upcoming reminders). A missing database yields an
+        all-zero/empty report without creating a file, directory, or schema;
+        an uninitialized or malformed database yields the canonical
+        privacy-safe ``500``.
+        """
+        now = datetime.now(UTC)
+        if connection is None:
+            return _empty_report_response(now)
+        return _report_response(build_report(connection, now=now, limit=limit))
 
     return app
 

@@ -29,7 +29,13 @@ from careeros.review.service import QueueItem
 from careeros.saved_searches.models import SavedSearch
 
 if TYPE_CHECKING:
+    from careeros.reporting.models import (
+        ActionItem,
+        ApplicationSnapshot,
+        ReviewQueueItem,
+    )
     from careeros.source_stats.models import FieldCoverage, SourceStats
+    from careeros.status import SourceStatus
 
 
 def job_dict(job: StoredJob) -> dict[str, Any]:
@@ -285,9 +291,82 @@ def source_stats_dict(stats: SourceStats) -> dict[str, Any]:
     }
 
 
+def source_status_item_dict(status: SourceStatus) -> dict[str, Any]:
+    """Serialize one source's collection status for the HTTP API.
+
+    A privacy-pruned subset of the report's source-status projection: the
+    provider ``last_error`` text is deliberately omitted because it can embed
+    URLs, hostnames, local paths, or tracebacks, and lock/pid/command metadata
+    is never carried by the domain status snapshot. Timestamps are ISO-8601
+    strings (or ``None``), matching the report renderer.
+    """
+    return {
+        "source": status.source,
+        "min_interval_seconds": int(status.min_interval.total_seconds()),
+        "documented": status.documented,
+        "last_attempt": (
+            status.last_attempt.isoformat() if status.last_attempt is not None else None
+        ),
+        "last_succeeded": status.last_succeeded,
+        "fetched": status.last_fetched,
+        "inserted": status.last_inserted,
+        "updated": status.last_updated,
+        "next_due": (
+            status.next_due.isoformat() if status.next_due is not None else None
+        ),
+        "due": status.due,
+        "incomplete_runs": status.incomplete_runs,
+    }
+
+
+def application_snapshot_dict(snapshot: ApplicationSnapshot) -> dict[str, Any]:
+    """Serialize one recently-changed tracked application for the HTTP API.
+
+    The ``latest_note`` (user-written free text) is deliberately omitted: it is
+    local workflow state the HTTP API never exposes.
+    """
+    return {
+        "job": job_dict(snapshot.job),
+        "status": snapshot.application.current_status,
+        "created_at": snapshot.application.created_at,
+        "updated_at": snapshot.application.updated_at,
+    }
+
+
+def action_item_dict(item: ActionItem) -> dict[str, Any]:
+    """Serialize one report action item for the HTTP API.
+
+    The ``latest_note`` (user-written free text) is deliberately omitted: it is
+    local workflow state the HTTP API never exposes.
+    """
+    return {
+        "kind": item.kind,
+        "label": item.label,
+        "job": job_dict(item.job),
+        "status": item.status,
+        "updated_at": item.updated_at,
+    }
+
+
+def report_review_queue_item_dict(item: ReviewQueueItem) -> dict[str, Any]:
+    """Serialize one report review-queue entry for the HTTP API.
+
+    A narrowly scoped subset of the report renderer's queue-item shape: the
+    canonical group and the match score. ``reasons``, ``score_components``,
+    and feedback are deliberately omitted because they can echo profile terms
+    or embed private review-feedback text, which the HTTP API never exposes.
+    """
+    return {
+        "group": group_dict(item.group),
+        "match_score": item.match_score,
+    }
+
+
 __all__: tuple[str, ...] = (
+    "action_item_dict",
     "application_event_dict",
     "application_item_dict",
+    "application_snapshot_dict",
     "field_coverage_dict",
     "group_dict",
     "job_dict",
@@ -297,9 +376,11 @@ __all__: tuple[str, ...] = (
     "ranked_job_dict",
     "ranked_job_item_dict",
     "reminder_item_dict",
+    "report_review_queue_item_dict",
     "review_decision_event_dict",
     "review_decision_item_dict",
     "review_queue_item_dict",
     "saved_search_item_dict",
     "source_stats_dict",
+    "source_status_item_dict",
 )
