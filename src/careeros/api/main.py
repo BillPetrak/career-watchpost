@@ -66,13 +66,19 @@ through the shared ``saved_searches.service.delete_search`` domain service
 (returning the deleted ``SavedSearchItem``; a repeated DELETE is a canonical
 ``404`` and the route never accepts or exposes ``profile_path`` or
 ``description``), and
-``PATCH /saved-searches/{name}`` renames one saved-search definition through
-the shared ``saved_searches.service.rename_search`` domain service (a
+``PATCH /saved-searches/{name}`` either renames one saved-search definition
+through the shared ``saved_searches.service.rename_search`` domain service (a
 rename-only body carrying exactly the replacement ``name``; source-name
 lookup is case-insensitive, a same-name or case-only rename is an idempotent
 no-op preserving ``updated_at``, a duplicate target is a domain validation
-conflict mapped to ``422``, and the route never accepts or exposes
-``profile_path``, ``description``, or any free text). Each domain
+conflict mapped to ``422``) or updates its definition through the shared
+``saved_searches.service.update_search`` domain service (one or more
+definition fields and/or ``clears``, with omitted/null fields retaining prior
+values and ``[]`` emptying stored status lists; a genuine change bumps
+``updated_at`` and an identical repeat is an idempotent no-op). Mixing a
+rename with definition updates or non-empty ``clears`` is rejected with
+``422``, and the route never accepts or exposes
+``profile_path``, ``description``, ``mode``, or any free text. Each domain
 service owns the transaction and audit event. The mutations run on a writable
 connection under the per-database
 ``collection_lock`` (contention maps to a privacy-safe ``503``) and require an
@@ -156,7 +162,7 @@ from careeros.api.schemas import (
     SavedSearchExecutionResponse,
     SavedSearchItem,
     SavedSearchListResponse,
-    SavedSearchRenameRequest,
+    SavedSearchUpdateRequest,
     SourceStats,
     SourceStatsListResponse,
 )
@@ -239,6 +245,7 @@ from careeros.saved_searches.execution import (
 from careeros.saved_searches.models import (
     DuplicateNameError,
     SavedSearchFields,
+    SavedSearchPatch,
     UnknownSearchError,
 )
 from careeros.saved_searches.models import (
@@ -250,6 +257,7 @@ from careeros.saved_searches.service import (
     get_search,
     list_searches,
     rename_search,
+    update_search,
 )
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 
@@ -285,6 +293,23 @@ MAX_FETCH_QUEUE = 1_000_000
 # endpoints). Decision and event counts are bounded by the stored jobs they
 # attach to; this mirrors the export package's record cap without importing it.
 MAX_FETCH_DECISIONS = 1_000_000
+
+# The definition fields a generalized PATCH /saved-searches/{name} can update.
+# ``name`` is excluded (it is the rename field, dispatched to rename_search)
+# and ``mode``/``profile_path``/``description`` are immutable or private over
+# HTTP and can never be supplied.
+_SAVED_SEARCH_DEFINITION_FIELDS: tuple[str, ...] = (
+    "query",
+    "grouped",
+    "source",
+    "remote",
+    "location",
+    "untracked",
+    "include_statuses",
+    "exclude_statuses",
+    "min_score",
+    "result_limit",
+)
 
 
 def _no_job_found_message(job_id: int) -> str:
@@ -1305,36 +1330,144 @@ def create_app() -> FastAPI:
         return SavedSearchItem.model_validate(saved_search_item_dict(stored))
 
     @app.patch("/saved-searches/{name}", response_model=SavedSearchItem)
-    def rename_saved_search(
+    def update_saved_search(
         connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
         name: str,
-        payload: SavedSearchRenameRequest,
+        payload: SavedSearchUpdateRequest,
     ) -> SavedSearchItem:
-        """Rename a saved-search definition (write).
+        """Update a saved-search definition, or rename it (write).
 
-        A rename-only endpoint: the request body carries exactly the
-        replacement ``name``. All logic lives in the shared
-        ``saved_searches.service.rename_search`` domain service: this route
-        only validates the request body, translates known domain errors, and
-        returns the canonical ``SavedSearchItem`` projection of the renamed
-        definition (built from the row the domain service returns; the
-        definition is never re-read after the rename). Source-name lookup is
-        case-insensitive through the shared service, exactly like
-        ``GET /saved-searches/{name}``. Renaming to the stored name (or a
-        case-only variant) is an idempotent no-op that preserves ``updated_at``;
-        a duplicate target is a domain validation conflict mapped to ``422``
-        with the canonical domain text. The writable connection runs under the
-        per-database collection lock, so this endpoint coordinates with every
-        CLI/collector writer; lock contention maps to a privacy-safe ``503``
-        and a missing or uninitialized database to the canonical privacy-safe
-        ``500``. The route performs no SQL, no commit, and no rollback, and
-        never accepts or exposes ``profile_path``, ``description``, or any free
-        text.
+        The generalized ``PATCH /saved-searches/{name}`` endpoint dispatches on
+        the request body:
+
+        - a rename-only body (``name`` and no definition change, no non-empty
+          ``clears``) is handled by the shared
+          ``saved_searches.service.rename_search`` domain service, exactly as
+          before: source-name lookup is case-insensitive, same-name/case-only
+          renames are idempotent no-ops preserving ``updated_at``, a duplicate
+          target maps to ``422`` with the canonical domain text, and the
+          renamed definition is returned from the domain without being
+          re-read;
+        - a definition-update body (one or more definition fields and/or
+          non-empty ``clears``, and no ``name``) is handled by the shared
+          ``saved_searches.service.update_search`` domain service: omitted and
+          ``null`` fields retain the stored value, provided non-null values
+          update it, ``[]`` empties a stored status list, ``false`` is a real
+          supplied boolean, and ``clears`` performs exactly the domain
+          supported resets;
+        - a body mixing ``name`` with any definition change or non-empty
+          ``clears`` is rejected with ``422`` because the two branches are
+          dispatched to different domain services.
+
+        The route performs only the thin HTTP-contract validation needed to
+        make the request unambiguous (an empty/no-op body, a rename mixed with
+        a definition update or clears, a field supplied while also cleared,
+        and a status clear mixed with explicitly supplied status-filter
+        fields) and delegates all business/domain validation to the existing
+        saved-search domain. ``mode`` is immutable, ``profile_path`` and
+        ``description`` are never accepted, loaded, cleared, or returned, and
+        the stored ``profile_path`` of a rank-mode definition is carried
+        forward byte-identically by the domain merge. The writable connection
+        runs under the per-database collection lock, so this endpoint
+        coordinates with every CLI/collector writer; lock contention maps to a
+        privacy-safe ``503`` and a missing or uninitialized database to the
+        canonical privacy-safe ``500``. The route performs no SQL, no commit,
+        and no rollback; the domain service owns the transaction.
         """
+        clears = tuple(payload.clears) if payload.clears else ()
+
+        def _has_definition_change() -> bool:
+            return any(
+                getattr(payload, field) is not None
+                for field in _SAVED_SEARCH_DEFINITION_FIELDS
+            )
+
+        if payload.name is not None:
+            if _has_definition_change() or clears:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "A saved-search rename cannot be combined with "
+                        "definition updates or clears in the same request."
+                    ),
+                )
+            try:
+                stored = rename_search(connection, name=name, new_name=payload.name)
+            except DuplicateNameError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
+            except UnknownSearchError:
+                raise HTTPException(
+                    status_code=404, detail=_no_saved_search_found_message(name)
+                ) from None
+            except SavedSearchValidationError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
+            return SavedSearchItem.model_validate(saved_search_item_dict(stored))
+
+        if not _has_definition_change() and not clears:
+            raise HTTPException(
+                status_code=422,
+                detail="No saved-search fields to update were provided.",
+            )
+
+        if "source" in clears and payload.source is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Cannot set and clear 'source' in the same request.",
+            )
+        if "location" in clears and payload.location is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Cannot set and clear 'location' in the same request.",
+            )
+        if "remote" in clears and payload.remote is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Cannot set and clear 'remote' in the same request.",
+            )
+        if "min_score" in clears and payload.min_score is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Cannot set and clear 'min_score' in the same request.",
+            )
+        if "status_filters" in clears and any(
+            getattr(payload, field) is not None
+            for field in ("untracked", "include_statuses", "exclude_statuses")
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Cannot clear status filters while supplying untracked, "
+                    "include_statuses, or exclude_statuses."
+                ),
+            )
+
+        patch = SavedSearchPatch(
+            query=payload.query,
+            grouped=payload.grouped,
+            source=payload.source,
+            remote=payload.remote,
+            location=payload.location,
+            untracked=payload.untracked,
+            include_statuses=(
+                tuple(payload.include_statuses)
+                if payload.include_statuses is not None
+                else None
+            ),
+            exclude_statuses=(
+                tuple(payload.exclude_statuses)
+                if payload.exclude_statuses is not None
+                else None
+            ),
+            min_score=payload.min_score,
+            result_limit=payload.result_limit,
+        )
         try:
-            stored = rename_search(connection, name=name, new_name=payload.name)
-        except DuplicateNameError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from None
+            stored, _changed = update_search(
+                connection,
+                name=name,
+                patch=patch,
+                clears=frozenset(clears),
+            )
         except UnknownSearchError:
             raise HTTPException(
                 status_code=404, detail=_no_saved_search_found_message(name)

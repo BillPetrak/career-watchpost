@@ -717,16 +717,19 @@ shared `careeros.saved_searches.service.delete_search` domain service
 DELETE is a canonical `404`, name lookup is case-insensitive through the shared
 service and the response preserves the stored/original name casing, and
 `profile_path`/`description` remain structurally absent), and
-`PATCH /saved-searches/{name}` renames one saved-search definition through the
-shared `careeros.saved_searches.service.rename_search` domain service (a
-rename-only body carrying exactly the replacement `name`; source-name lookup
-is case-insensitive through the shared service, a same-name or case-only
-rename is an idempotent no-op that preserves the stored casing and `updated_at`,
-a genuine rename updates the stored name and `updated_at`, and a duplicate
-target is a domain validation conflict mapped to `422` with the canonical
-domain text — never `409`; the route never accepts or exposes `profile_path`,
-`description`, or any free text, and there is no general saved-search update
-over HTTP); each
+`PATCH /saved-searches/{name}` updates or renames one saved-search definition
+through the shared `careeros.saved_searches.service.update_search` and
+`careeros.saved_searches.service.rename_search` domain services (a rename-only
+body carrying exactly the replacement `name`; source-name lookup is
+case-insensitive through the shared service, a same-name or case-only rename
+is an idempotent no-op that preserves the stored casing and `updated_at`, a
+genuine rename updates the stored name and `updated_at`, and a duplicate target
+is a domain validation conflict mapped to `422` with the canonical domain text
+— never `409`; a definition-update body updates `query`, `grouped`, `source`,
+`remote`, `location`, `untracked`, `include_statuses`, `exclude_statuses`,
+`min_score`, `result_limit`, and/or clears filters via `clears`; the route
+never accepts or exposes `profile_path`, `description`, or any free text);
+each
 domain service owns the transaction and audit event. HTTP writes run on a
 `writable_connection` (see
 `src/careeros/api/deps.py`): the configured database file must already exist (a
@@ -1257,36 +1260,56 @@ canonical `No job found with ID {id}.` message locally.
   privacy-safe `503` with a fixed retry-later message that never exposes lock
   internals), and the domain service — never the dependency — owns
   commit/rollback. The lock is always releasable after 404/500/503 responses.
-- `PATCH /saved-searches/{name}` — the slice's saved-search-rename mutation
-  endpoint. Renames one saved-search definition through the shared
+- `PATCH /saved-searches/{name}` — the slice's saved-search update and rename
+  mutation endpoint. Dispatches on the request body exactly: (A) a rename-only
+  body (only the replacement `name`, with no definition-update field and no
+  non-empty `clears`) is handled by the shared
   `careeros.saved_searches.service.rename_search` domain service, which owns
   the `UPDATE`, the transaction commit, and rollback on any `sqlite3.Error`;
-  the route performs no SQL, no commit, and no rollback. The request body is
-  `{"name": "New name"}` via a dedicated `SavedSearchRenameRequest` model with
-  `extra="forbid"`; only the replacement `name` is accepted, so unknown body
-  fields — including any `profile_path`, `description`, `query`, `mode`,
-  `message`, or `note` — are rejected with `422`, and an empty/whitespace
-  `name` flows through the domain's `normalize_name` to its canonical `422`.
-  Name lookup is case-insensitive through the shared service (`name COLLATE
-  NOCASE`; the API never re-folds case itself), exactly like
-  `GET /saved-searches/{name}`; no artificial regex/length/name validation is
-  applied to the path parameter. An unknown source name returns `404` with the
-  canonical `No saved search named '{name}'.` message; a duplicate target is a
-  domain validation conflict mapped to `422` with the canonical
-  `A saved search named '{name}' already exists.` text — **never `409`**. Every
-  successful `PATCH` returns `200` with the canonical `SavedSearchItem`
-  projection (identical to the `GET` detail shape, exact field order `id`,
-  `name`, `mode`, `query`, `grouped`, `source`, `remote`, `location`,
-  `untracked`, `include_statuses`, `exclude_statuses`, `min_score`,
-  `result_limit`, `created_at`, `updated_at`), built from the row the domain
-  service returns — the definition is never re-read after the rename.
-  Renaming to the stored name (or a case-only variant) is an idempotent no-op:
-  the domain issues no `UPDATE`, `updated_at` is preserved, and the response
-  preserves the stored/original name casing. A genuine rename updates the
-  stored name (with the new name's casing) and `updated_at`. `profile_path`
-  (a local filesystem path) and `description` (unused free text) remain
-  structurally absent, and the response never exposes any free text. The
-  rename introduces no schema change and no migration. The mutation runs on
+  (B) a definition-update body (one or more of `query`, `grouped`, `source`,
+  `remote`, `location`, `untracked`, `include_statuses`, `exclude_statuses`,
+  `min_score`, `result_limit`, and/or a non-empty `clears` list, with no
+  non-null `name`) is handled by the shared
+  `careeros.saved_searches.service.update_search` domain service; (C) a body
+  mixing `name` with any definition change or non-empty `clears` is rejected
+  with `422`. The route performs no SQL, no commit, and no rollback. The
+  request body is via a dedicated `SavedSearchUpdateRequest` model with
+  `extra="forbid"`; the accepted fields are `name`, `query`, `grouped`,
+  `source`, `remote`, `location`, `untracked`, `include_statuses`,
+  `exclude_statuses`, `min_score`, `result_limit`, and `clears` (a list of
+  literals restricted to `source`, `location`, `remote`, `min_score`,
+  `status_filters` — never `profile_path`/`description`), so unknown body
+  fields — including any `mode`, `message`, `note`, `id`, `created_at`,
+  `updated_at`, `profile_path`, or `description` — are rejected with `422`.
+  Omitted fields and explicit `null` retain stored values; provided non-null
+  values update; `[]` empties a stored status list; `false` is a real supplied
+  boolean; `clears` omitted/null/empty resets nothing. A field supplied
+  non-null while also named in `clears`, or a `status_filters` clear combined
+  with `untracked`/`include_statuses`/`exclude_statuses`, is rejected with
+  `422`, as are empty/no-op bodies. Name lookup is case-insensitive through
+  the shared service (`name COLLATE NOCASE`; the API never re-folds case
+  itself), exactly like `GET /saved-searches/{name}`; no artificial
+  regex/length/name validation is applied to the path parameter. An unknown
+  name returns `404` with the canonical `No saved search named '{name}'.`
+  message; a duplicate rename target is a domain validation conflict mapped to
+  `422` with the canonical `A saved search named '{name}' already exists.`
+  text — **never `409`**. All definition validation (empty/whitespace
+  `query`/`source`/`location`, invalid statuses, include/exclude and untracked
+  conflicts, `min_score` bounds and rank-only rule, `result_limit` ≥ 1) is
+  delegated to the domain. `mode` is immutable and `profile_path`/`description`
+  are never accepted, loaded, cleared, or returned; the stored `profile_path`
+  of a rank-mode definition is carried forward byte-identically by the domain
+  merge and the route never dereferences it. Every successful `PATCH` returns
+  `200` with the canonical `SavedSearchItem` projection (identical to the
+  `GET` detail shape, exact field order `id`, `name`, `mode`, `query`,
+  `grouped`, `source`, `remote`, `location`, `untracked`, `include_statuses`,
+  `exclude_statuses`, `min_score`, `result_limit`, `created_at`, `updated_at`),
+  built from the row the domain service returns — the definition is never
+  re-read after the update. Renaming to the stored name (or a case-only
+  variant) and re-PATCHing identical definition values are idempotent domain
+  no-ops: no `UPDATE`, `updated_at` preserved, and the response preserves the
+  stored/original name casing; a genuine change updates `updated_at`. The
+  update introduces no schema change and no migration. The mutation runs on
   `writable_connection` like the other write endpoints: the configured database
   must already exist (missing/uninitialized/malformed databases are the
   canonical privacy-safe `500` and nothing is ever created), the per-database

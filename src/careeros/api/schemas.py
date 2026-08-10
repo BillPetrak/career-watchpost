@@ -284,22 +284,56 @@ class SavedSearchListResponse(BaseModel):
     limit: int
 
 
-class SavedSearchRenameRequest(BaseModel):
+SavedSearchClearTarget = Literal[
+    "source",
+    "location",
+    "remote",
+    "min_score",
+    "status_filters",
+]
+
+
+class SavedSearchUpdateRequest(BaseModel):
     """Request body for ``PATCH /saved-searches/{name}``.
 
-    A rename-only body: the only accepted field is the replacement ``name``.
-    Empty/whitespace names are validated by the existing saved-search domain
-    (``normalize_name``), which this schema deliberately does not duplicate,
-    and duplicate-target and unknown-source semantics live entirely in the
-    domain service. Unknown body fields — including any ``profile_path``,
-    ``description``, ``query``, ``mode``, ``message``, or ``note`` — are
-    rejected with ``422``: this mutation request uses ``extra="forbid"`` so
-    no private or local-only field is ever accepted.
+    A generalized partial update: either a rename-only body (the replacement
+    ``name`` and nothing else) or a definition-update body (one or more
+    definition fields and/or ``clears``). Mixing a rename with definition
+    updates or non-empty ``clears`` is rejected by the route with ``422``
+    because the two branches are dispatched to different domain services
+    (``rename_search`` vs ``update_search``). All definition fields follow the
+    domain's partial-update semantics: omitted fields and explicit ``null``
+    retain the stored value, provided non-null values update it, and ``[]``
+    sets a stored status list to empty. ``clears`` uses the narrow literal
+    vocabulary of the domain's clear targets (``source``, ``location``,
+    ``remote``, ``min_score``, ``status_filters``); supplying a field while
+    also clearing it is rejected by the route with ``422``. Definition
+    validation (name/query/source/location normalization, status validation,
+    include/exclude and untracked conflicts, ``min_score``/``result_limit``
+    bounds, and rank-mode rules) is deliberately delegated to the existing
+    saved-search domain (``validate_fields`` / ``update_search``), which this
+    schema does not duplicate. Unknown body fields — including any
+    ``profile_path``, ``description``, ``mode``, ``message``, ``note``, ``id``,
+    ``created_at``, or ``updated_at`` — are rejected with ``422``: this
+    mutation request uses ``extra="forbid"`` so no private or local-only field
+    is ever accepted, persisted, or returned, and the stored ``profile_path``
+    of a rank-mode definition is never accepted, cleared, loaded, or exposed.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str
+    name: str | None = None
+    query: str | None = None
+    grouped: bool | None = None
+    source: str | None = None
+    remote: bool | None = None
+    location: str | None = None
+    untracked: bool | None = None
+    include_statuses: list[str] | None = None
+    exclude_statuses: list[str] | None = None
+    min_score: int | None = None
+    result_limit: int | None = None
+    clears: list[SavedSearchClearTarget] | None = None
 
 
 class SavedSearchCreateRequest(BaseModel):
@@ -693,12 +727,13 @@ __all__: tuple[str, ...] = (
     "ReviewQueueItem",
     "ReviewQueueRequest",
     "ReviewQueueResponse",
+    "SavedSearchClearTarget",
     "SavedSearchCreateRequest",
     "SavedSearchExecuteRequest",
     "SavedSearchExecutionResponse",
     "SavedSearchItem",
     "SavedSearchListResponse",
-    "SavedSearchRenameRequest",
+    "SavedSearchUpdateRequest",
     "SourceStats",
     "SourceStatsListResponse",
 )
