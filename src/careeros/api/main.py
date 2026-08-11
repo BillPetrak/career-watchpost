@@ -1,7 +1,8 @@
 """FastAPI application for the CareerOS API slice.
 
-The slice exposes nineteen read-only GET endpoints backed by the shared database
+The slice exposes twenty read-only GET endpoints backed by the shared database
 and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
+``GET /jobs/{job_id}/group``,
 ``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``,
 ``GET /applications/{job_id}``, ``GET /applications/{job_id}/history``,
 ``GET /reminders``,
@@ -24,7 +25,12 @@ pagination while keeping the job projection and ordering unchanged. ``GET
 keyword (``query``) and application-tracking filters through the shared
 grouped-search and group-tracking helpers (``search_grouped`` and
 ``apply_filter_to_groups``), keeping the group projection and ordering
-unchanged and never adding an application status to any item. Both
+unchanged and never adding an application status to any item. ``GET
+/jobs/{job_id}/group`` resolves the canonical distinct opportunity containing
+one stored job: a grouped member returns its full canonical group (even when it
+is not the representative), and an ungrouped or never-grouped job returns a
+one-member singleton group with a null ``group_id``, matching the
+``GET /groups`` singleton convention. Both
 ``POST /ranked-jobs`` and ``POST /review-queue`` compute a ranking
 from a candidate profile submitted inline in the request body and create no
 resource; they never read profile files, never persist or log the submitted
@@ -212,6 +218,7 @@ from careeros.database.applications import (
 )
 from careeros.database.groups import (
     GroupedJob,
+    group_ids_for_jobs,
     grouping_summary,
     list_all_groups,
     list_group_infos,
@@ -758,6 +765,52 @@ def create_app() -> FastAPI:
             stored = get_job_by_id(connection, job_id)
             if stored is not None:
                 return Job.model_validate(job_dict(stored))
+        raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
+
+    @app.get("/jobs/{job_id}/group", response_model=Group)
+    def show_job_group(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        job_id: int,
+    ) -> Group:
+        """Return the canonical distinct opportunity containing one stored job.
+
+        Resolves the job's duplicate-group context in one read: a job that is a
+        member of a canonical group returns that full group (resolved through
+        membership, so a non-representative member returns the same group), and
+        an ungrouped or never-grouped job returns a one-member singleton group
+        with a null ``group_id``, matching the ``GET /groups`` singleton
+        convention. The response uses the shared ``group_dict`` projection, so
+        matcher diagnostics, job descriptions, and workflow state are never
+        exposed. Read-only: never writes, never locks, and never touches the
+        filesystem or network.
+        """
+        if connection is not None:
+            stored = get_job_by_id(connection, job_id)
+            if stored is not None:
+                group_id = group_ids_for_jobs(connection, [job_id])[job_id]
+                if group_id is not None:
+                    infos = list_group_infos(connection, group_id=group_id, limit=1)
+                    if infos:
+                        info = infos[0]
+                        grouped = GroupedJob(
+                            group_id=info.group_id,
+                            representative=info.members[0],
+                            members=info.members,
+                            sources=info.sources,
+                            urls=info.urls,
+                        )
+                        return Group.model_validate(group_dict(grouped))
+                return Group.model_validate(
+                    group_dict(
+                        GroupedJob(
+                            group_id=None,
+                            representative=stored,
+                            members=(stored,),
+                            sources=(stored.source,),
+                            urls=(stored.url,),
+                        )
+                    )
+                )
         raise HTTPException(status_code=404, detail=_no_job_found_message(job_id))
 
     @app.get("/sources/stats", response_model=SourceStatsListResponse)

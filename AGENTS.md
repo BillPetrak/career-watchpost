@@ -789,6 +789,21 @@ canonical `No job found with ID {id}.` message locally.
   envelope), and the `Job` projection is unchanged (no per-item status field is
   added).
 - `GET /jobs/{job_id}` — one job or `404` with the canonical message.
+- `GET /jobs/{job_id}/group` — the canonical distinct opportunity containing one
+  stored job, using the shared `group_dict` projection (exact field order
+  `group_id`, `representative`, `members`, `sources`, `urls`). Resolves
+  membership through the shared `group_ids_for_jobs` helper, so a non
+  representative grouped member returns the same canonical group as its
+  representative; an ungrouped or never-grouped job returns a one-member
+  singleton group with `group_id` `null` (matching the `GET /groups` singleton
+  convention), and members are ordered ascending by job ID with `sources`/`urls`
+  in ordered-distinct form. An unknown job returns `404` with the canonical
+  `No job found with ID {job_id}.` message; non-integer path input returns
+  FastAPI's normal `422`. Read-only: takes no query parameters, never acquires
+  the collection lock, never reads profile files or the filesystem, and a
+  missing database file returns the same canonical `404` without creating a
+  file, directory, or schema. Job descriptions, matcher diagnostics, and local
+  workflow state are never exposed.
 - `GET /sources/stats` — unified per-source statistics in collector registry
   order (one record per registered source, including zero-count sources),
   computed by the shared `compute_source_stats` service. Each record carries
