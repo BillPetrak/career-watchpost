@@ -593,12 +593,19 @@ class RankRequest(BaseModel):
     """Request body for ``POST /ranked-jobs``: an inline candidate profile.
 
     Unknown top-level fields are silently ignored, so an attempted
-    ``profile_path`` (or any other probe) is inert and never acted upon.
+    ``profile_path`` (or any other probe) is inert and never acted upon. The
+    optional ``untracked``, ``include_statuses``, and ``exclude_statuses``
+    fields mirror the CLI search/rank tracking filters; omitted or explicit
+    ``null`` means no filter, and status values and combinations are validated
+    at the route using the shared application-status vocabulary.
     """
 
     model_config = ConfigDict(extra="ignore")
 
     profile: CandidateProfileRequest
+    untracked: bool | None = None
+    include_statuses: list[str] | None = None
+    exclude_statuses: list[str] | None = None
 
 
 class RankedJobItem(BaseModel):

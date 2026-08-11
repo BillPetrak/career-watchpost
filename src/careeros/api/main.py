@@ -1800,12 +1800,42 @@ def create_app() -> FastAPI:
         ``grouped=true`` results are one entry per canonical duplicate group
         through the shared grouped ranking pipeline, deterministically ordered
         by ``match_score DESC``, then newest member publication time, then
-        representative job ID. ``total`` reflects the ranked count after
-        ``minimum_score`` filtering and before pagination. A missing database
-        yields an empty envelope without creating a file, directory, or schema.
+        representative job ID. The optional ``untracked``, ``include_statuses``,
+        and ``exclude_statuses`` body fields mirror the CLI tracking filters
+        and are validated here (pairwise conflicts and status values through
+        the shared ``validate_status``) before the tracking filter is applied
+        by the shared ``rank_candidates`` pipeline before scoring. ``total``
+        reflects the ranked count after ``minimum_score`` filtering and before
+        pagination. A missing database yields an empty envelope without
+        creating a file, directory, or schema.
         """
         if connection is None:
             return RankedJobsResponse(items=[], total=0, offset=offset, limit=limit)
+        untracked = payload.untracked or False
+        include_statuses = (
+            tuple(payload.include_statuses) if payload.include_statuses else ()
+        )
+        exclude_statuses = (
+            tuple(payload.exclude_statuses) if payload.exclude_statuses else ()
+        )
+        if include_statuses and exclude_statuses:
+            raise HTTPException(
+                status_code=422,
+                detail="include_statuses and exclude_statuses cannot be combined.",
+            )
+        if untracked and (include_statuses or exclude_statuses):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "untracked cannot be combined with include_statuses or "
+                    "exclude_statuses."
+                ),
+            )
+        for status in (*include_statuses, *exclude_statuses):
+            try:
+                validate_status(status)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
         profile = _to_profile(payload.profile)
         outcome = rank_candidates(
             connection,
@@ -1818,6 +1848,9 @@ def create_app() -> FastAPI:
             limit=None,
             grouped=grouped,
             min_score=minimum_score,
+            untracked=untracked,
+            include_statuses=include_statuses,
+            exclude_statuses=exclude_statuses,
             feedback=None,
         )
         if grouped:

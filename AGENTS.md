@@ -1362,7 +1362,18 @@ canonical `No job found with ID {id}.` message locally.
   parameters mirror the `/jobs` filters plus `grouped` (default `false`),
   `minimum_score` (0–100, default 0) and `query` (default `""`, which ranks
   every stored job); `offset`/`limit` paginate with defaults 0/20 (`limit`
-  capped at 100). Review feedback is always excluded (`feedback=None`), so
+  capped at 100). The optional body fields `untracked` (`bool | null`),
+  `include_statuses` (`list[str] | null`), and `exclude_statuses`
+  (`list[str] | null`) mirror the CLI search/rank tracking filters: omitted or
+  explicit `null` means no filter, `untracked=true` keeps only untracked jobs,
+  `include_statuses`/`exclude_statuses` filter tracked jobs by current status
+  (empty lists mean no filter, duplicates are deduplicated by the shared
+  domain path), and the tracking filter is applied by the shared
+  `rank_candidates` pipeline before scoring in both flat and grouped modes.
+  Pairwise conflicts (`untracked` with either status list, and the two status
+  lists together) and every supplied status value are validated at the route
+  with the canonical shared messages, returning `422`. Review feedback is
+  always excluded (`feedback=None`), so
   stored review decisions never affect API scores. With `grouped=false`
   (the default) results are flat raw jobs only; deterministic
   order is `match_score DESC, published_at DESC NULLS LAST, id ASC` and each
