@@ -20,7 +20,13 @@ calls. ``GET /jobs`` optionally narrows the listing by the same
 application-tracking filters as the CLI and ``POST /ranked-jobs``
 (``untracked``, ``include_statuses``, ``exclude_statuses``), narrowing the
 base keyword/filter set through the shared application filter before
-pagination while keeping the job projection and ordering unchanged. ``GET
+pagination while keeping the job projection and ordering unchanged. It also
+narrows the listing by optional review-state filters (``unreviewed``,
+``include_decisions``, ``exclude_decisions``) resolved through a single
+batched ``decisions_for_jobs`` lookup after the application filter and before
+pagination; the decision vocabulary is validated with the shared
+``validate_decision`` validator and selection-only filtering never exposes a
+review decision, status, note, or history in the response. ``GET
 /groups`` likewise narrows the distinct-opportunities browsing with the same
 keyword (``query``) and application-tracking filters through the shared
 grouped-search and group-tracking helpers (``search_grouped`` and
@@ -279,6 +285,7 @@ from careeros.review.models import (
 from careeros.review.service import (
     build_queue,
     clear_decision,
+    decisions_for_jobs,
     get_decision,
     list_decision_events,
     list_decisions,
@@ -663,6 +670,9 @@ def create_app() -> FastAPI:
         untracked: bool = False,
         include_statuses: Annotated[list[str] | None, Query()] = None,
         exclude_statuses: Annotated[list[str] | None, Query()] = None,
+        unreviewed: bool = False,
+        include_decisions: Annotated[list[str] | None, Query()] = None,
+        exclude_decisions: Annotated[list[str] | None, Query()] = None,
     ) -> JobListResponse:
         """List stored jobs, optionally narrowed by keyword and filters.
 
@@ -690,6 +700,24 @@ def create_app() -> FastAPI:
         (``untracked`` with either status list, and the two status lists
         together) are rejected with ``422``; ``total`` counts the full
         post-filter set and ordering stays canonical.
+
+        The optional review-state filters ``unreviewed``,
+        ``include_decisions``, and ``exclude_decisions`` narrow the set
+        through the current review decisions resolved in one batched lookup
+        (``decisions_for_jobs``) after the application-tracking filter and
+        before pagination. ``unreviewed=true`` keeps only jobs with no
+        current review decision, ``include_decisions`` keeps only reviewed
+        jobs whose current decision is one of the supplied values (unreviewed
+        jobs are excluded while it is active), and ``exclude_decisions``
+        removes jobs with one of the supplied current decisions while
+        unreviewed jobs remain eligible. Duplicate decision values are
+        deduplicated and omitted/empty lists act as no filter. Supplied
+        decisions are validated through the shared ``validate_decision``
+        vocabulary and the pairwise conflicts (``include_decisions`` with
+        ``exclude_decisions``, and ``unreviewed`` with either decision list)
+        are rejected with ``422``; ``total`` counts the full post-filter set,
+        ordering stays canonical, and no decision value ever leaks into the
+        response.
         """
         include = list(include_statuses) if include_statuses else []
         exclude = list(exclude_statuses) if exclude_statuses else []
@@ -709,6 +737,27 @@ def create_app() -> FastAPI:
         for status in (*include, *exclude):
             try:
                 validate_status(status)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
+
+        review_include = list(include_decisions) if include_decisions else []
+        review_exclude = list(exclude_decisions) if exclude_decisions else []
+        if review_include and review_exclude:
+            raise HTTPException(
+                status_code=422,
+                detail="include_decisions and exclude_decisions cannot be combined.",
+            )
+        if unreviewed and (review_include or review_exclude):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "unreviewed cannot be combined with include_decisions or "
+                    "exclude_decisions."
+                ),
+            )
+        for decision in (*review_include, *review_exclude):
+            try:
+                validate_decision(decision)
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from None
 
@@ -745,6 +794,23 @@ def create_app() -> FastAPI:
             matches = apply_filter_to_flat(base, job_statuses, application_filter)
         else:
             matches = base
+
+        if unreviewed or review_include or review_exclude:
+            decisions = decisions_for_jobs(connection, {job.id for job in matches})
+            if unreviewed:
+                matches = [job for job in matches if job.id not in decisions]
+            elif review_include:
+                keep_decisions = frozenset(review_include)
+                matches = [
+                    job for job in matches if decisions.get(job.id) in keep_decisions
+                ]
+            else:
+                drop_decisions = frozenset(review_exclude)
+                matches = [
+                    job
+                    for job in matches
+                    if decisions.get(job.id) not in drop_decisions
+                ]
 
         return JobListResponse(
             items=[

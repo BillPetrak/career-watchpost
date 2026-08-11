@@ -787,7 +787,27 @@ canonical `No job found with ID {id}.` message locally.
   never takes the collection lock, never creates a database file/directory/
   schema when the database is missing (missing database returns a `200` empty
   envelope), and the `Job` projection is unchanged (no per-item status field is
-  added).
+  added). The listing also accepts the select-only review-state filters
+  `unreviewed` (boolean), `include_decisions` (repeatable), and
+  `exclude_decisions` (repeatable), applied after the application-tracking
+  filter and before `offset`/`limit` slicing: `unreviewed=true` keeps only jobs
+  with no current review decision, `include_decisions` keeps only reviewed jobs
+  whose current decision is in the set (unreviewed jobs are excluded while it
+  is active), and `exclude_decisions` removes jobs whose current decision is in
+  the set while unreviewed jobs remain eligible. Current decisions are resolved
+  in ONE batched lookup (`careeros.review.service.decisions_for_jobs`) only
+  when a review filter is active — never per job and never when no filter is
+  active — and no review decision, status, note, or history is exposed: the
+  `Job`/`JobListResponse` schema is unchanged. Duplicate decision values are
+  deduplicated (semantic union) and omitted/empty lists act as no filter. Every
+  supplied decision is validated with the shared
+  `careeros.review.models.validate_decision` vocabulary (canonical:
+  `shortlist`, `dismiss`, `review_later`; invalid or empty-string values return
+  `422` with the canonical domain text) and the pairwise conflicts
+  `include_decisions`+`exclude_decisions` and `unreviewed`+either decision list
+  return `422` with the canonical detail strings; mixing with the
+  application-tracking filters composes by AND with no cross-dimension
+  conflict.
 - `GET /jobs/{job_id}` — one job or `404` with the canonical message.
 - `GET /jobs/{job_id}/group` — the canonical distinct opportunity containing one
   stored job, using the shared `group_dict` projection (exact field order
