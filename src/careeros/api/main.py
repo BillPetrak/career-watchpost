@@ -19,7 +19,12 @@ calls. ``GET /jobs`` optionally narrows the listing by the same
 application-tracking filters as the CLI and ``POST /ranked-jobs``
 (``untracked``, ``include_statuses``, ``exclude_statuses``), narrowing the
 base keyword/filter set through the shared application filter before
-pagination while keeping the job projection and ordering unchanged. Both
+pagination while keeping the job projection and ordering unchanged. ``GET
+/groups`` likewise narrows the distinct-opportunities browsing with the same
+keyword (``query``) and application-tracking filters through the shared
+grouped-search and group-tracking helpers (``search_grouped`` and
+``apply_filter_to_groups``), keeping the group projection and ordering
+unchanged and never adding an application status to any item. Both
 ``POST /ranked-jobs`` and ``POST /review-queue`` compute a ranking
 from a candidate profile submitted inline in the request body and create no
 resource; they never read profile files, never persist or log the submitted
@@ -193,6 +198,7 @@ from careeros.applications.service import (
     ApplicationFilter,
     application_statuses_for_jobs,
     apply_filter_to_flat,
+    apply_filter_to_groups,
     set_application_status,
 )
 from careeros.applications.service import (
@@ -209,6 +215,7 @@ from careeros.database.groups import (
     grouping_summary,
     list_all_groups,
     list_group_infos,
+    search_grouped,
 )
 from careeros.database.jobs import get_job_by_id, list_jobs, search_jobs
 from careeros.database.reminders import ReminderListEntry, get_reminder
@@ -1780,20 +1787,98 @@ def create_app() -> FastAPI:
         connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+        query: str = "",
         source: str | None = None,
         remote: bool | None = None,
         location: str | None = None,
         employment_type: str | None = None,
+        untracked: bool = False,
+        include_statuses: Annotated[list[str] | None, Query()] = None,
+        exclude_statuses: Annotated[list[str] | None, Query()] = None,
     ) -> GroupListResponse:
+        """List distinct opportunities, optionally narrowed by keyword and filters.
+
+        A non-empty ``query`` routes the listing through the shared
+        ``search_grouped`` pipeline (case-insensitive substring match across
+        title, company, and description on the candidate member rows BEFORE
+        grouping, deterministic ``published_at DESC NULLS LAST`` then
+        representative-id ordering); an omitted or empty ``query`` keeps the
+        original ``list_all_groups`` listing byte-identical. Filters compose
+        with the keyword using AND semantics, ``total`` counts the full filtered
+        result set before ``offset``/``limit`` slicing, and descriptions may
+        participate in matching but are never returned.
+
+        The optional application-tracking filters ``untracked``,
+        ``include_statuses``, and ``exclude_statuses`` mirror the
+        job-listing/ranked-jobs tracking filters and the CLI search vocabulary.
+        With no tracking rule active the response is byte-identical to the
+        original listing; with a rule active the completed candidate groups are
+        narrowed through the shared application filter
+        (``application_statuses_for_jobs`` and ``apply_filter_to_groups``)
+        before pagination. ``untracked=true`` keeps only groups whose members
+        are all untracked, ``include_statuses`` keeps only tracked groups whose
+        canonical group status (the lowest-job-id tracked member's status) is
+        in the selected set, and ``exclude_statuses`` hides tracked groups with
+        the selected statuses while untracked groups remain eligible. Filtering
+        only removes whole groups; it never changes representative selection.
+        Supplied statuses are validated through the shared ``validate_status``
+        vocabulary and the pairwise conflicts (``untracked`` with either status
+        list, and the two status lists together) are rejected with ``422``;
+        ``total`` counts the full post-filter set. The response shape and
+        ordering stay unchanged; no application status is added to any item.
+        """
+        include = list(include_statuses) if include_statuses else []
+        exclude = list(exclude_statuses) if exclude_statuses else []
+        if include and exclude:
+            raise HTTPException(
+                status_code=422,
+                detail="include_statuses and exclude_statuses cannot be combined.",
+            )
+        if untracked and (include or exclude):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "untracked cannot be combined with include_statuses or "
+                    "exclude_statuses."
+                ),
+            )
+        for status in (*include, *exclude):
+            try:
+                validate_status(status)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
+
         if connection is None:
             return GroupListResponse(items=[], total=0, offset=offset, limit=limit)
-        groups = list_all_groups(
-            connection,
-            remote=remote,
-            location=location,
-            source=source,
-            employment_type=employment_type,
+        if query:
+            groups = search_grouped(
+                connection,
+                query,
+                remote=remote,
+                location=location,
+                source=source,
+                employment_type=employment_type,
+                limit=None,
+            )
+        else:
+            groups = list_all_groups(
+                connection,
+                remote=remote,
+                location=location,
+                source=source,
+                employment_type=employment_type,
+            )
+
+        application_filter = ApplicationFilter(
+            untracked=untracked,
+            include_statuses=frozenset(include),
+            exclude_statuses=frozenset(exclude),
         )
+        if application_filter.applies():
+            member_ids = {member.id for group in groups for member in group.members}
+            statuses = application_statuses_for_jobs(connection, member_ids)
+            groups = apply_filter_to_groups(groups, statuses, application_filter)
+
         return GroupListResponse(
             items=[
                 Group.model_validate(group_dict(group))
