@@ -30,8 +30,15 @@ review decision, status, note, or history in the response. ``GET
 /groups`` likewise narrows the distinct-opportunities browsing with the same
 keyword (``query``) and application-tracking filters through the shared
 grouped-search and group-tracking helpers (``search_grouped`` and
-``apply_filter_to_groups``), keeping the group projection and ordering
-unchanged and never adding an application status to any item. ``GET
+``apply_filter_to_groups``), plus the same review-state filters
+(``unreviewed``, ``include_decisions``, ``exclude_decisions``) as ``GET
+/jobs``, resolved through a single batched ``decisions_for_jobs`` lookup and
+per-group ``resolve_group_decision`` resolution after the application filter
+and before pagination; the decision vocabulary is validated with the shared
+``validate_decision`` validator and selection-only filtering never exposes a
+review decision or history in the response. The groups endpoint keeps the
+group projection and ordering
+unchanged and never adds an application status to any item. ``GET
 /jobs/{job_id}/group`` resolves the canonical distinct opportunity containing
 one stored job: a grouped member returns its full canonical group (even when it
 is not the representative), and an ungrouped or never-grouped job returns a
@@ -289,6 +296,7 @@ from careeros.review.service import (
     get_decision,
     list_decision_events,
     list_decisions,
+    resolve_group_decision,
     set_decision,
 )
 from careeros.saved_searches.execution import (
@@ -1914,6 +1922,9 @@ def create_app() -> FastAPI:
         untracked: bool = False,
         include_statuses: Annotated[list[str] | None, Query()] = None,
         exclude_statuses: Annotated[list[str] | None, Query()] = None,
+        unreviewed: bool = False,
+        include_decisions: Annotated[list[str] | None, Query()] = None,
+        exclude_decisions: Annotated[list[str] | None, Query()] = None,
     ) -> GroupListResponse:
         """List distinct opportunities, optionally narrowed by keyword and filters.
 
@@ -1945,6 +1956,27 @@ def create_app() -> FastAPI:
         list, and the two status lists together) are rejected with ``422``;
         ``total`` counts the full post-filter set. The response shape and
         ordering stay unchanged; no application status is added to any item.
+
+        The optional review-state filters ``unreviewed``,
+        ``include_decisions``, and ``exclude_decisions`` mirror the ``GET
+        /jobs`` review-state filters: they narrow the surviving candidate
+        groups through the current review decisions resolved in one batched
+        lookup (``decisions_for_jobs``) with the canonical per-group
+        ``resolve_group_decision`` resolution, applied after the
+        application-tracking filter and before pagination. ``unreviewed=true``
+        keeps only groups whose resolved review decision is ``None``,
+        ``include_decisions`` keeps only reviewed groups whose resolved
+        decision is one of the supplied values (unreviewed groups are excluded
+        while it is active), and ``exclude_decisions`` removes groups with one
+        of the supplied resolved decisions while unreviewed groups remain
+        eligible. Duplicate decision values are deduplicated and omitted/empty
+        lists act as no filter. Supplied decisions are validated through the
+        shared ``validate_decision`` vocabulary and the pairwise conflicts
+        (``include_decisions`` with ``exclude_decisions``, and ``unreviewed``
+        with either decision list) are rejected with ``422``. Review-state
+        filtering only removes whole groups; it never changes representative
+        selection, member ordering, or the deterministic group ordering, and
+        no decision value ever leaks into the response.
         """
         include = list(include_statuses) if include_statuses else []
         exclude = list(exclude_statuses) if exclude_statuses else []
@@ -1964,6 +1996,27 @@ def create_app() -> FastAPI:
         for status in (*include, *exclude):
             try:
                 validate_status(status)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
+
+        review_include = list(include_decisions) if include_decisions else []
+        review_exclude = list(exclude_decisions) if exclude_decisions else []
+        if review_include and review_exclude:
+            raise HTTPException(
+                status_code=422,
+                detail="include_decisions and exclude_decisions cannot be combined.",
+            )
+        if unreviewed and (review_include or review_exclude):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "unreviewed cannot be combined with include_decisions or "
+                    "exclude_decisions."
+                ),
+            )
+        for decision in (*review_include, *review_exclude):
+            try:
+                validate_decision(decision)
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from None
 
@@ -1997,6 +2050,32 @@ def create_app() -> FastAPI:
             member_ids = {member.id for group in groups for member in group.members}
             statuses = application_statuses_for_jobs(connection, member_ids)
             groups = apply_filter_to_groups(groups, statuses, application_filter)
+
+        if unreviewed or review_include or review_exclude:
+            member_ids = {member.id for group in groups for member in group.members}
+            decisions = decisions_for_jobs(connection, member_ids)
+            if unreviewed:
+                groups = [
+                    group
+                    for group in groups
+                    if resolve_group_decision(group, decisions).decision is None
+                ]
+            elif review_include:
+                keep_decisions = frozenset(review_include)
+                groups = [
+                    group
+                    for group in groups
+                    if resolve_group_decision(group, decisions).decision
+                    in keep_decisions
+                ]
+            else:
+                drop_decisions = frozenset(review_exclude)
+                groups = [
+                    group
+                    for group in groups
+                    if resolve_group_decision(group, decisions).decision
+                    not in drop_decisions
+                ]
 
         return GroupListResponse(
             items=[

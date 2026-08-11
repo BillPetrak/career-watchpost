@@ -1392,7 +1392,33 @@ canonical `No job found with ID {id}.` message locally.
   `offset`/`limit` slicing. The envelope is `{items, total, offset, limit}`;
   each item has the exact field order `group_id` (null for singletons),
   `representative`, `members`, `sources`, `urls`, with the nested jobs using
-  the canonical `job_dict` projection. Job descriptions, matcher diagnostics
+  the canonical `job_dict` projection. The listing also accepts the three
+  select-only review-state filters as `GET /jobs` — `unreviewed` (boolean),
+  `include_decisions` (repeatable), and `exclude_decisions` (repeatable) —
+  applied AFTER the application-tracking filter and before
+  `offset`/`limit` slicing. A group's review decision is resolved with the
+  canonical `careeros.review.service.resolve_group_decision` (the group is
+  reviewed when any member has a decision; disagreeing members resolve to the
+  lowest `jobs.id`, so a decision on a non-representative member marks the
+  whole group reviewed). `unreviewed=true` keeps only groups whose resolved
+  decision is `None`, `include_decisions` keeps only reviewed groups whose
+  resolved decision is in the set (unreviewed groups are excluded while it is
+  active), and `exclude_decisions` removes groups whose resolved decision is in
+  the set while unreviewed groups remain eligible. Review-state filtering only
+  removes whole groups and never re-sorts survivors. Decisions are resolved in
+  ONE batched lookup (`careeros.review.service.decisions_for_jobs`) only when a
+  review filter is active over the surviving candidate members; no review
+  decision, status, note, or history is exposed and the `Group`/`GroupListResponse`
+  schema is unchanged. Duplicate decision values are deduplicated (semantic
+  union) and omitted/empty lists act as no filter. Every supplied decision is
+  validated with the shared `careeros.review.models.validate_decision`
+  vocabulary (canonical: `shortlist`, `dismiss`, `review_later`; invalid or
+  empty-string values return `422` with the canonical domain text) and the
+  pairwise conflicts `include_decisions`+`exclude_decisions` and
+  `unreviewed`+either decision list return `422` with the canonical detail
+  strings; mixing with `query`, the base filters, and the application-tracking
+  filters composes by AND with no cross-dimension conflict. Job descriptions,
+  matcher diagnostics
   (`reason`, `remote_sig`, `location_sig`), group `created_at`, and all
   workflow state (notes, decisions, reminders, notification data) are
   deliberately omitted from every response.
