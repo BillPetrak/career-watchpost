@@ -15,7 +15,12 @@ endpoints: ``POST /ranked-jobs``, ``POST /review-queue``, and
 ``POST /saved-searches/{name}/execute``. Every read and computation endpoint is
 strictly read-only with respect to the database and filesystem: nothing creates
 a database file, directory, or schema, nothing writes, and nothing makes network
-calls. Both ``POST /ranked-jobs`` and ``POST /review-queue`` compute a ranking
+calls. ``GET /jobs`` optionally narrows the listing by the same
+application-tracking filters as the CLI and ``POST /ranked-jobs``
+(``untracked``, ``include_statuses``, ``exclude_statuses``), narrowing the
+base keyword/filter set through the shared application filter before
+pagination while keeping the job projection and ordering unchanged. Both
+``POST /ranked-jobs`` and ``POST /review-queue`` compute a ranking
 from a candidate profile submitted inline in the request body and create no
 resource; they never read profile files, never persist or log the submitted
 profile, and never apply review feedback. ``POST /saved-searches/{name}/execute``
@@ -185,9 +190,14 @@ from careeros.api.schemas import (
 )
 from careeros.applications.models import APPLICATION_STATUSES, validate_status
 from careeros.applications.service import (
+    ApplicationFilter,
+    application_statuses_for_jobs,
+    apply_filter_to_flat,
+    set_application_status,
+)
+from careeros.applications.service import (
     UnknownJobError as ApplicationUnknownJobError,
 )
-from careeros.applications.service import set_application_status
 from careeros.database.applications import (
     ApplicationListItem,
     get_application,
@@ -636,6 +646,9 @@ def create_app() -> FastAPI:
         remote: bool | None = None,
         location: str | None = None,
         employment_type: str | None = None,
+        untracked: bool = False,
+        include_statuses: Annotated[list[str] | None, Query()] = None,
+        exclude_statuses: Annotated[list[str] | None, Query()] = None,
     ) -> JobListResponse:
         """List stored jobs, optionally narrowed by keyword and filters.
 
@@ -647,11 +660,48 @@ def create_app() -> FastAPI:
         set before ``offset``/``limit`` slicing, and ordering stays canonical
         (``published_at DESC NULLS LAST, id ASC``). Descriptions may
         participate in matching but are never returned.
+
+        The optional application-tracking filters ``untracked``,
+        ``include_statuses``, and ``exclude_statuses`` mirror the ranked-jobs
+        tracking filters and the CLI search vocabulary. With no tracking rule
+        active the response is byte-identical to the original listing; with a
+        rule active the base keyword/filter set is narrowed through the shared
+        application filter (``application_statuses_for_jobs`` and
+        ``apply_filter_to_flat``) before pagination. ``untracked=true`` keeps
+        only untracked jobs, ``include_statuses`` keeps only tracked jobs whose
+        current status is in the selected set, and ``exclude_statuses`` hides
+        tracked jobs with the selected statuses while untracked jobs remain
+        eligible. Supplied statuses are validated through the shared
+        ``validate_status`` vocabulary and the pairwise conflicts
+        (``untracked`` with either status list, and the two status lists
+        together) are rejected with ``422``; ``total`` counts the full
+        post-filter set and ordering stays canonical.
         """
+        include = list(include_statuses) if include_statuses else []
+        exclude = list(exclude_statuses) if exclude_statuses else []
+        if include and exclude:
+            raise HTTPException(
+                status_code=422,
+                detail="include_statuses and exclude_statuses cannot be combined.",
+            )
+        if untracked and (include or exclude):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "untracked cannot be combined with include_statuses or "
+                    "exclude_statuses."
+                ),
+            )
+        for status in (*include, *exclude):
+            try:
+                validate_status(status)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
+
         if connection is None:
             return JobListResponse(items=[], total=0, offset=offset, limit=limit)
         if query:
-            matches = search_jobs(
+            base = search_jobs(
                 connection,
                 query,
                 remote=remote,
@@ -661,13 +711,27 @@ def create_app() -> FastAPI:
                 limit=None,
             )
         else:
-            matches = list_jobs(
+            base = list_jobs(
                 connection,
                 remote=remote,
                 location=location,
                 source=source,
                 employment_type=employment_type,
             )
+
+        application_filter = ApplicationFilter(
+            untracked=untracked,
+            include_statuses=frozenset(include),
+            exclude_statuses=frozenset(exclude),
+        )
+        if application_filter.applies():
+            job_statuses = application_statuses_for_jobs(
+                connection, {job.id for job in base}
+            )
+            matches = apply_filter_to_flat(base, job_statuses, application_filter)
+        else:
+            matches = base
+
         return JobListResponse(
             items=[
                 Job.model_validate(job_dict(job))

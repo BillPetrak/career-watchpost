@@ -762,7 +762,32 @@ canonical `No job found with ID {id}.` message locally.
 - `GET /jobs` — canonical job order (`published_at DESC NULLS LAST, id ASC`)
   with deterministic `offset`/`limit` pagination (defaults 0/20, `limit`
   capped at 100) plus optional `source`, `remote`, `location`,
-  `employment_type` filters; returns `{items, total, offset, limit}`.
+  `employment_type` filters and an optional `query` keyword (case-insensitive
+  substring match across title, company, and description; descriptions
+  participate in matching but are never returned); returns
+  `{items, total, offset, limit}`. The listing also accepts the same
+  application-tracking filters as `POST /ranked-jobs` and the CLI search
+  vocabulary: `untracked` (boolean), `include_statuses` (repeatable), and
+  `exclude_statuses` (repeatable). With no tracking rule active the response is
+  byte-identical to the pre-tracking listing. With a rule active, the base
+  keyword/filter set is narrowed through the shared application filter
+  (`application_statuses_for_jobs` + `apply_filter_to_flat`) **before**
+  `offset`/`limit` slicing: `untracked=true` keeps only untracked jobs,
+  `include_statuses` keeps only tracked jobs whose current status is in the
+  selected set (untracked jobs are excluded while it is active),
+  `exclude_statuses` hides tracked jobs with the selected statuses while
+  untracked jobs remain eligible. Duplicate status values are harmless
+  (deduplicated through the domain representation); omitted/empty lists act as
+  no filter. Every supplied status is validated with the shared
+  `validate_status` vocabulary (invalid value returns `422` with the canonical
+  domain text), and the pairwise conflicts `untracked`+`include_statuses`,
+  `untracked`+`exclude_statuses`, and `include_statuses`+`exclude_statuses`
+  return `422` with the canonical ranked-jobs detail strings. `total` is the
+  full post-filter count before pagination; the endpoint is strictly read-only,
+  never takes the collection lock, never creates a database file/directory/
+  schema when the database is missing (missing database returns a `200` empty
+  envelope), and the `Job` projection is unchanged (no per-item status field is
+  added).
 - `GET /jobs/{job_id}` — one job or `404` with the canonical message.
 - `GET /sources/stats` — unified per-source statistics in collector registry
   order (one record per registered source, including zero-count sources),
