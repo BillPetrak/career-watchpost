@@ -36,7 +36,7 @@ from careeros.applications.service import (
     application_statuses_for_jobs,
     group_tracking_info,
 )
-from careeros.database.groups import GroupedJob, list_all_groups
+from careeros.database.groups import GroupedJob, list_all_groups, search_grouped
 from careeros.database.jobs import StoredJob, get_job_by_id
 from careeros.database.review import (
     ClearDecisionResult,
@@ -414,18 +414,29 @@ def build_queue(
     location: str | None = None,
     remote: bool | None = None,
     employment_type: str | None = None,
+    keyword: str | None = None,
     limit: int = 20,
     grouped: bool = True,
     feedback: FeedbackSet | None = None,
 ) -> QueueOutcome:
     """Build a ranked review queue (read-only).
 
-    Flow: candidate member rows are filtered by ``source``/``location``/
-    ``remote``/``employment_type`` BEFORE grouping; the state filter and the
+    Flow: candidate member rows are filtered by ``keyword`` (when non-empty)
+    and ``source``/``location``/``remote``/``employment_type`` BEFORE grouping;
+    the state filter and the
     default application exclusion are applied before scoring; every eligible
     group is ranked with the shared scorer; ``min_score`` trims the ranked
     list; only then is the final ``limit`` applied. This guarantees the
     ordering is identical to the existing rank/report scorer ordering.
+
+    A non-empty ``keyword`` routes candidate loading through the shared
+    ``search_grouped`` pipeline (case-insensitive substring match across title,
+    company, and description on the candidate member rows BEFORE grouping), so
+    a canonical group only appears when at least one of its members matches
+    the keyword; ``None`` or an empty keyword keeps the original
+    ``list_all_groups`` loading path byte-identical. ``search_grouped`` is
+    called with ``limit=None`` because queue state/application filtering and
+    scoring happen before the final ``limit`` cap.
 
     ``feedback`` carries the review-feedback set (built once by the caller);
     None disables review feedback. Since the default ``state`` excludes
@@ -438,13 +449,24 @@ def build_queue(
     if not 0 <= min_score <= 100:
         raise ValidationError("min_score must be between 0 and 100.")
 
-    groups = list_all_groups(
-        connection,
-        remote=remote,
-        location=location,
-        source=source,
-        employment_type=employment_type,
-    )
+    if keyword:
+        groups = search_grouped(
+            connection,
+            keyword,
+            remote=remote,
+            location=location,
+            source=source,
+            employment_type=employment_type,
+            limit=None,
+        )
+    else:
+        groups = list_all_groups(
+            connection,
+            remote=remote,
+            location=location,
+            source=source,
+            employment_type=employment_type,
+        )
     if not grouped:
         expanded: list[GroupedJob] = []
         for group in groups:

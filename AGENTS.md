@@ -1517,11 +1517,19 @@ canonical `No job found with ID {id}.` message locally.
   entries, up to 100 entries per list and 100 characters per entry,
   `remote_preference` up to 50 characters, duplicates preserved, empty profile
   valid) through a dedicated `ReviewQueueRequest` wrapper. Query parameters
-  mirror `review next`: `state` (one of `unreviewed`, `shortlist`, `dismiss`,
+  mirror `review next`: optional non-empty `query` (free-form keyword, default
+  `""`; an omitted or empty `query` keeps the no-keyword behavior
+  byte-identical) narrows the queue to jobs matching the term across title,
+  company, and description through the shared `search_grouped` pipeline on the
+  candidate member rows BEFORE grouping, so a matching member pulls in its
+  complete canonical duplicate group exactly as `GET /groups?query=...` does
+  and a whitespace-only non-empty query follows the same canonical search
+  path; `state` (one of `unreviewed`, `shortlist`, `dismiss`,
   `review_later`, `any`; default `unreviewed`), `minimum_score` (0–100, default
   0), `include_tracked` (default `false`), `grouped` (default `true`), the
   `/jobs` filters (`source`, `location`, `remote`, `employment_type`) applied to
-  candidate member rows BEFORE grouping, and `offset`/`limit` pagination
+  candidate member rows BEFORE grouping, all composing with `query` using AND
+  semantics, and `offset`/`limit` pagination
   (defaults 0/20, `limit` capped at 100). Review feedback is always excluded
   (`feedback=None`), so stored review decisions never alter queue scores.
   Results are grouped per canonical duplicate group by default (`grouped=false`
@@ -1534,7 +1542,8 @@ canonical `No job found with ID {id}.` message locally.
   status or null); `reasons`, `score_components`, profile terms, decision notes,
   application notes, conflict/owner detail, and all other private free text are
   deliberately omitted. The envelope is `{items, total, offset, limit}`;
-  `total` is the count after `state`/application/`minimum_score` filtering and
+  `total` is the count after `query`/`state`/application/`minimum_score`
+  filtering and
   before pagination. A missing database returns `200` with an empty envelope
   without creating a file or directory; an uninitialized or malformed database
   returns the canonical privacy-safe `500`; an invalid `state` returns `422`.

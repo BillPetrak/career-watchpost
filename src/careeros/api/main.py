@@ -47,7 +47,14 @@ one-member singleton group with a null ``group_id``, matching the
 ``POST /ranked-jobs`` and ``POST /review-queue`` compute a ranking
 from a candidate profile submitted inline in the request body and create no
 resource; they never read profile files, never persist or log the submitted
-profile, and never apply review feedback. ``POST /ranked-jobs`` additionally
+profile, and never apply review feedback. ``POST /review-queue`` additionally
+accepts an optional ``query`` keyword that narrows the queue to jobs
+matching the term across title, company, and description through the shared
+``search_grouped`` pipeline (applied to candidate member rows before
+grouping, so a matching member pulls in its complete canonical group),
+composing with the queue's state/application/minimum-score/filter controls
+using AND semantics; an omitted or empty ``query`` keeps the queue's
+no-keyword behavior byte-identical. ``POST /ranked-jobs`` additionally
 accepts the same review-state filter fields as ``GET /jobs``/``GET /groups``
 (``unreviewed``, ``include_decisions``, ``exclude_decisions``); they are
 validated with the shared ``validate_decision`` vocabulary (including the
@@ -2331,6 +2338,7 @@ def create_app() -> FastAPI:
     def review_queue(
         payload: ReviewQueueRequest,
         connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        query: str = "",
         state: str = "unreviewed",
         minimum_score: Annotated[int, Query(ge=0, le=100)] = 0,
         include_tracked: bool = False,
@@ -2345,13 +2353,20 @@ def create_app() -> FastAPI:
         """Rank the personalized daily review queue (computation-only).
 
         Review feedback is always excluded (``feedback=None``), so stored
-        review decisions never influence queue scores. Results are grouped per
-        canonical duplicate group by default (``grouped=false`` expands to
-        singleton groups), deterministically ordered by ``match_score DESC``,
-        then newest member publication time, then representative job ID.
-        ``total`` reflects the queue count after ``state``/application/
-        ``minimum_score`` filtering and before pagination. A missing database
-        yields an empty envelope without creating a file, directory, or schema.
+        review decisions never influence queue scores. An optional non-empty
+        ``query`` narrows the queue to jobs matching the keyword across title,
+        company, and description on the candidate member rows BEFORE grouping
+        through the shared ``search_grouped`` pipeline (the same semantics as
+        ``GET /groups?query=``); an omitted or empty ``query`` keeps the
+        original queue behavior byte-identical. The queue filters compose with
+        AND semantics. Results are grouped per canonical duplicate group by
+        default (``grouped=false`` expands to singleton groups),
+        deterministically ordered by ``match_score DESC``, then newest member
+        publication time, then representative job ID.
+        ``total`` reflects the queue count after ``query``/``state``/
+        application/``minimum_score`` filtering and before pagination. A
+        missing database yields an empty envelope without creating a file,
+        directory, or schema.
         """
         if connection is None:
             return ReviewQueueResponse(items=[], total=0, offset=offset, limit=limit)
@@ -2360,6 +2375,7 @@ def create_app() -> FastAPI:
             outcome = build_queue(
                 connection,
                 profile=profile,
+                keyword=query,
                 state=state,
                 min_score=minimum_score,
                 include_tracked=include_tracked,
