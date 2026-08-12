@@ -1,0 +1,368 @@
+/* CareerOS read-only dashboard styles.
+   Zero-build, zero-dependency: plain CSS, responsive, no external CDN. */
+
+:root {
+  --color-bg: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-border: #d9dde3;
+  --color-text: #1c2430;
+  --color-muted: #5b6672;
+  --color-accent: #2563eb;
+  --color-accent-strong: #1d4ed8;
+  --color-error: #b42318;
+  --color-error-bg: #fee4e2;
+  --color-ok: #067647;
+  --color-warn: #b54708;
+  --radius: 8px;
+  --space: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.5;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+[aria-busy="true"] {
+  opacity: 0.75;
+}
+
+a {
+  color: var(--color-accent);
+}
+
+/* Search / nav interactive elements should show a visible focus ring. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: absolute;
+  left: -999px;
+  top: 0;
+  background: var(--color-accent);
+  color: #ffffff;
+  padding: 8px 12px;
+  border-radius: 0 0 var(--radius) 0;
+  z-index: 10;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 20px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.brand {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.nav {
+  display: flex;
+  gap: 4px;
+}
+
+.nav a {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  color: var(--color-muted);
+  text-decoration: none;
+}
+
+.nav a:hover {
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+.nav a[aria-current="page"] {
+  color: var(--color-text);
+  background: var(--color-bg);
+  font-weight: 600;
+}
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+.view h1 {
+  margin: 0 0 16px;
+  font-size: 1.5rem;
+}
+
+.chunk {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.chunk h2 {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+}
+
+/* Home: stat cards. */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.stat-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  color: var(--color-muted);
+  font-size: 0.85rem;
+}
+
+.stat-value {
+  margin-top: 4px;
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+/* Home: pipeline / actions / reminders / health lists. */
+.pipeline-list,
+.action-list,
+.reminder-list,
+.health-list,
+.job-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pipeline-item,
+.action-item,
+.reminder-item,
+.health-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.pipeline-status,
+.action-kind,
+.reminder-kind,
+.health-source {
+  font-weight: 600;
+  min-width: 96px;
+}
+
+.pipeline-count,
+.reminder-due,
+.health-count {
+  color: var(--color-muted);
+}
+
+.action-title {
+  font-weight: 500;
+}
+
+.reminder-summary,
+.result-summary,
+.due-note,
+.empty-note {
+  margin: 8px 0;
+  color: var(--color-muted);
+}
+
+.health-ok {
+  color: var(--color-ok);
+}
+
+.health-ok::before {
+  content: "status: ";
+  color: var(--color-muted);
+}
+
+/* Search form. */
+.search-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 16px;
+  padding: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.search-form label {
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.search-form input[type="search"] {
+  flex: 1 1 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-size: 1rem;
+}
+
+.search-form button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--color-accent);
+  color: #ffffff;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.search-form button:hover {
+  background: var(--color-accent-strong);
+}
+
+/* Jobs cards. */
+.job-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.job-title {
+  margin: 0 0 4px;
+  font-size: 1.1rem;
+}
+
+.job-link {
+  display: inline-block;
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+}
+
+.job-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.job-field {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field-label {
+  color: var(--color-muted);
+  font-size: 0.85rem;
+}
+
+.field-value {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Status / error / empty. */
+.status {
+  margin: 8px 0;
+  color: var(--color-muted);
+}
+
+.error-box {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius);
+  background: var(--color-error-bg);
+}
+
+.error-box p {
+  margin: 0 0 8px;
+}
+
+.error-detail {
+  color: var(--color-error);
+}
+
+.retry-button {
+  padding: 6px 14px;
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-error);
+  cursor: pointer;
+}
+
+.site-footer {
+  padding: 12px 20px 32px;
+  color: var(--color-muted);
+  font-size: 0.85rem;
+}
+
+.site-footer p {
+  margin: 0;
+  max-width: 960px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Narrow / mobile layout. */
+@media (max-width: 600px) {
+  main {
+    padding: 16px 12px 40px;
+  }
+
+  .site-header {
+    padding: 10px 12px;
+  }
+
+  .stat-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .job-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .pipeline-status,
+  .action-kind,
+  .reminder-kind {
+    min-width: 0;
+  }
+}

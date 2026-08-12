@@ -1634,6 +1634,40 @@ A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict no-DDL policy (no DDL on read paths, and the
 write endpoint never initializes the database either).
 
+## Read-only static UI (`/ui`)
+
+`src/careeros/api/static/` holds a zero-build, no-framework read-only frontend
+served by the FastAPI slice at `GET /ui` (`index.html`), `GET /ui/app.js`
+(vanilla JavaScript), and `GET /ui/style.css` (plain CSS). The assets are read
+from the packaged `careeros.api` resources via `importlib.resources` — never
+from `cwd`-relative paths — and are included in installed wheels by the
+`[tool.setuptools.package-data]` entry for `"careeros.api"` in
+`pyproject.toml`; a wheel built without that entry would silently drop the
+static files. `uv build --wheel` then
+`unzip -l dist/*.whl | grep 'careeros/api/static'` verifies all three assets.
+
+Architecture boundary: the frontend is **HTTP-only and computation-free**. It
+calls exactly two documented read endpoints — `GET /report` (Home view) and
+`GET /jobs` (Jobs view, including the `query` keyword parameter) — renders
+returned projections with `textContent`/`createElement` (never unsafe
+`innerHTML` with API values), and manages only local presentation,
+navigation (`#home`/`#jobs` hash routing; unknown hashes default to `#home`),
+loading/error/empty/retry state, and formatting of already-returned values. It
+must never re-implement ranking, grouping, tracking, review-state, reporting,
+or database logic, never call mutation or computation endpoints, and never
+read SQLite, config files, candidate profiles, `profile_path`, filesystem
+paths, private notes/messages, or logs. Job descriptions are not rendered
+because the public `GET /jobs` projection intentionally omits them. Navigation
+uses semantic hash links so deep-link refresh of `/ui/#jobs` works with no
+server-side route per view. Browser console must have no errors; a basic CSP
+(`default-src 'self'`) is set in `index.html` with no inline script/style.
+
+The `/ui` routes take no database dependency: they never acquire the
+collection lock, never create/initialize/write the database, and a missing
+database never affects them. `tests/test_api_frontend.py` verifies static
+serving, invariant endpoints, `SCHEMA_VERSION`, the real-default-database
+rule, the no-`careeros.cli`-import guarantee, and static-asset hygiene.
+
 ## systemd user units
 
 The `systemd/` directory holds templates, an installer, and an uninstaller for
@@ -1664,6 +1698,7 @@ after moving the repository (uninstall first if the old units should go).
 
 - `src/careeros/` — package root, entrypoint `careeros.cli:main`
 - `src/careeros/api/` — FastAPI application (first read-only slice: `/health`, `/jobs`, `/jobs/{job_id}`)
+- `src/careeros/api/static/` — zero-build read-only frontend (`/ui`): `index.html`, `app.js`, `style.css`
 - `src/careeros/applications/` — application-tracking workflow (models, service)
 - `src/careeros/collectors/` — job-board API clients
 - `src/careeros/database/` — SQLite layer (schema, connection, persistence)

@@ -49,6 +49,18 @@ Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
 
+A read-only web dashboard (Home + Jobs) is served by the optional FastAPI slice
+at <http://127.0.0.1:8000/ui>:
+
+```bash
+uv sync --extra development --extra api   # install the API extra
+uv run uvicorn careeros.api:app           # serve; then open /ui in a browser
+```
+
+It calls only the documented read endpoints (`GET /report`, `GET /jobs`) and
+never mutates Job, application, review, reminder, saved-search, or database
+state.
+
 ## Job sources
 
 CareerOS collects from the following public job feeds, each fetched with a

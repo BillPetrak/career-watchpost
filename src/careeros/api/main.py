@@ -172,13 +172,14 @@ paths), and saved-search ``description`` values are never exposed over HTTP.
 
 from __future__ import annotations
 
+import importlib.resources
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from careeros.api.deps import (
     DATABASE_UNAVAILABLE_MESSAGE,
@@ -382,6 +383,32 @@ MAX_FETCH_QUEUE = 1_000_000
 # endpoints). Decision and event counts are bounded by the stored jobs they
 # attach to; this mirrors the export package's record cap without importing it.
 MAX_FETCH_DECISIONS = 1_000_000
+
+# Read-only static frontend (first frontend vertical slice). The three assets
+# live inside the ``careeros.api`` package under ``static/``, declared in
+# ``pyproject.toml`` under ``[tool.setuptools.package-data]`` so an installed
+# wheel carries them; ``importlib.resources`` reads them uniformly whether the
+# package runs from the source tree or an installed wheel. Served bytes are
+# loaded per request, never from the filesystem/cwd, and the routes take no
+# database dependency (no lock, no schema, no writes).
+_UI_ASSETS_DIR = "static"
+
+_UI_MEDIA_TYPES: dict[str, str] = {
+    "index.html": "text/html; charset=utf-8",
+    "app.js": "application/javascript; charset=utf-8",
+    "style.css": "text/css; charset=utf-8",
+}
+
+
+def _read_ui_asset(name: str) -> bytes:
+    """Read one packaged static asset as bytes via ``importlib.resources``."""
+    asset = (
+        importlib.resources.files("careeros.api")
+        .joinpath(_UI_ASSETS_DIR)
+        .joinpath(name)
+    )
+    return asset.read_bytes()
+
 
 # The definition fields a generalized PATCH /saved-searches/{name} can update.
 # ``name`` is excluded (it is the rename field, dispatched to rename_search)
@@ -715,6 +742,40 @@ def create_app() -> FastAPI:
             status="ok",
             database="present",
             schema_version=_read_schema_version(connection),
+        )
+
+    @app.get("/ui")
+    def ui_index() -> Response:
+        """Serve the read-only CareerOS dashboard shell (``index.html``).
+
+        Static asset served from the packaged ``careeros.api`` resources via
+        ``importlib.resources`` (see ``_read_ui_asset``); no database, schema,
+        lock, filesystem path, or CLI dependency. The frontend is zero-build
+        (HTML/CSS/vanilla JS) and consumes only ``GET /report`` and
+        ``GET /jobs``.
+        """
+        return Response(
+            content=_read_ui_asset("index.html"),
+            media_type=_UI_MEDIA_TYPES["index.html"],
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/ui/app.js")
+    def ui_app_js() -> Response:
+        """Serve the read-only dashboard client (vanilla JavaScript)."""
+        return Response(
+            content=_read_ui_asset("app.js"),
+            media_type=_UI_MEDIA_TYPES["app.js"],
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/ui/style.css")
+    def ui_style_css() -> Response:
+        """Serve the read-only dashboard stylesheet (plain CSS)."""
+        return Response(
+            content=_read_ui_asset("style.css"),
+            media_type=_UI_MEDIA_TYPES["style.css"],
+            headers={"Cache-Control": "no-store"},
         )
 
     @app.get("/jobs", response_model=JobListResponse)
