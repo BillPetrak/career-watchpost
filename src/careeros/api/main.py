@@ -10,11 +10,12 @@ and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /groups/{group_id}``, ``GET /review-decisions``,
 ``GET /review-decisions/{job_id}``,
 ``GET /review-decisions/{job_id}/history``, ``GET /saved-searches``,
-``GET /saved-searches/{name}``, and ``GET /report``) plus three
+``GET /saved-searches/{name}``, and ``GET /report``) plus four
 computation-only ``POST``
 endpoints: ``POST /ranked-jobs``, ``POST /review-queue``, and
-``POST /saved-searches/{name}/execute``. Every read and computation endpoint is
-strictly read-only with respect to the database and filesystem: nothing creates
+``POST /saved-searches/{name}/execute`` and ``POST /report``. Every read and
+computation endpoint is strictly read-only with respect to the database and
+filesystem: nothing creates
 a database file, directory, or schema, nothing writes, and nothing makes network
 calls. ``GET /jobs`` optionally narrows the listing by the same
 application-tracking filters as the CLI and ``POST /ranked-jobs``
@@ -154,7 +155,15 @@ separate computation endpoint). ``GET /report`` returns a profile-less
 Career Snapshot dashboard backed by the shared
 ``reporting.service.build_report`` domain service: it never accepts a profile,
 never performs profile scoring, and projects only an explicit HTTP-safe
-allow-list of report fields. Application notes, event notes (beyond status
+allow-list of report fields. ``POST /report`` returns the same Career Snapshot
+backed by the same shared ``build_report`` service but accepts an optional
+inline candidate profile (``{"profile": {...}}``) so a single request can
+obtain the complete personalized snapshot: the review-queue and recommendations
+sections are then ranked against the submitted profile (``feedback`` stays
+``None``, tracked applications stay excluded, ``limit``/``grouped`` govern the
+sections exactly as ``GET /report`` does) while a profile-less ``POST`` is
+byte-identical to ``GET /report``. The inline profile is never persisted,
+logged, or echoed. Application notes, event notes (beyond status
 transition values and times), review decision notes, reminder messages, group
 matcher diagnostics, ranking reasons, ``notification_summary``, provider
 collection-error text, saved-search ``profile_path`` values (local filesystem
@@ -208,6 +217,7 @@ from careeros.api.schemas import (
     ReportRecentlyChangedItem,
     ReportRecommendations,
     ReportReminders,
+    ReportRequest,
     ReportResponse,
     ReportReviewQueue,
     ReportReviewQueueItem,
@@ -2425,6 +2435,56 @@ def create_app() -> FastAPI:
         if connection is None:
             return _empty_report_response(now)
         return _report_response(build_report(connection, now=now, limit=limit))
+
+    @app.post("/report", response_model=ReportResponse)
+    def report_with_profile(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        payload: ReportRequest | None = None,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = 10,
+        grouped: bool = False,
+    ) -> ReportResponse:
+        """Return a Career Snapshot dashboard, optionally personalized (read-only).
+
+        The request body is optional and carries at most an inline candidate
+        profile (``{"profile": {...}}``), validated with the same
+        ``CandidateProfileRequest`` semantics as ``POST /ranked-jobs``. With no
+        profile the response is byte-identical to the profile-less
+        ``GET /report`` for equivalent ``limit``/``grouped`` settings. With a
+        profile the shared ``reporting.service.build_report`` ranks the
+        review-queue and recommendations sections against it: ``feedback`` stays
+        ``None``, tracked applications stay excluded, ``source`` is ``"profile"``
+        with a null ``source_name`` and ``note``, ``candidate_count`` reflects
+        the scored candidates, and ``grouped=false`` (the default) yields flat
+        recommendation/review items while ``grouped=true`` yields one scored
+        entry per canonical duplicate group. ``limit`` caps the report's
+        list-oriented sections exactly as ``GET /report`` does, and ``now`` is
+        captured once per request so every section observes the same timestamp.
+        The submitted profile is never persisted, logged, or echoed. The route
+        is strictly read-only: it runs on the same ``read_only_connection`` as
+        ``GET /report``, never acquires the collection lock, never writes,
+        commits, or rolls back, and never initializes the schema. A missing
+        database yields the same all-zero/empty report as ``GET /report``
+        without creating a file, directory, or schema; an uninitialized or
+        malformed database yields the canonical privacy-safe ``500``.
+        """
+        now = datetime.now(UTC)
+        profile = (
+            _to_profile(payload.profile)
+            if payload is not None and payload.profile is not None
+            else None
+        )
+        if connection is None:
+            return _empty_report_response(now)
+        return _report_response(
+            build_report(
+                connection,
+                now=now,
+                profile=profile,
+                limit=limit,
+                grouped=grouped,
+                feedback=None,
+            )
+        )
 
     return app
 

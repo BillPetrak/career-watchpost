@@ -865,6 +865,25 @@ class ReportCollectionHealth(BaseModel):
     sources: list[ReportSourceStatus]
 
 
+class ReportRequest(BaseModel):
+    """Request body for ``POST /report``: an optional inline candidate profile.
+
+    ``profile`` is optional and mirrors the ``CandidateProfileRequest``
+    semantics (all fields optional, unknown fields silently ignored,
+    whitespace-stripped entries, bounded size, duplicates preserved, an empty
+    profile valid). The submitted profile is never persisted, logged, or echoed
+    in the response. Unknown top-level fields, including an attempted
+    ``profile_path`` probe, are silently ignored and never cause filesystem
+    access. When ``profile`` is omitted (no body, ``{}``, or an explicit
+    ``null``), ``POST /report`` behaves exactly like the profile-less
+    ``GET /report``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    profile: CandidateProfileRequest | None = None
+
+
 class ReportResponse(BaseModel):
     """The profile-less Career Snapshot dashboard response.
 
@@ -915,6 +934,7 @@ __all__: tuple[str, ...] = (
     "ReportRecentlyChangedItem",
     "ReportRecommendations",
     "ReportReminders",
+    "ReportRequest",
     "ReportResponse",
     "ReportReviewQueue",
     "ReportReviewQueueItem",

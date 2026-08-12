@@ -1591,6 +1591,44 @@ canonical `No job found with ID {id}.` message locally.
   privacy-safe `500`, and `sqlite3.Error` is handled by the existing
   application-level handler. The endpoint introduces no schema change and no
   migration (`SCHEMA_VERSION` unchanged).
+- `POST /report` — a Career Snapshot dashboard that accepts an optional inline
+  candidate profile so a frontend can obtain the complete personalized snapshot
+  in one request. It reuses the exact `ReportResponse` allow-list and the same
+  shared `reporting.service.build_report` domain service as `GET /report`.
+  The request body is optional and carries at most a `profile` field
+  (`{"profile": {...}}`) via the same `CandidateProfileRequest` request-model
+  semantics as `POST /ranked-jobs` (all fields optional, unknown fields
+  silently ignored, list entries whitespace-stripped, duplicates preserved, an
+  empty profile valid); unknown body fields — including an attempted
+  `profile_path` probe — are ignored and never touch the filesystem. Query
+  parameters are `limit` (default 10, `ge=1`, `le=100`, governing the report's
+  list-oriented sections exactly as `GET /report`) and `grouped` (default
+  `false`, collapsing cross-source duplicates per canonical group in the
+  review-queue/recommendation items). With no profile supplied (no body, `{}`,
+  or `{"profile": null}`) the response is byte-identical to `GET /report` for
+  equivalent `limit`/`grouped` settings. With a profile the endpoint calls
+  `build_report(connection, now=..., profile=_to_profile(...), limit=...,
+  grouped=..., feedback=None)`: `now` is captured once per request so every
+  section observes one timestamp; review feedback is always excluded
+  (`feedback=None`), stored review decisions never affect scores; tracked
+  applications stay excluded exactly as the report already does; `source` is
+  `"profile"` per the report-domain convention with `source_name`/`note`
+  `null`; `candidate_count` is populated by the existing reporting logic; and
+  `grouped=false` produces flat recommendation/review items while
+  `grouped=true` produces one scored entry per canonical duplicate group. The
+  submitted inline profile is never persisted, logged, or echoed in the
+  response, and the projection follows the same strict privacy/pruning rules
+  as `GET /report` (no descriptions, notes, reminder messages,
+  `notification_summary`, `last_error`, scoring reasons/components, feedback
+  detail, `profile_path`, paths, or lock/PID metadata). The endpoint is
+  strictly read-only: it runs on the same `read_only_connection`, never
+  acquires the collection lock, never writes/commits/rolls back, never
+  initializes the schema, and never touches the filesystem or network. Database
+  semantics match `GET /report`: a missing database yields `200` with the
+  canonical all-zero/empty report (no file, parent directory, or lock file
+  created), and a present-but-uninitialized or malformed database yields the
+  canonical privacy-safe `500` via the existing app-level `sqlite3.Error`
+  handler. The endpoint introduces no schema change and no migration.
 
 A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict no-DDL policy (no DDL on read paths, and the
