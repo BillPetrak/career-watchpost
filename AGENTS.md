@@ -1458,7 +1458,35 @@ canonical `No job found with ID {id}.` message locally.
   `rank_candidates` pipeline before scoring in both flat and grouped modes.
   Pairwise conflicts (`untracked` with either status list, and the two status
   lists together) and every supplied status value are validated at the route
-  with the canonical shared messages, returning `422`. Review feedback is
+  with the canonical shared messages, returning `422`. The optional body fields
+  `unreviewed` (`bool | null`), `include_decisions` (`list[str] | null`), and
+  `exclude_decisions` (`list[str] | null`) mirror the `GET /jobs`/`GET /groups`
+  review-state filters, applied as a route-local post-rank selection hook:
+  omitted/explicit-`null`/`false` and empty lists mean no filter;
+  `unreviewed=true` keeps only results whose resolved current review decision
+  is absent, `include_decisions` keeps only reviewed results whose resolved
+  decision is one of the supplied values (unreviewed results are excluded
+  while it is active), and `exclude_decisions` drops reviewed results with one
+  of the supplied resolved decisions while unreviewed results remain eligible.
+  Duplicate decision values are deduplicated (semantic union) and the
+  decision vocabulary is validated with the shared `validate_decision`
+  (including empty strings). In flat mode the surviving ranked job IDs are
+  resolved in ONE batched `decisions_for_jobs` lookup; in grouped mode the
+  surviving ranked groups' member IDs are resolved in ONE such lookup and each
+  group's canonical decision uses the shared `resolve_group_decision` (a
+  decision on ANY member makes the whole group reviewed, and conflicting
+  member decisions resolve to the lowest decided `jobs.id`), keeping/dropping
+  whole ranked groups without touching members, the representative, scores, or
+  the ranked ordering — the review filter never re-sorts. `total` is the
+  post-review count (after `minimum_score` filtering) before `offset`/`limit`
+  slicing. The three pairwise conflicts
+  (`include_decisions`+`exclude_decisions` and `unreviewed`+either decision
+  list) return `422` with the canonical `GET /jobs` wording, and these
+  review-state validations run after the connection-is-None early return so a
+  missing database still yields the `200` empty envelope even with an
+  otherwise-invalid review body. Review decisions are FILTER-ONLY: no
+  decision, application status, note, or history field is ever added to a
+  `RankedJobItem`/`RankedGroupItem`. Review feedback is
   always excluded (`feedback=None`), so
   stored review decisions never affect API scores. With `grouped=false`
   (the default) results are flat raw jobs only; deterministic

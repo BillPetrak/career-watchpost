@@ -597,7 +597,13 @@ class RankRequest(BaseModel):
     optional ``untracked``, ``include_statuses``, and ``exclude_statuses``
     fields mirror the CLI search/rank tracking filters; omitted or explicit
     ``null`` means no filter, and status values and combinations are validated
-    at the route using the shared application-status vocabulary.
+    at the route using the shared application-status vocabulary. The optional
+    ``unreviewed``, ``include_decisions``, and ``exclude_decisions`` fields
+    mirror the ``GET /jobs``/``GET /groups`` review-state filters; omitted or
+    explicit ``null``/``false`` and empty lists mean no filter, and decision
+    values and combinations are validated at the route using the shared
+    ``validate_decision`` vocabulary. Review decisions are filter-only: they
+    influence selection after ranking but are never exposed in the response.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -606,6 +612,9 @@ class RankRequest(BaseModel):
     untracked: bool | None = None
     include_statuses: list[str] | None = None
     exclude_statuses: list[str] | None = None
+    unreviewed: bool | None = None
+    include_decisions: list[str] | None = None
+    exclude_decisions: list[str] | None = None
 
 
 class RankedJobItem(BaseModel):

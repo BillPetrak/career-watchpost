@@ -47,7 +47,16 @@ one-member singleton group with a null ``group_id``, matching the
 ``POST /ranked-jobs`` and ``POST /review-queue`` compute a ranking
 from a candidate profile submitted inline in the request body and create no
 resource; they never read profile files, never persist or log the submitted
-profile, and never apply review feedback. ``POST /saved-searches/{name}/execute``
+profile, and never apply review feedback. ``POST /ranked-jobs`` additionally
+accepts the same review-state filter fields as ``GET /jobs``/``GET /groups``
+(``unreviewed``, ``include_decisions``, ``exclude_decisions``); they are
+validated with the shared ``validate_decision`` vocabulary (including the
+same three pairwise conflict cases) and applied as a route-local post-rank
+selection hook through one batched ``decisions_for_jobs`` lookup — with the
+canonical per-group ``resolve_group_decision`` resolution in grouped mode —
+after the shared ranking pipeline and before ``total``/pagination, never
+re-sorting the survivors and never exposing a decision value, application
+status, or other workflow state in the response. ``POST /saved-searches/{name}/execute``
 executes a stored saved-search workflow (search or rank mode) through the shared
 execution pipeline against the current database, honoring the stored definition
 including its ``result_limit`` cap; it never reads the stored ``profile_path``
@@ -148,6 +157,7 @@ paths), and saved-search ``description`` values are never exposed over HTTP.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -259,7 +269,7 @@ from careeros.presenters import (
     source_stats_dict,
     source_status_item_dict,
 )
-from careeros.ranking.scorer import CandidateProfile
+from careeros.ranking.scorer import CandidateProfile, RankedGroup, RankedJob
 from careeros.reminders.models import (
     UnknownJobError as ReminderUnknownJobError,
 )
@@ -425,6 +435,31 @@ def _to_profile(request_profile: CandidateProfileRequest) -> CandidateProfile:
         preferred_employment_types=tuple(request_profile.preferred_employment_types),
         preferred_seniority=tuple(request_profile.preferred_seniority),
     )
+
+
+def _review_selection_predicate(
+    *,
+    unreviewed: bool,
+    include_decisions: frozenset[str],
+    exclude_decisions: frozenset[str],
+) -> Callable[[str | None], bool]:
+    """Return the selection predicate for active review-state filters.
+
+    Mirrors the ``GET /jobs``/``GET /groups`` review-state semantics, testing a
+    resolved decision value (``None`` for an unreviewed entity): with
+    ``unreviewed`` only entities whose resolved decision is ``None`` are kept;
+    with ``include_decisions`` only reviewed entities whose resolved decision
+    is in the set are kept (unreviewed entities are excluded while it is
+    active); with ``exclude_decisions`` reviewed entities whose resolved
+    decision is in the set are dropped while unreviewed entities remain
+    eligible. The predicate is only built when a review rule is active, so an
+    inactive ``POST /ranked-jobs`` request performs no extra database query.
+    """
+    if unreviewed:
+        return lambda decision: decision is None
+    if include_decisions:
+        return lambda decision: decision in include_decisions
+    return lambda decision: decision not in exclude_decisions
 
 
 def _report_response(report: Report) -> ReportResponse:
@@ -2151,8 +2186,18 @@ def create_app() -> FastAPI:
         and ``exclude_statuses`` body fields mirror the CLI tracking filters
         and are validated here (pairwise conflicts and status values through
         the shared ``validate_status``) before the tracking filter is applied
-        by the shared ``rank_candidates`` pipeline before scoring. ``total``
-        reflects the ranked count after ``minimum_score`` filtering and before
+        by the shared ``rank_candidates`` pipeline before scoring. The optional
+        review-state fields ``unreviewed``, ``include_decisions``, and
+        ``exclude_decisions`` mirror the ``GET /jobs``/``GET /groups``
+        review-state filters: after the ranked pipeline they select survivors
+        through one batched ``decisions_for_jobs`` lookup (per-group
+        ``resolve_group_decision`` in grouped mode) with no re-sort, no score
+        recomputation, and no decision value ever exposed in the response.
+        ``include_decisions`` and ``exclude_decisions`` cannot be combined, and
+        ``unreviewed`` cannot be combined with either list; every supplied
+        decision is validated with the shared ``validate_decision`` vocabulary
+        (``422`` on a conflict or invalid value). ``total`` reflects the ranked
+        count after ``minimum_score`` AND review-state filtering and before
         pagination. A missing database yields an empty envelope without
         creating a file, directory, or schema.
         """
@@ -2183,6 +2228,33 @@ def create_app() -> FastAPI:
                 validate_status(status)
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from None
+
+        review_unreviewed = payload.unreviewed or False
+        review_include = (
+            tuple(payload.include_decisions) if payload.include_decisions else ()
+        )
+        review_exclude = (
+            tuple(payload.exclude_decisions) if payload.exclude_decisions else ()
+        )
+        if review_include and review_exclude:
+            raise HTTPException(
+                status_code=422,
+                detail="include_decisions and exclude_decisions cannot be combined.",
+            )
+        if review_unreviewed and (review_include or review_exclude):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "unreviewed cannot be combined with include_decisions or "
+                    "exclude_decisions."
+                ),
+            )
+        for decision in (*review_include, *review_exclude):
+            try:
+                validate_decision(decision)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
+
         profile = _to_profile(payload.profile)
         outcome = rank_candidates(
             connection,
@@ -2200,8 +2272,29 @@ def create_app() -> FastAPI:
             exclude_statuses=exclude_statuses,
             feedback=None,
         )
+
+        review_active = (
+            review_unreviewed or bool(review_include) or bool(review_exclude)
+        )
         if grouped:
-            grouped_ranked = outcome.grouped_ranked
+            grouped_ranked: Sequence[RankedGroup] = outcome.grouped_ranked
+            if review_active:
+                member_ids = {
+                    member.id
+                    for item in grouped_ranked
+                    for member in item.group.members
+                }
+                decisions = decisions_for_jobs(connection, member_ids)
+                keep = _review_selection_predicate(
+                    unreviewed=review_unreviewed,
+                    include_decisions=frozenset(review_include),
+                    exclude_decisions=frozenset(review_exclude),
+                )
+                grouped_ranked = [
+                    item
+                    for item in grouped_ranked
+                    if keep(resolve_group_decision(item.group, decisions).decision)
+                ]
             return RankedJobsResponse(
                 items=[
                     RankedGroupItem.model_validate(ranked_group_item_dict(item))
@@ -2211,7 +2304,19 @@ def create_app() -> FastAPI:
                 offset=offset,
                 limit=limit,
             )
-        flat_ranked = outcome.flat_ranked
+        flat_ranked: Sequence[RankedJob] = outcome.flat_ranked
+        if review_active:
+            decisions = decisions_for_jobs(
+                connection, {item.job.id for item in flat_ranked}
+            )
+            keep = _review_selection_predicate(
+                unreviewed=review_unreviewed,
+                include_decisions=frozenset(review_include),
+                exclude_decisions=frozenset(review_exclude),
+            )
+            flat_ranked = [
+                item for item in flat_ranked if keep(decisions.get(item.job.id))
+            ]
         return RankedJobsResponse(
             items=[
                 RankedJobItem.model_validate(ranked_job_item_dict(item))
