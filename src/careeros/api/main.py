@@ -183,6 +183,7 @@ from fastapi.responses import JSONResponse, Response
 
 from careeros.api.deps import (
     DATABASE_UNAVAILABLE_MESSAGE,
+    LOCK_CONTENTION_MESSAGE,
     read_only_connection,
     writable_connection,
 )
@@ -438,6 +439,24 @@ _NO_PROFILE_REVIEW_QUEUE_NOTE = (
 _NO_PROFILE_RECOMMENDATIONS_NOTE = (
     "No profile or saved search provided; no recommendations computed."
 )
+
+_SQLITE_TRANSIENT_MESSAGES = (
+    "database is locked",
+    "database is busy",
+    "database schema is locked",
+    "database schema has changed",
+)
+
+
+def _is_transient_sqlite_error(exc: sqlite3.Error) -> bool:
+    """Return True when a sqlite error reflects temporary contention.
+
+    SQLite raises these on the reader side while another process holds a
+    write/schema lock; the request is retryable and is mapped to a ``503``
+    rather than the misleading "schema is unavailable" ``500``.
+    """
+    message = str(exc).lower()
+    return any(token in message for token in _SQLITE_TRANSIENT_MESSAGES)
 
 
 def _no_job_found_message(job_id: int) -> str:
@@ -728,6 +747,10 @@ def create_app() -> FastAPI:
     async def _database_error_handler(
         request: Request, exc: sqlite3.Error
     ) -> JSONResponse:
+        if _is_transient_sqlite_error(exc):
+            return JSONResponse(
+                status_code=503, content={"detail": LOCK_CONTENTION_MESSAGE}
+            )
         return JSONResponse(
             status_code=500, content={"detail": DATABASE_UNAVAILABLE_MESSAGE}
         )

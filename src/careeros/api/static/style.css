@@ -452,6 +452,32 @@ main {
   font-size: 0.9rem;
 }
 
+/* Job Detail view (#job/<id>). */
+.job-back {
+  display: inline-block;
+  margin-bottom: 12px;
+}
+
+.section-body {
+  margin-top: 8px;
+}
+
+.job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-bottom: 8px;
+}
+
+.job-actions .job-link {
+  margin-bottom: 0;
+}
+
+.current-job {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
 /* Narrow / mobile layout. */
 @media (max-width: 600px) {
   main {

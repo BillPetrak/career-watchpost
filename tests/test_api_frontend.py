@@ -213,15 +213,24 @@ def test_js_uses_only_intended_read_endpoints() -> None:
     js = _asset_bytes(_JS_NAME).decode("utf-8")
     assert re.search(r'"/report"', js)
     assert re.search(r'"/jobs"', js)
-    # No mutation or computation endpoints for this slice.
+    # The Job Detail view calls exactly the five canonical read GET route
+    # families plus the Home/Jobs/Review GETs; the POST-only computation
+    # endpoint /report is the only POST. No mutation or computation endpoints
+    # for this slice.
+    for required in (
+        '"/jobs/" + jobId',
+        'base + "/group"',
+        '"/applications/" + jobId',
+        '"/review-decisions/" + jobId',
+        '"/reminders?job_id=" + jobId',
+    ):
+        assert required in js, required
     for forbidden in (
-        "/applications",
-        "/review-decisions",
-        "/reminders",
         "/saved-searches",
         "/ranked-jobs",
         "/review-queue",
         "/report/",
+        "/workflow",
     ):
         assert re.search(r'"/' + re.escape(forbidden.lstrip("/")), js) is None, (
             forbidden

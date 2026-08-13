@@ -26,13 +26,19 @@ def read_only_connection() -> Iterator[sqlite3.Connection | None]:
     A missing database file is treated as an empty database: no file, parent
     directory, or schema is ever created. Existing files are opened with
     SQLite's ``mode=ro`` URI so even a misbehaving query cannot write.
+
+    The connection is created with ``check_same_thread=False`` because FastAPI
+    runs generator-dependency steps (enter, use, exit) through the anyio
+    threadpool and may execute them in different threads; each connection is
+    scoped to one request and its enter/use/exit steps run strictly
+    sequentially, so no thread ever touches a connection concurrently.
     """
     path = database_path()
     if not path.is_file():
         yield None
         return
     uri = f"{path.resolve().as_uri()}?mode=ro"
-    connection = sqlite3.connect(uri, uri=True)
+    connection = sqlite3.connect(uri, uri=True, check_same_thread=False)
     connection.row_factory = sqlite3.Row
     try:
         yield connection
@@ -65,14 +71,16 @@ def writable_connection() -> Iterator[sqlite3.Connection]:
     closed; lock contention maps to a privacy-safe ``503``. The connection is
     opened with SQLite's ``mode=rw`` URI (never created, never initialized, no
     schema DDL) and never commits or rolls back: the shared domain service owns
-    the transaction.
+    the transaction. Like the read-only connection, ``check_same_thread=False``
+    is required because the anyio threadpool may migrate the request between
+    threads across the generator-dependency steps.
     """
     path = database_path()
     if not path.is_file():
         raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
     with _collection_lock_or_503(path):
         uri = f"{path.resolve().as_uri()}?mode=rw"
-        connection = sqlite3.connect(uri, uri=True)
+        connection = sqlite3.connect(uri, uri=True, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         try:

@@ -752,7 +752,18 @@ from `CAREEROS_DATABASE` (see
 missing database is treated as empty by the read endpoints. Each request opens
 one SQLite connection (`mode=ro` for reads, `mode=rw` under the lock for the
 write endpoints) and closes it deterministically; no connection is shared across
-requests. Endpoints reuse the shared database/presenter layers and the canonical
+requests. Both dependencies open connections with `check_same_thread=False`
+because FastAPI drives generator-dependency steps (enter, use, exit) through
+the anyio threadpool and may execute them in different threads; each connection
+is scoped to one request and its steps run strictly sequentially, so no thread
+ever touches a connection concurrently. The app-level `sqlite3.Error` handler
+distinguishes transient contention (`database is locked`, `database is busy`,
+`database schema is locked`, `database schema has changed`), which maps to the
+retryable privacy-safe `503` `LOCK_CONTENTION_MESSAGE`, from the canonical
+unavailable-schema errors (an uninitialized or malformed database, e.g. `no
+such table` or `file is not a database`), which keep the privacy-safe `500`
+`DATABASE_UNAVAILABLE_MESSAGE`. Endpoints reuse the shared database/presenter
+layers and the canonical
 job projection (`presenters.job_dict`). API code must never import `careeros.cli`
 (an AST test enforces this); the `/jobs/{job_id}` 404 detail reproduces the
 canonical `No job found with ID {id}.` message locally.
@@ -1672,8 +1683,45 @@ profiles, `profile_path`, filesystem paths, private notes/messages, or logs.
 Job descriptions are not rendered because the public `GET /jobs` projection
 intentionally omits them. Navigation uses semantic hash links so deep-link
 refresh of `/ui/#jobs` works with no server-side route per view. Browser
-console must have no errors; a basic CSP (`default-src 'self'`) is set in
+acceptance invariants: no unexpected HTTP `5xx` responses, no uncaught
+JavaScript exceptions, and no incorrect/failed UI state; documented `404`
+absent-state responses for untracked (`GET /applications/{id}`) and unreviewed
+(`GET /review-decisions/{id}`) jobs are legitimate and expected — Chrome
+DevTools may list them as failed network requests even though the frontend
+handles them correctly, so a literally empty console/network log is NOT a
+requirement. A basic CSP (`default-src 'self'`) is set in
 `index.html` with no inline script/style.
+
+The **Job Detail view** (`#job/<positive-integer-id>`) is the third milestone:
+a same-origin detail page opened via the "View details" action on every job
+card (Jobs list, Review queue, Recommendations, and grouped member cards; the
+"Open original" external link is retained as the second action). It consumes
+exactly five canonical read GET route families —
+`GET /jobs/{id}`, `GET /jobs/{id}/group`, `GET /applications/{id}`,
+`GET /review-decisions/{id}`, `GET /reminders?job_id={id}` — issued
+concurrently through `Promise.allSettled`, with the members of the Opportunity
+section coming from the embedded group response (no per-member requests).
+The core `GET /jobs/{id}` response is authoritative: a canonical `404` renders
+the whole-page "Job not found" state, and a network/`500`/malformed core
+failure renders a whole-page error whose Retry reruns the entire load.
+Ancillary sections (Opportunity, Application, Review, Reminders) fail
+independently with a local error + Retry that refetches only that section; a
+one-member singleton group is the normal "no duplicates" state that omits the
+Opportunity section entirely (a group failure is a section error, never a
+404-tolerated absence). The Application/Review sections render "Not tracked." /
+"Not reviewed." on their canonical `404`s; Reminders render in server order
+(`due_at ASC, id ASC`) with Open/Completed derived from `completed_at`. The
+Back link uses an in-memory origin remembered when entering from Jobs or
+Review (defaulting to Jobs) — no storage APIs, and browser Back/Forward works
+naturally because every navigation is a real hash change. Only public fields
+are rendered (title, company, location, remote, employment type, source,
+published, current application status/decision/reminder kind+due); descriptions,
+notes, histories, reminder messages, `source_job_id`, `group_id`, scorer
+diagnostics, and all other workflow state are never requested or rendered.
+`tests/test_api_frontend_job_detail.py` covers the view; the shared
+forbidden-endpoint invariants in `tests/test_api_frontend.py` and
+`tests/test_api_frontend_review.py` now allow the five canonical read GET route
+families while still forbidding every mutation/computation route.
 
 The `/ui` routes take no database dependency: they never acquire the
 collection lock, never create/initialize/write the database, and a missing

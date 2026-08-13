@@ -457,7 +457,10 @@ def test_review_renders_public_job_fields_only() -> None:
 
 def test_safe_external_links_are_reused() -> None:
     js = _js()
-    assert "safeExternalLink(job.url)" in js
+    # The shared helper is reused by every card builder (Jobs, Review,
+    # Recommendations, Job Detail member cards). The current-signature call
+    # sites carry an explicit label ("Open original").
+    assert "safeExternalLink(job.url, " in js
     assert 'target: "_blank"' in js
     assert 'rel: "noopener noreferrer"' in js
     assert "new URL(url, window.location.origin)" in js
@@ -508,13 +511,14 @@ def test_app_js_posts_only_to_report() -> None:
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
     assert methods == ["POST"]
     assert '"/report?grouped="' in js
+    # The Job Detail view legitimately GETs the /applications/{id},
+    # /review-decisions/{id}, and /reminders?job_id={id} route families; no
+    # computation or mutation endpoint is ever called.
     for forbidden in (
-        "/applications",
-        "/review-decisions",
-        "/reminders",
         "/saved-searches",
         "/ranked-jobs",
         "/review-queue",
+        "/workflow",
     ):
         assert f'"/{forbidden}' not in js, forbidden
 

@@ -5,16 +5,26 @@
   //
   // This file contains ONLY presentation and local navigation/loading state.
   // It calls the documented Home endpoint (GET /report), the Jobs listing
-  // (GET /jobs), and -- for the Review view -- the computation-only
-  // POST /report after the user submits the candidate-profile form. API-
-  // provided strings are always rendered with textContent/createElement --
-  // never as HTML. The submitted profile is sent only to POST /report and is
-  // never stored by this frontend.
+  // (GET /jobs), -- for the Review view -- the computation-only
+  // POST /report after the user submits the candidate-profile form, and --
+  // for the Job Detail view (#job/<id>) -- exactly five canonical read GET
+  // endpoints (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications/{id},
+  // GET /review-decisions/{id}, GET /reminders?job_id={id}). API-provided
+  // strings are always rendered with textContent/createElement -- never as
+  // HTML. The submitted profile is sent only to POST /report and is never
+  // stored by this frontend.
 
   var HOME = "home";
   var JOBS = "jobs";
   var REVIEW = "review";
+  var JOB = "job";
   var initialized = false;
+
+  // In-memory origin for the Job Detail Back link: remembers whether the
+  // detail view was opened from Jobs or Review so the Back link prefers that
+  // origin. Never persisted to storage; defaults to Jobs. Browser Back/Forward
+  // keeps working naturally because every navigation is a real hash change.
+  var jobDetailOrigin = JOBS;
 
   // ---------------------------------------------------------------------------
   // Navigation (semantic hash links: #home, #jobs, #review; unknown hashes ->
@@ -29,6 +39,17 @@
     if (raw === REVIEW) return REVIEW;
     if (raw === HOME) return HOME;
     return null; // unknown / absent / non-view (e.g. #main)
+  }
+
+  // Parses the #job/<positive-integer-id> route. Returns the job id (>= 1) for
+  // valid routes and null for absent / malformed ids (#job, #job/0, #job/-1,
+  // #job/abc, #job/12/foo, ...), which are treated exactly like unknown hashes.
+  function parsedJobId() {
+    var raw = window.location.hash.replace(/^#\/?/, "").trim().toLowerCase();
+    var match = /^job\/(\d+)$/.exec(raw);
+    if (!match) return null;
+    var id = parseInt(match[1], 10);
+    return id >= 1 ? id : null;
   }
 
   function showView(name) {
@@ -51,7 +72,11 @@
   }
 
   async function navigate() {
+    var jobId = parsedJobId();
     var view = parsedHash();
+    if (jobId !== null) {
+      view = JOB;
+    }
     if (view === null && !initialized) {
       // Initial load with an absent / unknown hash: default to Home and render.
       view = HOME;
@@ -72,6 +97,12 @@
     } else if (view === HOME) {
       if (leaving === REVIEW) resetReviewResults();
       await renderHome();
+    } else if (view === JOB) {
+      if (leaving === REVIEW) resetReviewResults();
+      if (leaving === JOBS || leaving === REVIEW) {
+        jobDetailOrigin = leaving;
+      }
+      await renderJobDetail(jobId);
     }
     document.getElementById("main").scrollTop = 0;
   }
@@ -106,7 +137,9 @@
   async function fetchJson(url) {
     var response = await fetch(url, { headers: { Accept: "application/json" } });
     if (!response.ok) {
-      throw new Error("Request to " + url + " failed (HTTP " + response.status + ").");
+      var error = await readHttpError(url, response);
+      error.status = response.status;
+      throw error;
     }
     return response.json();
   }
@@ -175,7 +208,7 @@
 
   // Safe external job link: only http(s) URLs become links; everything else is
   // rendered as plain text so untrusted values are never executable markup.
-  function safeExternalLink(url) {
+  function safeExternalLink(url, text) {
     if (typeof url !== "string" || url.length === 0) return null;
     var parsed = null;
     try {
@@ -191,8 +224,32 @@
       href: parsed.href,
       target: "_blank",
       rel: "noopener noreferrer",
-      textContent: "Open job",
+      textContent: typeof text === "string" && text.length > 0 ? text : "Open job",
     });
+  }
+
+  // The two per-card actions: a same-origin "View details" hash link into the
+  // Job Detail view and the existing safe "Open original" external link. Both
+  // are only added when a usable value exists.
+  function jobDetailsLink(job) {
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return null;
+    return el("a", {
+      className: "job-link",
+      href: "#job/" + job.id,
+      textContent: "View details",
+    });
+  }
+
+  function appendJobCardActions(card, job) {
+    if (!isObject(job)) return;
+    var actions = el("div", { className: "job-actions" });
+    var details = jobDetailsLink(job);
+    if (details) actions.appendChild(details);
+    var original = safeExternalLink(job.url, "Open original");
+    if (original) actions.appendChild(original);
+    if (actions.childNodes.length > 0) {
+      card.appendChild(actions);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -470,10 +527,7 @@
       if (!isObject(job)) return;
       var card = el("li", { className: "job-card" });
       card.appendChild(el("h2", { className: "job-title", textContent: displayText(job.title) }));
-      var link = safeExternalLink(job.url);
-      if (link) {
-        card.appendChild(link);
-      }
+      appendJobCardActions(card, job);
       var fields = el("dl", { className: "job-fields" });
       addField(fields, "Company", job.company);
       addField(fields, "Location", job.location);
@@ -717,8 +771,7 @@
     if (!isObject(job)) return null;
     var card = el("li", { className: "job-card" });
     card.appendChild(el("h3", { className: "job-title", textContent: displayText(job.title) }));
-    var link = safeExternalLink(job.url);
-    if (link) card.appendChild(link);
+    appendJobCardActions(card, job);
     var fields = el("dl", { className: "job-fields" });
     addField(fields, "Company", job.company);
     addField(fields, "Location", job.location);
@@ -740,6 +793,404 @@
       );
     }
     return card;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Job Detail view (#job/<id>)
+  //
+  // Loads one stored job's detail through exactly five canonical read GET
+  // endpoints (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications/{id},
+  // GET /review-decisions/{id}, GET /reminders?job_id={id}), issued
+  // concurrently via Promise.allSettled. The core job response is
+  // authoritative: a canonical 404 renders the whole-page "Job not found"
+  // state, while a network/500/malformed core failure renders a whole-page
+  // error with a Retry that reruns the entire detail load. Ancillary sections
+  // (opportunity, application, review, reminders) each fail independently with
+  // a local error + Retry that refetches only that section. Opportunity
+  // members come from the embedded group response -- never per-member
+  // requests -- and a one-member singleton group is a normal "no duplicates"
+  // state that omits the section entirely (never a 404-tolerated absence).
+  // ---------------------------------------------------------------------------
+
+  function jobDetailUrls(jobId) {
+    var base = "/jobs/" + jobId;
+    return {
+      job: base,
+      group: base + "/group",
+      application: "/applications/" + jobId,
+      review: "/review-decisions/" + jobId,
+      reminders: "/reminders?job_id=" + jobId,
+    };
+  }
+
+  async function loadJobDetailData(jobId) {
+    var urls = jobDetailUrls(jobId);
+    var keys = ["job", "group", "application", "review", "reminders"];
+    var settled = await Promise.allSettled(
+      keys.map(function (key) {
+        return fetchJson(urls[key]);
+      })
+    );
+    var results = {};
+    keys.forEach(function (key, index) {
+      results[key] = settled[index];
+    });
+    return results;
+  }
+
+  async function fetchDetailSection(sectionKey, jobId) {
+    var urls = jobDetailUrls(jobId);
+    try {
+      var value = await fetchJson(urls[sectionKey]);
+      return { status: "fulfilled", value: value };
+    } catch (reason) {
+      return { status: "rejected", reason: reason };
+    }
+  }
+
+  function backLink() {
+    return el("a", {
+      className: "job-back",
+      href: "#" + jobDetailOrigin,
+      textContent: jobDetailOrigin === REVIEW ? "Back to review" : "Back to jobs",
+    });
+  }
+
+  function renderJobNotFound(content, jobId) {
+    clearText(content);
+    content.appendChild(backLink());
+    content.appendChild(el("h1", { textContent: "Job not found" }));
+    content.appendChild(
+      el("p", {
+        className: "empty-note",
+        textContent: "No job found with ID " + jobId + ".",
+      })
+    );
+  }
+
+  function renderWholePageError(content, error, retryAction) {
+    clearText(content);
+    content.appendChild(backLink());
+    var box = el("div", { className: "error-box" });
+    box.appendChild(el("p", { textContent: "Could not load this job." }));
+    if (error && error.message) {
+      box.appendChild(
+        el("p", { className: "error-detail", textContent: error.message })
+      );
+    }
+    var retry = el("button", { className: "retry-button", textContent: "Retry" });
+    retry.addEventListener("click", function () {
+      box.remove();
+      retryAction();
+    });
+    box.appendChild(retry);
+    content.appendChild(box);
+  }
+
+  async function renderJobDetail(jobId) {
+    var status = document.getElementById("job-detail-status");
+    var content = document.getElementById("job-detail-content");
+    setLoading(status, "Loading job details…");
+    clearText(content);
+    try {
+      var results = await loadJobDetailData(jobId);
+      var core = results.job;
+      if (core.status === "rejected") {
+        var reason = core.reason;
+        if (reason && reason.status === 404) {
+          renderJobNotFound(content, jobId);
+        } else {
+          renderWholePageError(content, reason, function () {
+            renderJobDetail(jobId);
+          });
+        }
+        doneLoading(status);
+        return;
+      }
+      var job = core.value;
+      if (!isObject(job)) {
+        throw new Error("The /jobs/{id} response did not match the expected shape.");
+      }
+      renderJobDetailContent(content, job, results);
+      doneLoading(status);
+    } catch (error) {
+      clearText(content);
+      renderWholePageError(content, error, function () {
+        renderJobDetail(jobId);
+      });
+    }
+  }
+
+  function renderJobDetailContent(content, job, results) {
+    clearText(content);
+    content.appendChild(backLink());
+    content.appendChild(
+      el("h1", { className: "job-title", textContent: displayText(job.title) })
+    );
+    content.appendChild(buildCoreJobSection(job));
+    fillDetailSection(content, job, "group", results.group);
+    fillDetailSection(content, job, "application", results.application);
+    fillDetailSection(content, job, "review", results.review);
+    fillDetailSection(content, job, "reminders", results.reminders);
+  }
+
+  function buildCoreJobSection(job) {
+    var section = el("section", { className: "chunk" });
+    section.appendChild(el("h2", { textContent: "Job" }));
+    var fields = el("dl", { className: "job-fields" });
+    addField(fields, "Title", job.title);
+    addField(fields, "Company", job.company);
+    addField(fields, "Location", job.location);
+    addField(fields, "Remote", job.remote_status);
+    addField(fields, "Employment type", job.employment_type);
+    addField(fields, "Source", job.source);
+    addField(fields, "Published", displayDate(job.published_at));
+    section.appendChild(fields);
+    var link = safeExternalLink(job.url, "Open original");
+    if (link) section.appendChild(link);
+    return section;
+  }
+
+  function sectionHeading(sectionKey) {
+    if (sectionKey === "group") return "Opportunity";
+    if (sectionKey === "application") return "Application";
+    if (sectionKey === "review") return "Review";
+    return "Reminders";
+  }
+
+  function fillDetailSection(content, job, sectionKey, settled) {
+    var container = el("section", { className: "chunk" });
+    container.appendChild(el("h2", { textContent: sectionHeading(sectionKey) }));
+    var body = el("div", { className: "section-body" });
+    container.appendChild(body);
+    content.appendChild(container);
+    renderSectionBody(container, body, job, sectionKey, settled);
+  }
+
+  function renderSectionBody(container, body, job, sectionKey, settled) {
+    clearText(body);
+    if (
+      sectionKey === "group" &&
+      settled.status === "fulfilled" &&
+      (!isObject(settled.value) ||
+        !Array.isArray(settled.value.members) ||
+        settled.value.members.length <= 1)
+    ) {
+      // A one-member (singleton) group is the normal "no duplicates" state:
+      // omit the Opportunity section entirely.
+      container.hidden = true;
+      return;
+    }
+    container.hidden = false;
+    renderSectionByKey(body, job, sectionKey, settled, function () {
+      retrySection(container, body, job, sectionKey);
+    });
+  }
+
+  function renderSectionByKey(body, job, sectionKey, settled, retry) {
+    if (sectionKey === "group") {
+      renderOpportunity(body, job, settled, retry);
+    } else if (sectionKey === "application") {
+      renderApplication(body, settled, retry);
+    } else if (sectionKey === "review") {
+      renderReview(body, settled, retry);
+    } else {
+      renderReminders(body, settled, retry);
+    }
+  }
+
+  async function retrySection(container, body, job, sectionKey) {
+    clearText(body);
+    container.hidden = false;
+    body.appendChild(el("p", { className: "status", textContent: "Loading…" }));
+    var settled = await fetchDetailSection(sectionKey, job.id);
+    renderSectionBody(container, body, job, sectionKey, settled);
+  }
+
+  function sectionErrorBox(message, error, retryAction) {
+    var box = el("div", { className: "error-box" });
+    box.appendChild(el("p", { textContent: message }));
+    if (error && error.message) {
+      box.appendChild(
+        el("p", { className: "error-detail", textContent: error.message })
+      );
+    }
+    var retry = el("button", { className: "retry-button", textContent: "Retry" });
+    retry.addEventListener("click", function () {
+      box.remove();
+      retryAction();
+    });
+    box.appendChild(retry);
+    return box;
+  }
+
+  function renderOpportunity(body, job, settled, retry) {
+    if (settled.status === "rejected") {
+      // Any group failure (a 404 included) is a section error with Retry,
+      // never a normal "no group" absence.
+      body.appendChild(
+        sectionErrorBox("The opportunity could not be loaded.", settled.reason, retry)
+      );
+      return;
+    }
+    var group = settled.value;
+    if (!isObject(group) || !Array.isArray(group.members)) {
+      body.appendChild(
+        sectionErrorBox(
+          "The opportunity response did not match the expected shape.",
+          null,
+          retry
+        )
+      );
+      return;
+    }
+    body.appendChild(
+      el("p", {
+        className: "result-summary",
+        textContent: group.members.length + " listings in this opportunity.",
+      })
+    );
+    var list = el("ul", { className: "job-list" });
+    group.members.forEach(function (member) {
+      var card = buildMemberCard(member, job);
+      if (card) list.appendChild(card);
+    });
+    body.appendChild(list);
+  }
+
+  function buildMemberCard(member, currentJob) {
+    if (!isObject(member)) return null;
+    var card = el("li", { className: "job-card" });
+    card.appendChild(
+      el("h3", { className: "job-title", textContent: displayText(member.title) })
+    );
+    appendJobCardActions(card, member);
+    var fields = el("dl", { className: "job-fields" });
+    addField(fields, "Company", member.company);
+    addField(fields, "Location", member.location);
+    addField(fields, "Remote", member.remote_status);
+    addField(fields, "Employment type", member.employment_type);
+    addField(fields, "Source", member.source);
+    addField(fields, "Published", displayDate(member.published_at));
+    card.appendChild(fields);
+    if (
+      isObject(currentJob) &&
+      isFiniteNumber(currentJob.id) &&
+      member.id === currentJob.id
+    ) {
+      card.appendChild(
+        el("p", { className: "group-note current-job", textContent: "Current job" })
+      );
+    }
+    return card;
+  }
+
+  function renderApplication(body, settled, retry) {
+    if (settled.status === "rejected") {
+      if (settled.reason && settled.reason.status === 404) {
+        body.appendChild(
+          el("p", { className: "empty-note", textContent: "Not tracked." })
+        );
+        return;
+      }
+      body.appendChild(
+        sectionErrorBox(
+          "The application status could not be loaded.",
+          settled.reason,
+          retry
+        )
+      );
+      return;
+    }
+    var app = settled.value;
+    if (!isObject(app) || typeof app.current_status !== "string") {
+      body.appendChild(
+        sectionErrorBox(
+          "The application response did not match the expected shape.",
+          null,
+          retry
+        )
+      );
+      return;
+    }
+    var fields = el("dl", { className: "job-fields" });
+    addField(fields, "Status", app.current_status);
+    addField(fields, "First tracked", displayDate(app.created_at));
+    addField(fields, "Last updated", displayDate(app.updated_at));
+    body.appendChild(fields);
+  }
+
+  function renderReview(body, settled, retry) {
+    if (settled.status === "rejected") {
+      if (settled.reason && settled.reason.status === 404) {
+        body.appendChild(
+          el("p", { className: "empty-note", textContent: "Not reviewed." })
+        );
+        return;
+      }
+      body.appendChild(
+        sectionErrorBox("The review decision could not be loaded.", settled.reason, retry)
+      );
+      return;
+    }
+    var review = settled.value;
+    if (!isObject(review) || typeof review.decision !== "string") {
+      body.appendChild(
+        sectionErrorBox(
+          "The review response did not match the expected shape.",
+          null,
+          retry
+        )
+      );
+      return;
+    }
+    var fields = el("dl", { className: "job-fields" });
+    addField(fields, "Decision", review.decision);
+    addField(fields, "Decided", displayDate(review.created_at));
+    addField(fields, "Last updated", displayDate(review.updated_at));
+    body.appendChild(fields);
+  }
+
+  function renderReminders(body, settled, retry) {
+    if (settled.status === "rejected") {
+      body.appendChild(
+        sectionErrorBox("The reminders could not be loaded.", settled.reason, retry)
+      );
+      return;
+    }
+    var data = settled.value;
+    if (!isObject(data) || !Array.isArray(data.items)) {
+      body.appendChild(
+        sectionErrorBox(
+          "The reminders response did not match the expected shape.",
+          null,
+          retry
+        )
+      );
+      return;
+    }
+    if (data.items.length === 0) {
+      body.appendChild(el("p", { className: "empty-note", textContent: "No reminders." }));
+      return;
+    }
+    var list = el("ul", { className: "reminder-list" });
+    data.items.forEach(function (reminder) {
+      if (!isObject(reminder)) return;
+      var item = el("li", { className: "reminder-item" });
+      item.appendChild(
+        el("span", { className: "reminder-kind", textContent: displayText(reminder.kind) })
+      );
+      item.appendChild(
+        el("span", { className: "reminder-due", textContent: displayDate(reminder.due_at) })
+      );
+      var state =
+        typeof reminder.completed_at === "string" && reminder.completed_at.length > 0
+          ? "Completed"
+          : "Open";
+      item.appendChild(el("span", { className: "health-count", textContent: state }));
+      list.appendChild(item);
+    });
+    body.appendChild(list);
   }
 
   // ---------------------------------------------------------------------------

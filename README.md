@@ -49,19 +49,21 @@ Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
 
-A read-only web dashboard (Home, Jobs, and a Review view with an inline
-candidate-profile form) is served by the optional FastAPI slice at
-<http://127.0.0.1:8000/ui>:
+A read-only web dashboard (Home, Jobs, a Review view with an inline
+candidate-profile form, and a per-job detail view) is served by the optional
+FastAPI slice at <http://127.0.0.1:8000/ui>:
 
 ```bash
 uv sync --extra development --extra api   # install the API extra
 uv run uvicorn careeros.api:app           # serve; then open /ui in a browser
 ```
 
-It calls only the documented read endpoints (`GET /report`, `GET /jobs`) plus
-the computation-only `POST /report` (the Review view's inline
-candidate-profile form) and never mutates Job, application, review, reminder,
-saved-search, or database state.
+It calls only the documented read endpoints (`GET /report`, `GET /jobs`,
+`GET /jobs/{id}`, `GET /jobs/{id}/group`, `GET /applications/{id}`,
+`GET /review-decisions/{id}`, `GET /reminders?job_id={id}`) plus the
+computation-only `POST /report` (the Review view's inline candidate-profile
+form) and never mutates Job, application, review, reminder, saved-search, or
+database state.
 
 ## Job sources
 
