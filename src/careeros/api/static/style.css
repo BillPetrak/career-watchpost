@@ -478,6 +478,46 @@ main {
   font-weight: 600;
 }
 
+/* Review decision actions (Job Detail view). */
+.decision-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.decision-button {
+  padding: 6px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.decision-button:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.decision-button.current {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.decision-button.clear-decision {
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+.decision-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* Narrow / mobile layout. */
 @media (max-width: 600px) {
   main {

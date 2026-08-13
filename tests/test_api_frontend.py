@@ -7,8 +7,9 @@ static serving never requires or creates a database, the invariants that
 existing API reference endpoints remain unchanged and ``SCHEMA_VERSION`` stays
 8, that the real default database is never touched, that no ``careeros.cli``
 import appears under ``src/careeros/api``, and the static-asset hygiene checks
-(content-type, required endpoint strings, absence of mutation/private
-endpoints, the single allowed POST -- computation-only ``POST /report`` -- with
+(content-type, required endpoint strings, absence of forbidden/private
+endpoints, the exact method set -- POST /report plus the Job Detail
+review-decision PUT/DELETE mutations -- with
 no unsafe HTML sinks for API data, presence of the Home/Jobs/Review views and
 hash markers, and a compatible basic CSP).
 
@@ -209,14 +210,14 @@ def test_static_source_files_exist() -> None:
         assert _STATIC_DIR.joinpath(name).is_file(), name
 
 
-def test_js_uses_only_intended_read_endpoints() -> None:
+def test_js_uses_only_intended_endpoints() -> None:
     js = _asset_bytes(_JS_NAME).decode("utf-8")
     assert re.search(r'"/report"', js)
     assert re.search(r'"/jobs"', js)
     # The Job Detail view calls exactly the five canonical read GET route
-    # families plus the Home/Jobs/Review GETs; the POST-only computation
-    # endpoint /report is the only POST. No mutation or computation endpoints
-    # for this slice.
+    # families plus the Home/Jobs/Review GETs, and only the review-decision
+    # PUT/DELETE mutation routes. The computation-only endpoint /report stays
+    # the sole POST, and forbidden endpoints stay absent.
     for required in (
         '"/jobs/" + jobId',
         'base + "/group"',
@@ -237,15 +238,15 @@ def test_js_uses_only_intended_read_endpoints() -> None:
         )
 
 
-def test_js_only_http_method_is_post_for_report() -> None:
+def test_js_mutation_methods_are_only_put_delete_for_review() -> None:
     js = _asset_bytes(_JS_NAME).decode("utf-8")
-    # The read-only slice's one explicit HTTP method is POST, used solely for
-    # the computation-only POST /report endpoint (Review view form submission).
-    # PUT/PATCH/DELETE must never appear, and every other request (Home, Jobs)
-    # stays an implicit GET through the GET-only fetchJson helper, which carries
-    # no method option.
+    # The frontend's explicit HTTP methods are exactly three: POST for the
+    # computation-only POST /report (Review view form submission) and PUT/DELETE
+    # for the Job Detail Review-section mutations. Every other request (Home,
+    # Jobs, Job Detail reads) stays an implicit GET through the GET-only
+    # fetchJson helper, which carries no method option.
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST"]
+    assert methods == ["POST", "PUT", "DELETE"]
     # The POST target is the /report path with the grouped/limit query pair the
     # Review view sends; a path-only "/report/" suffix is never used.
     assert '"/report?grouped="' in js

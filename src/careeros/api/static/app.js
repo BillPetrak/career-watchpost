@@ -6,10 +6,12 @@
   // This file contains ONLY presentation and local navigation/loading state.
   // It calls the documented Home endpoint (GET /report), the Jobs listing
   // (GET /jobs), -- for the Review view -- the computation-only
-  // POST /report after the user submits the candidate-profile form, and --
-  // for the Job Detail view (#job/<id>) -- exactly five canonical read GET
+  // POST /report after the user submits the candidate-profile form, -- for
+  // the Job Detail view (#job/<id>) -- exactly five canonical read GET
   // endpoints (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications/{id},
-  // GET /review-decisions/{id}, GET /reminders?job_id={id}). API-provided
+  // GET /review-decisions/{id}, GET /reminders?job_id={id}), and -- for the
+  // Review section actions -- the two review-decision mutations
+  // PUT /review-decisions/{id} and DELETE /review-decisions/{id}. API-provided
   // strings are always rendered with textContent/createElement -- never as
   // HTML. The submitted profile is sent only to POST /report and is never
   // stored by this frontend.
@@ -25,6 +27,19 @@
   // origin. Never persisted to storage; defaults to Jobs. Browser Back/Forward
   // keeps working naturally because every navigation is a real hash change.
   var jobDetailOrigin = JOBS;
+
+  // Stale-response guard for the Job Detail view: every full render of
+  // #job/<id> increments this token, and every async operation that touches the
+  // detail DOM (initial load, section retry, review-decision refresh) captures
+  // it before awaiting so a response for an older page can never overwrite the
+  // currently visible job.
+  var detailRequestSeq = 0;
+
+  // Serializes the Review decision actions: while a mutation (PUT/DELETE) and
+  // its immediate refetch are in flight, no second mutation may start for the
+  // same Review section. Buttons are disabled for the whole operation as well,
+  // so this is defense-in-depth against programmatic/edge re-entry.
+  var reviewOperationActive = false;
 
   // ---------------------------------------------------------------------------
   // Navigation (semantic hash links: #home, #jobs, #review; unknown hashes ->
@@ -123,6 +138,7 @@
     if (options.target) node.target = options.target;
     if (options.rel) node.setAttribute("rel", options.rel);
     if (options.label) node.setAttribute("aria-label", options.label);
+    if (options.type) node.type = options.type;
     return node;
   }
 
@@ -165,6 +181,48 @@
       throw await readHttpError(url, response);
     }
     return response.json();
+  }
+
+  // Generic same-origin JSON write helper used by the Job Detail Review
+  // actions. Network failures and non-2xx responses follow the same
+  // friendly-error treatment as the read/POST helpers; the caller owns the
+  // refetch. Only the review-decision PUT/DELETE are routed here -- the Review
+  // view's POST stays on postReportJson.
+  async function writeJson(url, options) {
+    var response;
+    try {
+      response = await fetch(url, options);
+    } catch (_networkError) {
+      throw new Error("Could not reach the CareerOS API. Check that it is running, then retry.");
+    }
+    if (!response.ok) {
+      var error = await readHttpError(url, response);
+      error.status = response.status;
+      throw error;
+    }
+    return response.json();
+  }
+
+  // Thin adapters that carry the exact mutation method for the Review section.
+  function putJson(url, body) {
+    return writeJson(url, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function deleteJson(url) {
+    return writeJson(url, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+    });
   }
 
   async function readHttpError(url, response) {
@@ -856,6 +914,13 @@
     });
   }
 
+  // True only when the current hash still targets the given job id. Every async
+  // detail operation checks this (plus the request token) after awaiting so a
+  // stale response can never overwrite the currently visible job.
+  function isCurrentDetailJob(jobId) {
+    return parsedJobId() === jobId;
+  }
+
   function renderJobNotFound(content, jobId) {
     clearText(content);
     content.appendChild(backLink());
@@ -888,12 +953,15 @@
   }
 
   async function renderJobDetail(jobId) {
+    var seq = ++detailRequestSeq;
+    reviewOperationActive = false;
     var status = document.getElementById("job-detail-status");
     var content = document.getElementById("job-detail-content");
     setLoading(status, "Loading job details…");
     clearText(content);
     try {
       var results = await loadJobDetailData(jobId);
+      if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
       var core = results.job;
       if (core.status === "rejected") {
         var reason = core.reason;
@@ -914,6 +982,7 @@
       renderJobDetailContent(content, job, results);
       doneLoading(status);
     } catch (error) {
+      if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
       clearText(content);
       renderWholePageError(content, error, function () {
         renderJobDetail(jobId);
@@ -993,17 +1062,19 @@
     } else if (sectionKey === "application") {
       renderApplication(body, settled, retry);
     } else if (sectionKey === "review") {
-      renderReview(body, settled, retry);
+      renderReview(body, job, settled, retry);
     } else {
       renderReminders(body, settled, retry);
     }
   }
 
   async function retrySection(container, body, job, sectionKey) {
+    var seq = detailRequestSeq;
     clearText(body);
     container.hidden = false;
     body.appendChild(el("p", { className: "status", textContent: "Loading…" }));
     var settled = await fetchDetailSection(sectionKey, job.id);
+    if (seq !== detailRequestSeq || !isCurrentDetailJob(job.id)) return;
     renderSectionBody(container, body, job, sectionKey, settled);
   }
 
@@ -1022,6 +1093,17 @@
     });
     box.appendChild(retry);
     return box;
+  }
+
+  // Replaces any existing error box in the section body with a fresh one, so a
+  // section never accumulates duplicate error panels. Mutation flows re-render
+  // state in place on failure and must replace, never append; the render-time
+  // load paths already guarantee a single box because they clear the body first.
+  function replaceSectionError(body, message, error, retryAction) {
+    body.querySelectorAll(".error-box").forEach(function (box) {
+      box.remove();
+    });
+    body.appendChild(sectionErrorBox(message, error, retryAction));
   }
 
   function renderOpportunity(body, job, settled, retry) {
@@ -1120,12 +1202,18 @@
     body.appendChild(fields);
   }
 
-  function renderReview(body, settled, retry) {
+  // Canonical review decisions (presentation labels only; the transmitted
+  // values are the exact backend vocabulary: shortlist, dismiss, review_later).
+  var REVIEW_DECISIONS = [
+    { value: "shortlist", label: "Shortlist" },
+    { value: "dismiss", label: "Dismiss" },
+    { value: "review_later", label: "Review later" },
+  ];
+
+  function renderReview(body, job, settled, retry) {
     if (settled.status === "rejected") {
       if (settled.reason && settled.reason.status === 404) {
-        body.appendChild(
-          el("p", { className: "empty-note", textContent: "Not reviewed." })
-        );
+        renderReviewDecisionSection(body, job, null);
         return;
       }
       body.appendChild(
@@ -1144,11 +1232,136 @@
       );
       return;
     }
-    var fields = el("dl", { className: "job-fields" });
-    addField(fields, "Decision", review.decision);
-    addField(fields, "Decided", displayDate(review.created_at));
-    addField(fields, "Last updated", displayDate(review.updated_at));
-    body.appendChild(fields);
+    renderReviewDecisionSection(body, job, review);
+  }
+
+  // Renders the current decision state plus the action controls. `review` is
+  // null exactly when the canonical GET returned 404 ("Not reviewed."); the
+  // server response stays authoritative -- no optimistic updates anywhere.
+  function renderReviewDecisionSection(body, job, review) {
+    if (review === null) {
+      body.appendChild(
+        el("p", { className: "empty-note", textContent: "Not reviewed." })
+      );
+    } else {
+      var fields = el("dl", { className: "job-fields" });
+      addField(fields, "Decision", review.decision);
+      addField(fields, "Decided", displayDate(review.created_at));
+      addField(fields, "Last updated", displayDate(review.updated_at));
+      body.appendChild(fields);
+    }
+    body.appendChild(buildReviewDecisionActions(body, job, review));
+  }
+
+  function buildReviewDecisionActions(body, job, review) {
+    var group = el("div", { className: "decision-actions" });
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Review decision");
+    REVIEW_DECISIONS.forEach(function (entry) {
+      var button = el("button", {
+        className: "decision-button",
+        type: "button",
+        textContent: entry.label,
+      });
+      if (review !== null && review.decision === entry.value) {
+        button.classList.add("current");
+        button.setAttribute("aria-pressed", "true");
+      }
+      button.addEventListener("click", function () {
+        applyReviewDecision(group, body, job, entry.value);
+      });
+      group.appendChild(button);
+    });
+    if (review !== null) {
+      var clear = el("button", {
+        className: "decision-button clear-decision",
+        type: "button",
+        textContent: "Clear decision",
+      });
+      clear.addEventListener("click", function () {
+        clearReviewDecision(group, body, job);
+      });
+      group.appendChild(clear);
+    }
+    return group;
+  }
+
+  function setReviewActionsDisabled(group, disabled) {
+    group.querySelectorAll("button").forEach(function (button) {
+      button.disabled = disabled;
+    });
+  }
+
+  async function applyReviewDecision(group, body, job, decision) {
+    if (reviewOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    reviewOperationActive = true;
+    var section = body.parentNode;
+    var jobId = job.id;
+    var seq = detailRequestSeq;
+    setReviewActionsDisabled(group, true);
+    section.setAttribute("aria-busy", "true");
+    try {
+      await putJson("/review-decisions/" + jobId, { decision: decision });
+      await refreshReviewDecision(body, job, seq);
+    } catch (error) {
+      if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+      setReviewActionsDisabled(group, false);
+      section.removeAttribute("aria-busy");
+      replaceSectionError(
+        body,
+        "The review decision could not be saved.",
+        error,
+        function () {
+          applyReviewDecision(group, body, job, decision);
+        }
+      );
+    } finally {
+      reviewOperationActive = false;
+    }
+  }
+
+  async function clearReviewDecision(group, body, job) {
+    if (reviewOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    reviewOperationActive = true;
+    var section = body.parentNode;
+    var jobId = job.id;
+    var seq = detailRequestSeq;
+    setReviewActionsDisabled(group, true);
+    section.setAttribute("aria-busy", "true");
+    try {
+      await deleteJson("/review-decisions/" + jobId);
+      await refreshReviewDecision(body, job, seq);
+    } catch (error) {
+      if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+      setReviewActionsDisabled(group, false);
+      section.removeAttribute("aria-busy");
+      replaceSectionError(
+        body,
+        "The review decision could not be cleared.",
+        error,
+        function () {
+          clearReviewDecision(group, body, job);
+        }
+      );
+    } finally {
+      reviewOperationActive = false;
+    }
+  }
+
+  // After a successful mutation, refetch ONLY GET /review-decisions/{id} and
+  // re-render just the Review section. A 404 from that GET is the canonical
+  // "Not reviewed." absent state, never an error. The response is authoritative
+  // and the whole Job Detail view is never reloaded.
+  async function refreshReviewDecision(body, job, seq) {
+    var jobId = job.id;
+    var settled = await fetchDetailSection("review", jobId);
+    if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+    var section = body.parentNode;
+    clearText(body);
+    renderSectionBody(section, body, job, "review", settled);
+    section.removeAttribute("aria-busy");
   }
 
   function renderReminders(body, settled, retry) {

@@ -23,8 +23,9 @@ being preserved with no client re-sorting or re-ranking; candidate_count being
 displayed from the response rather than derived from visible arrays; match/score
 shown only where returned; empty-section handling; safe external links with
 unsafe URL suppression; no private fields being rendered; no
-profile_path/filesystem/storage usage; no unsafe HTML sinks; POST being allowed
-only for /report; Home/Jobs/unknown-hash/skip-link behaviour remaining intact;
+profile_path/filesystem/storage usage; no unsafe HTML sinks; the method set
+being exactly POST /report plus the Job Detail review-decision PUT/DELETE
+mutations; Home/Jobs/unknown-hash/skip-link behaviour remaining intact;
 static serving, SCHEMA_VERSION, the no-``careeros.cli`` import guarantee, the
 untouched real default database, repeated-request determinism, and narrow
 responsive CSS invariants.
@@ -506,14 +507,15 @@ def test_no_filesystem_or_config_access_from_frontend() -> None:
         assert forbidden not in combined, forbidden
 
 
-def test_app_js_posts_only_to_report() -> None:
+def test_app_js_methods_are_report_post_and_review_mutations() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST"]
+    assert methods == ["POST", "PUT", "DELETE"]
     assert '"/report?grouped="' in js
     # The Job Detail view legitimately GETs the /applications/{id},
-    # /review-decisions/{id}, and /reminders?job_id={id} route families; no
-    # computation or mutation endpoint is ever called.
+    # /review-decisions/{id}, and /reminders?job_id={id} route families and
+    # PUTs/DELETEs only the review-decision route; no other computation or
+    # mutation endpoint is ever called.
     for forbidden in (
         "/saved-searches",
         "/ranked-jobs",

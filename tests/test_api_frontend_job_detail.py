@@ -15,7 +15,8 @@ malformed-input contract; in-memory origin/back behavior (Jobs vs Review) with
 no storage APIs; the two card actions (View details / Open original) present in
 Jobs, Review, Recommendations, and group members; exactly five canonical read
 GET route families issued concurrently via ``Promise.allSettled`` with no
-per-member N+1 fetches and no mutation/computation routes; the core job
+per-member N+1 fetches and only the approved review-decision mutations
+(PUT/DELETE ``/review-decisions/{id}``) additionally permitted; the core job
 response being authoritative (404 -> whole-page not found, network/500 ->
 whole-page error + full retry); group failures being section errors with
 section-only retry (never a 404-tolerated absence); singleton groups omitting
@@ -414,10 +415,14 @@ def test_no_per_member_n_plus_one_fetches() -> None:
         assert forbidden not in js, forbidden
 
 
-def test_no_mutation_or_computation_routes_in_frontend() -> None:
+def test_only_review_decision_mutations_permitted() -> None:
     js = _js()
+    # The only frontend mutations are the Job Detail Review actions: PUT and
+    # DELETE /review-decisions/{id}. The computation-only POST /report remains
+    # the sole POST, and every forbidden mutation/computation route stays
+    # absent.
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST"]
+    assert methods == ["POST", "PUT", "DELETE"]
     for forbidden in (
         "/saved-searches",
         "/ranked-jobs",
