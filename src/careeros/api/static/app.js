@@ -11,10 +11,11 @@
   // endpoints (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications/{id},
   // GET /review-decisions/{id}, GET /reminders?job_id={id}), and -- for the
   // Review section actions -- the two review-decision mutations
-  // PUT /review-decisions/{id} and DELETE /review-decisions/{id}. API-provided
-  // strings are always rendered with textContent/createElement -- never as
-  // HTML. The submitted profile is sent only to POST /report and is never
-  // stored by this frontend.
+  // PUT /review-decisions/{id} and DELETE /review-decisions/{id}, and -- for
+  // the Application section actions -- the application-status mutation
+  // PUT /applications/{id}. API-provided strings are always rendered with
+  // textContent/createElement -- never as HTML. The submitted profile is sent
+  // only to POST /report and is never stored by this frontend.
 
   var HOME = "home";
   var JOBS = "jobs";
@@ -40,6 +41,12 @@
   // same Review section. Buttons are disabled for the whole operation as well,
   // so this is defense-in-depth against programmatic/edge re-entry.
   var reviewOperationActive = false;
+
+  // Serializes the Application status actions: while a mutation (PUT) and its
+  // immediate refetch are in flight, no second mutation may start for the same
+  // Application section. Buttons are disabled for the whole operation as well,
+  // so this is defense-in-depth against programmatic/edge re-entry.
+  var applicationOperationActive = false;
 
   // ---------------------------------------------------------------------------
   // Navigation (semantic hash links: #home, #jobs, #review; unknown hashes ->
@@ -184,10 +191,11 @@
   }
 
   // Generic same-origin JSON write helper used by the Job Detail Review
-  // actions. Network failures and non-2xx responses follow the same
-  // friendly-error treatment as the read/POST helpers; the caller owns the
-  // refetch. Only the review-decision PUT/DELETE are routed here -- the Review
-  // view's POST stays on postReportJson.
+  // actions (PUT/DELETE /review-decisions/{id}) and the Application status
+  // action (PUT /applications/{id}). Network failures and non-2xx responses
+  // follow the same friendly-error treatment as the read/POST helpers; the
+  // caller owns the refetch. Only those mutations are routed here -- the
+  // Review view's POST stays on postReportJson.
   async function writeJson(url, options) {
     var response;
     try {
@@ -955,6 +963,7 @@
   async function renderJobDetail(jobId) {
     var seq = ++detailRequestSeq;
     reviewOperationActive = false;
+    applicationOperationActive = false;
     var status = document.getElementById("job-detail-status");
     var content = document.getElementById("job-detail-content");
     setLoading(status, "Loading job details…");
@@ -1060,7 +1069,7 @@
     if (sectionKey === "group") {
       renderOpportunity(body, job, settled, retry);
     } else if (sectionKey === "application") {
-      renderApplication(body, settled, retry);
+      renderApplication(body, job, settled, retry);
     } else if (sectionKey === "review") {
       renderReview(body, job, settled, retry);
     } else {
@@ -1167,12 +1176,41 @@
     return card;
   }
 
-  function renderApplication(body, settled, retry) {
+  // Canonical application statuses (presentation labels only; the transmitted
+  // values are the exact backend vocabulary: interested, applied, interview,
+  // offer, rejected, withdrawn). All statuses are always available: the
+  // backend permits any status -> any other status and this view must never
+  // invent a linear state machine or disable a status based on the current
+  // one. Repeating the current status is allowed and relies on backend
+  // idempotency.
+  var APPLICATION_STATUSES = [
+    { value: "interested", label: "Interested" },
+    { value: "applied", label: "Applied" },
+    { value: "interview", label: "Interview" },
+    { value: "offer", label: "Offer" },
+    { value: "rejected", label: "Rejected" },
+    { value: "withdrawn", label: "Withdrawn" },
+  ];
+
+  function applicationStatusLabel(value) {
+    for (var index = 0; index < APPLICATION_STATUSES.length; index++) {
+      if (APPLICATION_STATUSES[index].value === value) {
+        return APPLICATION_STATUSES[index].label;
+      }
+    }
+    return value;
+  }
+
+  function renderApplication(body, job, settled, retry) {
     if (settled.status === "rejected") {
       if (settled.reason && settled.reason.status === 404) {
+        // The canonical GET 404 is the normal absent state: the job is not
+        // tracked yet. It is never an error, and the status actions must
+        // still render so the first application state can be assigned.
         body.appendChild(
           el("p", { className: "empty-note", textContent: "Not tracked." })
         );
+        body.appendChild(buildApplicationStatusActions(body, job, null));
         return;
       }
       body.appendChild(
@@ -1196,10 +1234,106 @@
       return;
     }
     var fields = el("dl", { className: "job-fields" });
-    addField(fields, "Status", app.current_status);
+    addField(fields, "Status", applicationStatusLabel(app.current_status));
     addField(fields, "First tracked", displayDate(app.created_at));
     addField(fields, "Last updated", displayDate(app.updated_at));
     body.appendChild(fields);
+    body.appendChild(buildApplicationStatusActions(body, job, app));
+  }
+
+  // Renders the six status action buttons. `app` is null exactly when the
+  // canonical GET returned 404 ("Not tracked."); the server response stays
+  // authoritative -- no optimistic updates anywhere. The currently active
+  // status (if any) is visually highlighted with .current and
+  // aria-pressed="true".
+  function buildApplicationStatusActions(body, job, app) {
+    var group = el("div", { className: "status-actions" });
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Application status");
+    APPLICATION_STATUSES.forEach(function (entry) {
+      var button = el("button", {
+        className: "status-button",
+        type: "button",
+        textContent: entry.label,
+      });
+      if (app !== null && app.current_status === entry.value) {
+        button.classList.add("current");
+        button.setAttribute("aria-pressed", "true");
+      }
+      button.addEventListener("click", function () {
+        applyApplicationStatus(group, body, job, entry.value);
+      });
+      group.appendChild(button);
+    });
+    return group;
+  }
+
+  function setApplicationActionsDisabled(group, disabled) {
+    group.querySelectorAll("button").forEach(function (button) {
+      button.disabled = disabled;
+    });
+  }
+
+  // Focuses the status button matching `status` if one is present. After a
+  // successful mutation the Application section is re-rendered (which replaces
+  // the DOM), so keyboard focus is restored to the newly-current status button.
+  function focusCurrentStatusButton(group, status) {
+    group.querySelectorAll("button").forEach(function (button) {
+      if (button.textContent === applicationStatusLabel(status)) {
+        button.focus();
+      }
+    });
+  }
+
+  async function applyApplicationStatus(group, body, job, status) {
+    if (applicationOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    applicationOperationActive = true;
+    var section = body.parentNode;
+    var jobId = job.id;
+    var seq = detailRequestSeq;
+    setApplicationActionsDisabled(group, true);
+    section.setAttribute("aria-busy", "true");
+    try {
+      await putJson("/applications/" + jobId, { status: status });
+      await refreshApplication(body, job, seq);
+    } catch (error) {
+      if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+      setApplicationActionsDisabled(group, false);
+      section.removeAttribute("aria-busy");
+      replaceSectionError(
+        body,
+        "The application status could not be saved.",
+        error,
+        function () {
+          applyApplicationStatus(group, body, job, status);
+        }
+      );
+    } finally {
+      applicationOperationActive = false;
+    }
+  }
+
+  // After a successful mutation, refetch ONLY GET /applications/{id} and
+  // re-render just the Application section. A 404 from that GET is the
+  // canonical "Not tracked." absent state, never an error. The response is
+  // authoritative and the whole Job Detail view is never reloaded.
+  async function refreshApplication(body, job, seq) {
+    var jobId = job.id;
+    var settled = await fetchDetailSection("application", jobId);
+    if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+    var section = body.parentNode;
+    clearText(body);
+    renderSectionBody(section, body, job, "application", settled);
+    section.removeAttribute("aria-busy");
+    if (
+      settled.status === "fulfilled" &&
+      isObject(settled.value) &&
+      typeof settled.value.current_status === "string"
+    ) {
+      var group = section.querySelector(".status-actions");
+      if (group) focusCurrentStatusButton(group, settled.value.current_status);
+    }
   }
 
   // Canonical review decisions (presentation labels only; the transmitted

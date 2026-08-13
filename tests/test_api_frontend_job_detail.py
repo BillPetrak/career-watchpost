@@ -524,7 +524,11 @@ def test_group_failure_is_section_error_not_absence() -> None:
 def test_application_not_tracked_and_public_shape() -> None:
     js = _js()
     assert 'textContent: "Not tracked."' in js
-    assert 'addField(fields, "Status", app.current_status);' in js
+    # The Status field renders the friendly label; the transmitted value stays
+    # the canonical backend status.
+    assert (
+        'addField(fields, "Status", applicationStatusLabel(app.current_status));' in js
+    )
     assert 'addField(fields, "First tracked", displayDate(app.created_at));' in js
     assert 'addField(fields, "Last updated", displayDate(app.updated_at));' in js
     assert 'typeof app.current_status !== "string"' in js

@@ -1677,9 +1677,14 @@ unsafe `innerHTML` with API values). It manages only local presentation,
 navigation (`#home`/`#jobs`/`#review` hash routing; unknown hashes default to
 `#home`), loading/error/empty/retry state, and formatting of already-returned
 values. It must never re-implement ranking, grouping, tracking, review-state,
-reporting, or database logic, never call mutation or computation endpoints
-beyond `POST /report`, and never read SQLite, config files, candidate
+reporting, or database logic, and never read SQLite, config files, candidate
 profiles, `profile_path`, filesystem paths, private notes/messages, or logs.
+Mutations are strictly confined to the Job Detail view (see below): the
+Review-decision actions call `PUT /review-decisions/{job_id}` /
+`DELETE /review-decisions/{job_id}` and the Application-status actions call
+`PUT /applications/{job_id}`; every other endpoint call is read-only
+(`GET /report`, `GET /jobs`, `GET /jobs/{id}` and its section companions) or
+the Review view's computation-only `POST /report`.
 Job descriptions are not rendered because the public `GET /jobs` projection
 intentionally omits them. Navigation uses semantic hash links so deep-link
 refresh of `/ui/#jobs` works with no server-side route per view. Browser
@@ -1718,10 +1723,46 @@ are rendered (title, company, location, remote, employment type, source,
 published, current application status/decision/reminder kind+due); descriptions,
 notes, histories, reminder messages, `source_job_id`, `group_id`, scorer
 diagnostics, and all other workflow state are never requested or rendered.
-`tests/test_api_frontend_job_detail.py` covers the view; the shared
+
+The **Application-status actions** (fourth milestone) let the Job Detail view
+start tracking a job or move it through the application lifecycle, reusing the
+same mutation infrastructure as the Review-decision actions. The Application
+section renders the server-authoritative state: for a tracked job the friendly
+`Status:` label plus `First tracked:`/`Last updated:`, and for an untracked
+job the canonical "Not tracked." empty state — the six status buttons render in
+both cases so a first assignment is always possible. The six canonical values
+are sent unchanged (`interested`, `applied`, `interview`, `offer`, `rejected`,
+`withdrawn`) with the friendly labels `Interested`, `Applied`, `Interview`,
+`Offer`, `Rejected`, `Withdrawn` in exactly that order, mapped by the shared
+`applicationStatusLabel` helper; the current status (if any) is highlighted
+with `.current` and `aria-pressed="true"`. There is no client-side state
+machine: any status may be sent for any current status (including repeating the
+current one), because the backend permits any-to-any transitions and repeats
+are idempotent no-ops. Each click issues exactly one
+`PUT /applications/{job_id}` with body `{"status": "<canonical>"}` and no
+optimistic UI; while a mutation is in flight every status button is disabled
+(`:disabled` plus `aria-busy` on the section) and a shared
+`applicationOperationActive` guard prevents overlapping mutations, reset on
+every Job Detail load. A successful `PUT` re-fetches only
+`GET /applications/{id}` and re-renders only the Application section (never the
+whole view, and never the Opportunity/Review/Reminders sections); the
+newly-current status button receives focus. On failure the previously rendered
+state is preserved and a single section-local error panel with Retry replaces
+any prior one (`replaceSectionError`, one panel per section); Retry re-issues
+exactly the failed `PUT`. The GET 404 ("Not tracked.") is a canonical absent
+state, never an error, while a `PUT` 404 is a genuine mutation failure routed
+through the error panel. There is no untrack/reset control and no `DELETE`
+call; a tracking filter, `notes`, and all other workflow state are never
+exposed.
+`tests/test_api_frontend_job_detail.py` covers the view and
+`tests/test_api_frontend_job_detail_actions.py` /
+`tests/test_api_frontend_job_detail_application_actions.py` cover the
+Review-decision and Application-status mutations; the shared
 forbidden-endpoint invariants in `tests/test_api_frontend.py` and
-`tests/test_api_frontend_review.py` now allow the five canonical read GET route
-families while still forbidding every mutation/computation route.
+`tests/test_api_frontend_review.py` allow the five canonical read GET route
+families plus the three mutation routes (`PUT`/`DELETE /review-decisions/{job_id}`,
+`PUT /applications/{job_id}`) while still forbidding every other
+mutation/computation route.
 
 The `/ui` routes take no database dependency: they never acquire the
 collection lock, never create/initialize/write the database, and a missing

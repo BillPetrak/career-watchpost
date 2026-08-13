@@ -431,8 +431,9 @@ def test_repeated_review_mutation_failures_replace_not_append() -> None:
     assert 'body.querySelectorAll(".error-box")' in helper
     assert "box.remove();" in helper
     assert "body.appendChild(sectionErrorBox(message, error, retryAction));" in helper
-    # Exactly one definition plus one call in each mutation catch path.
-    assert js.count("replaceSectionError(") == 3
+    # Exactly one definition plus one call in each mutation catch path
+    # (review apply, review clear, application apply).
+    assert js.count("replaceSectionError(") == 4
     for name in ("applyReviewDecision", "clearReviewDecision"):
         start = js.index(f"async function {name}")
         end = js.index("async function", start + len(name) + 30)
@@ -484,7 +485,7 @@ def test_read_only_detail_sections_unchanged() -> None:
     for signature in (
         "function renderOpportunity(body, job, settled, retry)",
         "function buildMemberCard(member, currentJob)",
-        "function renderApplication(body, settled, retry)",
+        "function renderApplication(body, job, settled, retry)",
         "function renderReminders(body, settled, retry)",
         "function buildCoreJobSection(job)",
         'base + "/group"',
