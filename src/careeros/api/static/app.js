@@ -4,24 +4,29 @@
   // CareerOS read-only dashboard.
   //
   // This file contains ONLY presentation and local navigation/loading state.
-  // It calls exactly two documented read endpoints (GET /report, GET /jobs),
-  // renders the values the API returns, and never re-implements ranking,
-  // grouping, tracking, review-state, or reporting logic. API-provided strings
-  // are always rendered with textContent/createElement -- never as HTML.
+  // It calls the documented Home endpoint (GET /report), the Jobs listing
+  // (GET /jobs), and -- for the Review view -- the computation-only
+  // POST /report after the user submits the candidate-profile form. API-
+  // provided strings are always rendered with textContent/createElement --
+  // never as HTML. The submitted profile is sent only to POST /report and is
+  // never stored by this frontend.
 
   var HOME = "home";
   var JOBS = "jobs";
+  var REVIEW = "review";
   var initialized = false;
 
   // ---------------------------------------------------------------------------
-  // Navigation (semantic hash links: #home, #jobs; unknown hashes -> home).
-  // Non-view hashes such as the #main skip-link anchor never change the view or
-  // reset loaded state, so activating the skip link while on Jobs keeps Jobs.
+  // Navigation (semantic hash links: #home, #jobs, #review; unknown hashes ->
+  // home). Non-view hashes such as the #main skip-link anchor never change the
+  // view or reset loaded state, so activating the skip link while on Review
+  // keeps Review.
   // ---------------------------------------------------------------------------
 
   function parsedHash() {
     var raw = window.location.hash.replace(/^#\/?/, "").trim().toLowerCase();
     if (raw === JOBS) return JOBS;
+    if (raw === REVIEW) return REVIEW;
     if (raw === HOME) return HOME;
     return null; // unknown / absent / non-view (e.g. #main)
   }
@@ -53,12 +58,19 @@
     }
     initialized = true;
     var name = view || visibleView() || HOME;
+    var leaving = visibleView();
     showView(name);
     // Only re-render when a real view route is set; otherwise (e.g. the #main
     // skip-link anchor) keep the currently visible, already-rendered view.
-    if (view === JOBS) {
+    if (view === REVIEW) {
+      // The Review view renders its static form and never auto-submits; clear
+      // any prior results so nothing stale is shown when the view is entered.
+      resetReviewResults();
+    } else if (view === JOBS) {
+      if (leaving === REVIEW) resetReviewResults();
       await renderJobs();
     } else if (view === HOME) {
+      if (leaving === REVIEW) resetReviewResults();
       await renderHome();
     }
     document.getElementById("main").scrollTop = 0;
@@ -97,6 +109,46 @@
       throw new Error("Request to " + url + " failed (HTTP " + response.status + ").");
     }
     return response.json();
+  }
+
+  // The Review view's single computation-only request: POST the inline
+  // candidate profile to GET /report's POST sibling. Same-origin only, and the
+  // profile is never persisted or logged by this frontend.
+  async function postReportJson(url, body) {
+    var response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (_networkError) {
+      throw new Error("Could not reach the CareerOS API. Check that it is running, then retry.");
+    }
+    if (!response.ok) {
+      throw await readHttpError(url, response);
+    }
+    return response.json();
+  }
+
+  async function readHttpError(url, response) {
+    var message = "Request to " + url + " failed (HTTP " + response.status + ").";
+    try {
+      var payload = await response.json();
+      if (
+        isObject(payload) &&
+        typeof payload.detail === "string" &&
+        payload.detail.length > 0
+      ) {
+        message += " " + payload.detail;
+      }
+    } catch (_notJson) {
+      // Non-JSON error body: keep the generic HTTP message.
+    }
+    return new Error(message);
   }
 
   function isObject(value) {
@@ -443,10 +495,262 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Review view (driven by the computation-only POST /report only)
+  //
+  // Presentation of personalized review/recommendation results in the exact
+  // server-returned order; no re-ranking, grouping, or scoring is ever
+  // re-implemented here. The view opens with the profile form and never
+  // auto-submits: results appear only after the user submits.
+  // ---------------------------------------------------------------------------
+
+  var MAX_LIST_ENTRIES = 100;
+  var MAX_ENTRY_LENGTH = 100;
+  var MAX_REMOTE_LENGTH = 50;
+
+  function resetReviewResults() {
+    var content = document.getElementById("review-content");
+    var status = document.getElementById("review-status");
+    var validation = document.getElementById("review-validation");
+    if (content) clearText(content);
+    if (status) clearText(status);
+    if (validation) clearText(validation);
+    var section = document.getElementById("view-review");
+    if (section) section.removeAttribute("aria-busy");
+    var submit = document.getElementById("review-submit");
+    if (submit) submit.disabled = false;
+  }
+
+  function parseListValue(raw) {
+    return String(raw)
+      .split(/[,\n]+/)
+      .map(function (entry) {
+        return entry.trim();
+      })
+      .filter(function (entry) {
+        return entry.length > 0;
+      });
+  }
+
+  function readReviewFields() {
+    return {
+      desiredTitles: parseListValue(document.getElementById("review-titles").value),
+      skills: parseListValue(document.getElementById("review-skills").value),
+      preferredLocations: parseListValue(
+        document.getElementById("review-locations").value
+      ),
+      remotePreference: document.getElementById("review-remote").value.trim(),
+      grouped: document.getElementById("review-grouped").checked,
+      limit: document.getElementById("review-limit").value,
+    };
+  }
+
+  function validateReviewFields(fields) {
+    var lists = [
+      ["Desired titles", fields.desiredTitles],
+      ["Skills", fields.skills],
+      ["Preferred locations", fields.preferredLocations],
+    ];
+    for (var index = 0; index < lists.length; index++) {
+      var label = lists[index][0];
+      var entries = lists[index][1];
+      if (entries.length > MAX_LIST_ENTRIES) {
+        return label + " has more than " + MAX_LIST_ENTRIES + " entries.";
+      }
+      for (var entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+        if (entries[entryIndex].length > MAX_ENTRY_LENGTH) {
+          return label + " entries must be " + MAX_ENTRY_LENGTH + " characters or fewer.";
+        }
+      }
+    }
+    if (fields.remotePreference.length > MAX_REMOTE_LENGTH) {
+      return (
+        "Remote preference must be " + MAX_REMOTE_LENGTH + " characters or fewer."
+      );
+    }
+    return null;
+  }
+
+  function setReviewValidation(message) {
+    var node = document.getElementById("review-validation");
+    if (!node) return;
+    clearText(node);
+    if (message) node.textContent = message;
+  }
+
+  function reviewFormSubmitted(event) {
+    event.preventDefault();
+    submitReview();
+  }
+
+  function submitReview() {
+    var fields = readReviewFields();
+    var validationError = validateReviewFields(fields);
+    setReviewValidation(validationError);
+    if (validationError) return;
+    runReviewRequest(fields);
+  }
+
+  // Only the approved profile fields are ever sent; empty fields are omitted.
+  function buildProfilePayload(fields) {
+    var profile = {};
+    if (fields.desiredTitles.length > 0) {
+      profile.desired_titles = fields.desiredTitles;
+    }
+    if (fields.skills.length > 0) {
+      profile.skills = fields.skills;
+    }
+    if (fields.preferredLocations.length > 0) {
+      profile.preferred_locations = fields.preferredLocations;
+    }
+    if (fields.remotePreference.length > 0) {
+      profile.remote_preference = fields.remotePreference;
+    }
+    return { profile: profile };
+  }
+
+  async function runReviewRequest(fields) {
+    var status = document.getElementById("review-status");
+    var content = document.getElementById("review-content");
+    var submit = document.getElementById("review-submit");
+    var url =
+      "/report?grouped=" + (fields.grouped ? "true" : "false") + "&limit=" + fields.limit;
+    setLoading(status, "Generating review results…");
+    if (submit) submit.disabled = true;
+    try {
+      var data = await postReportJson(url, buildProfilePayload(fields));
+      if (
+        !isObject(data) ||
+        !isObject(data.review_queue) ||
+        !isObject(data.recommendations)
+      ) {
+        throw new Error("The /report response did not match the expected shape.");
+      }
+      renderReviewContent(content, data);
+      doneLoading(status);
+    } catch (error) {
+      clearText(content);
+      renderError(status, error.message, function () {
+        runReviewRequest(fields);
+      });
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  }
+
+  function renderReviewContent(content, data) {
+    content.textContent = "";
+    content.appendChild(buildReviewSummary(data.review_queue, data.recommendations));
+    content.appendChild(buildReviewQueueSection(data.review_queue));
+    content.appendChild(buildRecommendationsSection(data.recommendations));
+  }
+
+  function buildReviewSummary(review, recommendations) {
+    var section = el("section", { className: "chunk" });
+    section.appendChild(el("h2", { textContent: "Summary" }));
+    var message =
+      countValue(review.candidate_count) + " opportunities to review. " +
+      countValue(recommendations.candidate_count) + " recommendations. " +
+      (review.grouped === true ? "Grouped." : "Individual jobs.");
+    section.appendChild(el("p", { className: "result-summary", textContent: message }));
+    return section;
+  }
+
+  function buildReviewQueueSection(review) {
+    var section = el("section", { className: "chunk" });
+    section.appendChild(el("h2", { textContent: "Review queue" }));
+    var items = Array.isArray(review.items) ? review.items : [];
+    if (items.length === 0) {
+      section.appendChild(
+        el("p", {
+          className: "empty-note",
+          textContent:
+            typeof review.note === "string" && review.note.length > 0
+              ? review.note
+              : "No opportunities to review.",
+        })
+      );
+      return section;
+    }
+    var list = el("ul", { className: "job-list" });
+    items.forEach(function (item) {
+      if (!isObject(item)) return;
+      var group = isObject(item.group) ? item.group : null;
+      if (!group) return;
+      var card = buildJobCard(group.representative, item.match_score, null, group);
+      if (card) list.appendChild(card);
+    });
+    section.appendChild(list);
+    return section;
+  }
+
+  function buildRecommendationsSection(recommendations) {
+    var section = el("section", { className: "chunk" });
+    section.appendChild(el("h2", { textContent: "Recommendations" }));
+    var grouped = recommendations.grouped === true;
+    var entries = grouped ? recommendations.ranked_groups : recommendations.ranked_jobs;
+    var list = Array.isArray(entries) ? entries : [];
+    if (list.length === 0) {
+      section.appendChild(
+        el("p", {
+          className: "empty-note",
+          textContent:
+            typeof recommendations.note === "string" && recommendations.note.length > 0
+              ? recommendations.note
+              : "No recommendations.",
+        })
+      );
+      return section;
+    }
+    var resultList = el("ul", { className: "job-list" });
+    list.forEach(function (entry) {
+      if (!isObject(entry)) return;
+      var job = grouped ? entry.group && entry.group.representative : entry.job;
+      var group = grouped ? entry.group : null;
+      var card = buildJobCard(job, entry.match_score, entry.score, group);
+      if (card) resultList.appendChild(card);
+    });
+    section.appendChild(resultList);
+    return section;
+  }
+
+  function buildJobCard(job, matchScore, score, group) {
+    if (!isObject(job)) return null;
+    var card = el("li", { className: "job-card" });
+    card.appendChild(el("h3", { className: "job-title", textContent: displayText(job.title) }));
+    var link = safeExternalLink(job.url);
+    if (link) card.appendChild(link);
+    var fields = el("dl", { className: "job-fields" });
+    addField(fields, "Company", job.company);
+    addField(fields, "Location", job.location);
+    addField(fields, "Remote", job.remote_status);
+    addField(fields, "Employment type", job.employment_type);
+    addField(fields, "Source", job.source);
+    addField(fields, "Published", displayDate(job.published_at));
+    addField(fields, "Match score", String(countValue(matchScore)));
+    if (score !== null && score !== undefined) {
+      addField(fields, "Score", String(countValue(score)));
+    }
+    card.appendChild(fields);
+    if (isObject(group) && Array.isArray(group.members) && group.members.length > 1) {
+      card.appendChild(
+        el("p", {
+          className: "group-note",
+          textContent: group.members.length + " listings combined.",
+        })
+      );
+    }
+    return card;
+  }
+
+  // ---------------------------------------------------------------------------
   // Wiring
   // ---------------------------------------------------------------------------
 
   document.addEventListener("DOMContentLoaded", function () {
+    var reviewForm = document.getElementById("review-form");
+    if (reviewForm) {
+      reviewForm.addEventListener("submit", reviewFormSubmitted);
+    }
     var form = document.getElementById("jobs-form");
     if (form) {
       form.addEventListener("submit", function (event) {

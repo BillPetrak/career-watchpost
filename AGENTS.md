@@ -1647,26 +1647,40 @@ static files. `uv build --wheel` then
 `unzip -l dist/*.whl | grep 'careeros/api/static'` verifies all three assets.
 
 Architecture boundary: the frontend is **HTTP-only and computation-free**. It
-calls exactly two documented read endpoints — `GET /report` (Home view) and
-`GET /jobs` (Jobs view, including the `query` keyword parameter) — renders
-returned projections with `textContent`/`createElement` (never unsafe
-`innerHTML` with API values), and manages only local presentation,
-navigation (`#home`/`#jobs` hash routing; unknown hashes default to `#home`),
-loading/error/empty/retry state, and formatting of already-returned values. It
-must never re-implement ranking, grouping, tracking, review-state, reporting,
-or database logic, never call mutation or computation endpoints, and never
-read SQLite, config files, candidate profiles, `profile_path`, filesystem
-paths, private notes/messages, or logs. Job descriptions are not rendered
-because the public `GET /jobs` projection intentionally omits them. Navigation
-uses semantic hash links so deep-link refresh of `/ui/#jobs` works with no
-server-side route per view. Browser console must have no errors; a basic CSP
-(`default-src 'self'`) is set in `index.html` with no inline script/style.
+calls the documented endpoints — `GET /report` (Home view), `GET /jobs` (Jobs
+view, including the `query` keyword parameter), and — in the Review view —
+the computation-only `POST /report` (an inline candidate-profile form that is
+submitted only after the user explicitly submits it; the view opens in an
+explanatory empty state and never auto-submits on navigation or load). The
+Review form exposes exactly four approved profile fields (`desired_titles`,
+`skills`, `preferred_locations`, `remote_preference`) plus a "Collapse
+duplicates" checkbox (`grouped`, default checked) and an items-limit select
+(10/25/50, default 10); list entries accept comma- and/or newline-separated
+values that are trimmed, de-duplicated of empty tokens, order-preserved, and
+checked client-side against the server limits (`<=100` entries, `<=100`
+chars/entry, `<=50` chars for `remote_preference`) before any request is
+issued. Results render the three server regions (summary counts from the
+response `candidate_count` fields, the review queue, and the recommendations)
+in the exact server-returned order with `textContent`/`createElement` (never
+unsafe `innerHTML` with API values). It manages only local presentation,
+navigation (`#home`/`#jobs`/`#review` hash routing; unknown hashes default to
+`#home`), loading/error/empty/retry state, and formatting of already-returned
+values. It must never re-implement ranking, grouping, tracking, review-state,
+reporting, or database logic, never call mutation or computation endpoints
+beyond `POST /report`, and never read SQLite, config files, candidate
+profiles, `profile_path`, filesystem paths, private notes/messages, or logs.
+Job descriptions are not rendered because the public `GET /jobs` projection
+intentionally omits them. Navigation uses semantic hash links so deep-link
+refresh of `/ui/#jobs` works with no server-side route per view. Browser
+console must have no errors; a basic CSP (`default-src 'self'`) is set in
+`index.html` with no inline script/style.
 
 The `/ui` routes take no database dependency: they never acquire the
 collection lock, never create/initialize/write the database, and a missing
-database never affects them. `tests/test_api_frontend.py` verifies static
-serving, invariant endpoints, `SCHEMA_VERSION`, the real-default-database
-rule, the no-`careeros.cli`-import guarantee, and static-asset hygiene.
+database never affects them. `tests/test_api_frontend.py` and
+`tests/test_api_frontend_review.py` verify static serving, invariant
+endpoints, `SCHEMA_VERSION`, the real-default-database rule, the
+no-`careeros.cli`-import guarantee, and static-asset hygiene.
 
 ## systemd user units
 

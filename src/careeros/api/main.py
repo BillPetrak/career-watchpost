@@ -751,8 +751,9 @@ def create_app() -> FastAPI:
         Static asset served from the packaged ``careeros.api`` resources via
         ``importlib.resources`` (see ``_read_ui_asset``); no database, schema,
         lock, filesystem path, or CLI dependency. The frontend is zero-build
-        (HTML/CSS/vanilla JS) and consumes only ``GET /report`` and
-        ``GET /jobs``.
+        (HTML/CSS/vanilla JS) and consumes ``GET /report``, ``GET /jobs``, and
+        the computation-only ``POST /report`` (the Review view's inline
+        candidate-profile form).
         """
         return Response(
             content=_read_ui_asset("index.html"),

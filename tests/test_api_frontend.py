@@ -8,8 +8,9 @@ existing API reference endpoints remain unchanged and ``SCHEMA_VERSION`` stays
 8, that the real default database is never touched, that no ``careeros.cli``
 import appears under ``src/careeros/api``, and the static-asset hygiene checks
 (content-type, required endpoint strings, absence of mutation/private
-endpoints, no unsafe HTML sinks for API data, presence of the Home/Jobs view
-and hash markers, and a compatible basic CSP).
+endpoints, the single allowed POST -- computation-only ``POST /report`` -- with
+no unsafe HTML sinks for API data, presence of the Home/Jobs/Review views and
+hash markers, and a compatible basic CSP).
 
 These checks are intentionally light and stdlib/Python-test-only: this slice
 has no Node toolchain, so there is no Jest/Vitest/Playwright.
@@ -227,10 +228,19 @@ def test_js_uses_only_intended_read_endpoints() -> None:
         )
 
 
-def test_js_has_no_mutation_verb_usage() -> None:
+def test_js_only_http_method_is_post_for_report() -> None:
     js = _asset_bytes(_JS_NAME).decode("utf-8")
-    assert "method:" not in js
-    assert re.search(r"\bmethod\s*:\s*['\"](post|put|patch|delete)", js, re.I) is None
+    # The read-only slice's one explicit HTTP method is POST, used solely for
+    # the computation-only POST /report endpoint (Review view form submission).
+    # PUT/PATCH/DELETE must never appear, and every other request (Home, Jobs)
+    # stays an implicit GET through the GET-only fetchJson helper, which carries
+    # no method option.
+    methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
+    assert methods == ["POST"]
+    # The POST target is the /report path with the grouped/limit query pair the
+    # Review view sends; a path-only "/report/" suffix is never used.
+    assert '"/report?grouped="' in js
+    assert '"&limit="' in js
 
 
 def test_no_private_filesystem_profile_or_log_access() -> None:

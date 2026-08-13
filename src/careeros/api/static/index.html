@@ -15,6 +15,7 @@
     <nav class="nav" aria-label="Primary">
       <a href="#home" id="nav-home">Home</a>
       <a href="#jobs" id="nav-jobs">Jobs</a>
+      <a href="#review" id="nav-review">Review</a>
     </nav>
   </header>
 
@@ -40,6 +41,59 @@
       </form>
       <div id="jobs-status" class="status" role="status" aria-live="polite"></div>
       <div id="jobs-content" class="view-content"></div>
+    </section>
+
+    <section id="view-review" class="view" data-view="review" hidden>
+      <h1>Review</h1>
+      <p class="view-intro">
+        Enter your candidate preferences below to generate personalized review
+        and recommendation results from your stored jobs. Results appear only
+        after you submit the form.
+      </p>
+      <form id="review-form" class="profile-form">
+        <fieldset class="profile-fields">
+          <legend>Candidate profile</legend>
+          <div class="profile-field">
+            <label for="review-titles">Desired titles</label>
+            <textarea id="review-titles" name="desired_titles" rows="2"></textarea>
+            <p class="field-hint">Comma- and/or newline-separated entries.</p>
+          </div>
+          <div class="profile-field">
+            <label for="review-skills">Skills</label>
+            <textarea id="review-skills" name="skills" rows="2"></textarea>
+            <p class="field-hint">Comma- and/or newline-separated entries.</p>
+          </div>
+          <div class="profile-field">
+            <label for="review-locations">Preferred locations</label>
+            <textarea id="review-locations" name="preferred_locations" rows="2"></textarea>
+            <p class="field-hint">Comma- and/or newline-separated entries.</p>
+          </div>
+          <div class="profile-field">
+            <label for="review-remote">Remote preference</label>
+            <select id="review-remote" name="remote_preference">
+              <option value="" selected>No preference</option>
+              <option value="remote">Remote only</option>
+              <option value="onsite_or_unspecified">Onsite or unspecified</option>
+            </select>
+          </div>
+          <div class="profile-controls">
+            <label class="inline-label" for="review-grouped">
+              <input id="review-grouped" name="grouped" type="checkbox" checked>
+              Collapse duplicates
+            </label>
+            <label for="review-limit">Items limit</label>
+            <select id="review-limit" name="limit">
+              <option value="10" selected>10</option>
+              <option value="25">25</option>
+              <option value="50">50</option>
+            </select>
+          </div>
+        </fieldset>
+        <button type="submit" id="review-submit">Generate review</button>
+      </form>
+      <div id="review-validation" class="validation-note" role="alert"></div>
+      <div id="review-status" class="status" role="status" aria-live="polite"></div>
+      <div id="review-content" class="view-content"></div>
     </section>
   </main>
 
