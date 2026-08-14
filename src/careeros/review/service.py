@@ -329,6 +329,7 @@ def get_decision(
 def list_decisions(
     connection: sqlite3.Connection,
     *,
+    job_id: int | None = None,
     decisions: Sequence[str] | None = None,
     limit: int = 20,
 ) -> list[DecisionListItem]:
@@ -341,7 +342,12 @@ def list_decisions(
                 validate_decision(decision)
             except ValueError as error:
                 raise ValidationError(str(error)) from error
-    return _list_decisions(connection, decisions=decisions, limit=limit)
+    return _list_decisions(
+        connection,
+        job_id=job_id,
+        decisions=decisions,
+        limit=limit,
+    )
 
 
 def list_decision_events(

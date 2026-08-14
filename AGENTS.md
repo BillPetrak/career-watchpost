@@ -866,7 +866,13 @@ canonical `No job found with ID {id}.` message locally.
 - `GET /applications` — tracked applications newest first (`created_at DESC,
   id DESC`, the shared `database.applications.list_applications` order) with
   deterministic `offset`/`limit` pagination (defaults 0/20, `limit` capped at
-  100) and an optional repeatable `status` filter. Every `status` value is
+  100), an optional repeatable `status` filter, and an optional `job_id` query
+  filter (positive integer; `0`/negative/non-integer values return `422`, an
+  absent value leaves the unfiltered listing unchanged). A `job_id` filter
+  narrows the listing to one job's current application: a known-but-untracked
+  job and an unknown job both return a `200` empty collection (the list style
+  never distinguishes absence from an unknown job; the canonical singular
+  `GET /applications/{job_id}` retains that distinction). Every `status` value is
   validated against `APPLICATION_STATUSES` (via `validate_status`); an invalid
   value returns `422`. Repeated statuses use inclusive OR semantics. The
   filter is applied before pagination; `total` is the filtered count before
@@ -1117,9 +1123,15 @@ canonical `No job found with ID {id}.` message locally.
 - `GET /review-decisions` — current review decisions joined with their jobs,
   newest first (`updated_at DESC, id DESC`, the shared
   `database.review.list_decisions` order) with deterministic `offset`/`limit`
-  pagination (defaults 0/20, `limit` capped at 100) and an optional repeatable
-  `decision` filter. Every `decision` value is validated against the shared
-  `review.models.validate_decision` vocabulary (`shortlist`, `dismiss`,
+  pagination (defaults 0/20, `limit` capped at 100), an optional repeatable
+  `decision` filter, and an optional `job_id` query filter (positive integer;
+  `0`/negative/non-integer values return `422`, an absent value leaves the
+  unfiltered listing unchanged). A `job_id` filter narrows the listing to one
+  job's current decision: a known-but-unreviewed job and an unknown job both
+  return a `200` empty collection (the list style never distinguishes absence
+  from an unknown job; the canonical singular `GET /review-decisions/{job_id}`
+  retains that distinction). Every `decision` value is validated against the
+  shared `review.models.validate_decision` vocabulary (`shortlist`, `dismiss`,
   `review_later`); an invalid value returns `422`. The filter is applied before
   pagination; `total` is the filtered count before `offset`/`limit` slicing.
   The envelope is `{items, total, offset, limit}`. Each item uses the shared
@@ -1696,21 +1708,22 @@ Job descriptions are not rendered because the public `GET /jobs` projection
 intentionally omits them. Navigation uses semantic hash links so deep-link
 refresh of `/ui/#jobs` works with no server-side route per view. Browser
 acceptance invariants: no unexpected HTTP `5xx` responses, no uncaught
-JavaScript exceptions, and no incorrect/failed UI state; documented `404`
-absent-state responses for untracked (`GET /applications/{id}`) and unreviewed
-(`GET /review-decisions/{id}`) jobs are legitimate and expected — Chrome
-DevTools may list them as failed network requests even though the frontend
-handles them correctly, so a literally empty console/network log is NOT a
-requirement. A basic CSP (`default-src 'self'`) is set in
+JavaScript exceptions, and no incorrect/failed UI state; the Job Detail
+application/review reads use their job-scoped list endpoints
+(`GET /applications?job_id={id}`, `GET /review-decisions?job_id={id}`), whose
+empty 200 collection is the canonical absent state, so normal browsing issues
+NO expected `404`s — the only `404` a Job Detail page can produce is the core
+job "not found" state. A basic CSP (`default-src 'self'`) is set in
 `index.html` with no inline script/style.
 
 The **Job Detail view** (`#job/<positive-integer-id>`) is the third milestone:
 a same-origin detail page opened via the "View details" action on every job
 card (Jobs list, Review queue, Recommendations, and grouped member cards; the
 "Open original" external link is retained as the second action). It consumes
-exactly five canonical read GET route families —
-`GET /jobs/{id}`, `GET /jobs/{id}/group`, `GET /applications/{id}`,
-`GET /review-decisions/{id}`, `GET /reminders?job_id={id}` — issued
+exactly five read GET route families —
+`GET /jobs/{id}`, `GET /jobs/{id}/group`,
+`GET /applications?job_id={id}`, `GET /review-decisions?job_id={id}`,
+`GET /reminders?job_id={id}` — issued
 concurrently through `Promise.allSettled`, with the members of the Opportunity
 section coming from the embedded group response (no per-member requests).
 The core `GET /jobs/{id}` response is authoritative: a canonical `404` renders
@@ -1721,7 +1734,8 @@ independently with a local error + Retry that refetches only that section; a
 one-member singleton group is the normal "no duplicates" state that omits the
 Opportunity section entirely (a group failure is a section error, never a
 404-tolerated absence). The Application/Review sections render "Not tracked." /
-"Not reviewed." on their canonical `404`s; Reminders render in server order
+"Not reviewed." on the empty 200 collections from their job-scoped list
+endpoints (never a canonical `404`); Reminders render in server order
 (`due_at ASC, id ASC`) with Open/Completed derived from `completed_at`. The
 Back link uses an in-memory origin remembered when entering from Jobs or
 Review (defaulting to Jobs) — no storage APIs, and browser Back/Forward works
@@ -1751,16 +1765,18 @@ optimistic UI; while a mutation is in flight every status button is disabled
 (`:disabled` plus `aria-busy` on the section) and a shared
 `applicationOperationActive` guard prevents overlapping mutations, reset on
 every Job Detail load. A successful `PUT` re-fetches only
-`GET /applications/{id}` and re-renders only the Application section (never the
-whole view, and never the Opportunity/Review/Reminders sections); the
-newly-current status button receives focus. On failure the previously rendered
-state is preserved and a single section-local error panel with Retry replaces
-any prior one (`replaceSectionError`, one panel per section); Retry re-issues
-exactly the failed `PUT`. The GET 404 ("Not tracked.") is a canonical absent
-state, never an error, while a `PUT` 404 is a genuine mutation failure routed
-through the error panel. There is no untrack/reset control and no `DELETE`
-call; a tracking filter, `notes`, and all other workflow state are never
-exposed.
+`GET /applications?job_id={id}` and re-renders only the Application section
+(never the whole view, and never the Opportunity/Review/Reminders sections);
+the newly-current status button receives focus. On failure the previously
+rendered state is preserved and a single section-local error panel with Retry
+replaces any prior one (`replaceSectionError`, one panel per section); Retry
+re-issues exactly the failed `PUT`. The empty-list absent state ("Not
+tracked.") is canonical and never an error (the singular `GET
+/applications/{id}` 404 keeps its authoritative untracked semantics for API
+clients, but the view does not call it), while a `PUT` 404 is a genuine
+mutation failure routed through the error panel. There is no untrack/reset
+control and no `DELETE` call; a tracking filter, `notes`, and all other
+workflow state are never exposed.
 `tests/test_api_frontend_job_detail.py` covers the view and
 `tests/test_api_frontend_job_detail_actions.py` /
 `tests/test_api_frontend_job_detail_application_actions.py` /

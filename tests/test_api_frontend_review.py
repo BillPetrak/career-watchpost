@@ -512,9 +512,9 @@ def test_app_js_methods_are_report_post_and_workflow_mutations() -> None:
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
     assert methods == ["POST", "POST", "PUT", "DELETE"]
     assert '"/report?grouped="' in js
-    # The Job Detail view legitimately GETs the /applications/{id},
-    # /review-decisions/{id}, and /reminders?job_id={id} route families and
-    # PUTs/DELETEs only the review-decision route; no other computation or
+    # The Job Detail view legitimately GETs the /applications?job_id={id},
+    # /review-decisions?job_id={id}, and /reminders?job_id={id} route families
+    # and PUTs/DELETEs only the review-decision route; no other computation or
     # mutation endpoint is ever called.
     for forbidden in (
         "/saved-searches",

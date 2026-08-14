@@ -15,18 +15,21 @@ available (the backend permits any status -> any other status and the view must
 never invent a linear state machine or disable a status based on the current
 one); the current-status visual state (``.status-button.current`` +
 ``aria-pressed``); a strictly server-authoritative flow with NO optimistic
-updates (the PUT response drives a re-fetch of ONLY ``GET /applications/{id}``
-and a re-render of only the Application section); controls disabled + section
-``aria-busy`` during a mutation with an ``applicationOperationActive`` guard so
-rapid clicks cannot issue overlapping mutations; stale-response protection via a
-per-navigation ``detailRequestSeq`` token plus ``isCurrentDetailJob`` so a
-response for an old job can never overwrite the visible one; the exact
-distinction between the two 404 semantics (the ``GET /applications/{id}`` 404
-is the canonical normal "Not tracked." absent state and renders the six actions
-for a first assignment, while a ``PUT /applications/{id}`` 404 is a genuine
-mutation failure rendering the normal single section-local error with Retry);
-mutation failures (404/422/500/503) rendering a section error box that retries
-the SAME operation while preserving the previously rendered application state;
+updates (the PUT response drives a re-fetch of ONLY the job-scoped list read
+``GET /applications?job_id={id}`` and a re-render of only the Application
+section, so the normal absent state is an empty 200 list rather than a
+canonical 404); controls disabled + section ``aria-busy`` during a mutation
+with an ``applicationOperationActive`` guard so rapid clicks cannot issue
+overlapping mutations; stale-response protection via a per-navigation
+``detailRequestSeq`` token plus ``isCurrentDetailJob`` so a response for an old
+job can never overwrite the visible one; the exact distinction between the two
+404 semantics (the ``GET /applications/{id}`` 404 remains the canonical
+untracked absent state for singular-API clients, while the view reads the
+list endpoint whose empty-items branch is the "Not tracked." state, and a
+``PUT /applications/{id}`` 404 is a genuine mutation failure rendering the
+normal single section-local error with Retry); mutation failures
+(404/422/500/503) rendering a section error box that retries the SAME operation
+while preserving the previously rendered application state;
 no untrack/clear/reset control (no backend operation exists, so nothing is
 invented and no DELETE is issued for applications); PUT being the only newly
 permitted application mutation with every forbidden endpoint absent and no
@@ -289,8 +292,9 @@ def test_apply_is_server_authoritative_with_no_optimistic_update() -> None:
 def test_successful_mutation_refetches_only_application_section() -> None:
     js = _js()
     refresh = _application_refresh_slice(js)
-    # Only GET /applications/{id} is re-fetched and only the Application section
-    # re-renders; the whole Job Detail view is never reloaded.
+    # Only the job-scoped list GET /applications?job_id={id} is re-fetched and
+    # only the Application section re-renders; the whole Job Detail view is
+    # never reloaded.
     assert 'var settled = await fetchDetailSection("application", jobId);' in refresh
     assert 'renderSectionBody(section, body, job, "application", settled);' in refresh
     assert "loadJobDetailData" not in refresh
@@ -300,20 +304,23 @@ def test_successful_mutation_refetches_only_application_section() -> None:
     assert 'fetchDetailSection("reminders"' not in refresh
 
 
-def test_get_404_refetch_renders_not_tracked() -> None:
+def test_empty_list_refetch_renders_not_tracked() -> None:
     js = _js()
     render = _application_render_slice(js)
-    # The canonical 404 from the GET is the "Not tracked." absent state, not an
-    # error panel: the 404 branch renders the empty state, appends the six
-    # status actions (so a first assignment is possible), and returns early; only
-    # the non-404 rejection path falls through to the error box.
-    assert "if (settled.reason && settled.reason.status === 404) {" in render
+    # The empty 200 list from the job-scoped list endpoint is the "Not
+    # tracked." absent state, not an error panel: the empty-items branch renders
+    # the empty state, appends the six status actions (so a first assignment is
+    # possible), and returns early; only a rejected (network/5xx) response
+    # falls through to the error box.
+    assert "data.items.length === 0" in render
     assert 'textContent: "Not tracked."' in render
     assert "buildApplicationStatusActions(body, job, null)" in render
     assert "return;" in render
+    # The empty-list branch appends the action group and returns early, so the
+    # tracked items[0] processing below it can never run for an empty list.
     assert render.index(
         "buildApplicationStatusActions(body, job, null)"
-    ) < render.index('"The application status could not be loaded."')
+    ) < render.index("var app = data.items[0];")
 
 
 def test_tracked_job_shows_server_fields_with_friendly_label() -> None:
@@ -340,8 +347,8 @@ def test_current_status_visually_highlighted() -> None:
 
 def test_untracked_renders_all_six_status_actions() -> None:
     js = _js()
-    # The 404 ("Not tracked.") branch appends the action group via the shared
-    # builder, so all six buttons are present for a first assignment.
+    # The empty-list ("Not tracked.") branch appends the action group via the
+    # shared builder, so all six buttons are present for a first assignment.
     start = js.index("function buildApplicationStatusActions")
     end = js.index("function setApplicationActionsDisabled", start)
     builder = js[start:end]
@@ -355,11 +362,13 @@ def test_no_untrack_or_reset_control() -> None:
     js = _js()
     # No backend operation deletes/clears an application record, so the view
     # must never invent an Untrack button, map a status to "untracked", or
-    # issue a DELETE for applications.
+    # issue a DELETE for applications. The read path uses the job-scoped list
+    # endpoint; the PUT mutation still targets the singular route.
     assert "Untrack" not in js
     assert "untracked" not in js
     assert 'deleteJson("/applications/' not in js
-    assert '"/applications/" + jobId' in js  # read GET + PUT share the route
+    assert '"/applications?job_id=" + jobId' in js
+    assert 'putJson("/applications/" + jobId, { status: status });' in js
 
 
 # --------------------------------------------------------------------------- #
@@ -437,7 +446,7 @@ def test_put_404_is_mutation_failure_not_absent_state() -> None:
     js = _js()
     # The PUT response is never treated as an absent state: applyApplicationStatus
     # only routes through the section-error path (replaceSectionError), and the
-    # "Not tracked." absent state is keyed exclusively to the GET 404 branch
+    # "Not tracked." absent state is keyed exclusively to the empty-items branch
     # inside renderApplication.
     apply = _application_apply_slice(js)
     assert "Not tracked." not in apply
@@ -544,8 +553,8 @@ def test_read_only_detail_sections_unchanged() -> None:
         "function renderReview(body, job, settled, retry)",
         "function renderReviewDecisionSection(body, job, review)",
         'base + "/group"',
-        '"/applications/" + jobId',
-        '"/review-decisions/" + jobId',
+        '"/applications?job_id=" + jobId',
+        '"/review-decisions?job_id=" + jobId',
         '"/reminders?job_id=" + jobId',
     ):
         assert signature in js, signature

@@ -151,7 +151,13 @@ their append-only transition history joined with the canonical job projection,
 the applications endpoints expose tracked applications and their append-only
 status-transition history, and the saved-searches endpoints expose stored
 saved-search definitions for viewing only (list and detail; execution is a
-separate computation endpoint). ``GET /report`` returns a profile-less
+separate computation endpoint). ``GET /applications`` and
+``GET /review-decisions`` additionally accept an optional ``job_id`` query
+filter that narrows the listing to one job's current record (an absent or
+unknown job returns an empty list, mirroring ``GET /reminders?job_id=``); the
+canonical singular ``GET /applications/{job_id}`` and
+``GET /review-decisions/{job_id}`` endpoints keep their authoritative 404
+absent-state and unknown-job behavior. ``GET /report`` returns a profile-less
 Career Snapshot dashboard backed by the shared
 ``reporting.service.build_report`` domain service: it never accepts a profile,
 never performs profile scoring, and projects only an explicit HTTP-safe
@@ -1090,6 +1096,7 @@ def create_app() -> FastAPI:
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
         status: Annotated[list[str] | None, Query()] = None,
+        job_id: Annotated[int | None, Query(ge=1)] = None,
     ) -> ApplicationListResponse:
         if connection is None:
             return ApplicationListResponse(
@@ -1103,6 +1110,7 @@ def create_app() -> FastAPI:
                     raise HTTPException(status_code=422, detail=str(error)) from None
         matches = list_applications(
             connection,
+            job_id=job_id,
             statuses=status,
             limit=MAX_FETCH_APPLICATIONS,
         )
@@ -1498,6 +1506,7 @@ def create_app() -> FastAPI:
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
         decision: Annotated[list[str] | None, Query()] = None,
+        job_id: Annotated[int | None, Query(ge=1)] = None,
     ) -> ReviewDecisionListResponse:
         """List current review decisions joined with their jobs, newest first."""
         if connection is None:
@@ -1512,6 +1521,7 @@ def create_app() -> FastAPI:
                     raise HTTPException(status_code=422, detail=str(error)) from None
         matches = list_decisions(
             connection,
+            job_id=job_id,
             decisions=decision,
             limit=MAX_FETCH_DECISIONS,
         )

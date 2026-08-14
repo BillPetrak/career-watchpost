@@ -239,11 +239,17 @@ def latest_event_note(
 def list_applications(
     connection: sqlite3.Connection,
     *,
+    job_id: int | None = None,
     statuses: Sequence[str] | None = None,
     limit: int = 20,
 ) -> list[ApplicationListItem]:
     """Return tracked applications joined with their jobs, newest first."""
-    return _list_applications(connection, statuses=statuses, limit=limit)
+    return _list_applications(
+        connection,
+        job_id=job_id,
+        statuses=statuses,
+        limit=limit,
+    )
 
 
 def list_application_events(

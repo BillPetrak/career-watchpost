@@ -473,6 +473,111 @@ def test_list_rejects_invalid_pagination(
 
 
 # --------------------------------------------------------------------------- #
+# job_id filter
+# --------------------------------------------------------------------------- #
+
+
+def test_list_job_id_filter_returns_tracked_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, application_ids = _seed(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get("/applications", params={"job_id": job_ids["py-1"]})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert list(payload) == ["items", "total", "offset", "limit"]
+    assert payload["total"] == 1
+    assert len(payload["items"]) == 1
+    item = payload["items"][0]
+    assert list(item) == [
+        "application_id",
+        "job_id",
+        "current_status",
+        "created_at",
+        "updated_at",
+        "job",
+    ]
+    assert item["application_id"] == application_ids[job_ids["py-1"]]
+    assert item["job_id"] == job_ids["py-1"]
+    assert item["current_status"] == "applied"
+
+
+def test_list_job_id_filter_untracked_job_is_empty_200(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get("/applications", params={"job_id": job_ids["ds-4"]})
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
+
+
+def test_list_job_id_filter_unknown_job_is_empty_200(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    _seed(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get("/applications", params={"job_id": 9999})
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
+
+
+def test_list_job_id_filter_non_integer_is_422(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    _seed(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get("/applications", params={"job_id": "not-an-int"})
+
+    assert response.status_code == 422
+
+
+def test_list_job_id_filter_zero_or_negative_is_422(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    _seed(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        for value in (0, -1):
+            response = client.get("/applications", params={"job_id": value})
+            assert response.status_code == 422, value
+
+
+def test_list_job_id_filter_composes_with_status_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "careeros.sqlite3"
+    job_ids, _ = _seed(path)
+    _set_database(monkeypatch, path)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/applications",
+            params={"job_id": job_ids["py-1"], "status": "interview"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
+
+
+# --------------------------------------------------------------------------- #
 # Detail
 # --------------------------------------------------------------------------- #
 

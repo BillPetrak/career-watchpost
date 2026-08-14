@@ -7,9 +7,9 @@
   // It calls the documented Home endpoint (GET /report), the Jobs listing
   // (GET /jobs), -- for the Review view -- the computation-only
   // POST /report after the user submits the candidate-profile form, -- for
-  // the Job Detail view (#job/<id>) -- exactly five canonical read GET
-  // endpoints (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications/{id},
-  // GET /review-decisions/{id}, GET /reminders?job_id={id}), and -- for the
+  // the Job Detail view (#job/<id>) -- exactly five read GET endpoints
+  // (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications?job_id={id},
+  // GET /review-decisions?job_id={id}, GET /reminders?job_id={id}), and -- for the
   // Review section actions -- the two review-decision mutations
   // PUT /review-decisions/{id} and DELETE /review-decisions/{id}, -- for
   // the Application section actions -- the application-status mutation
@@ -892,12 +892,14 @@
   // ---------------------------------------------------------------------------
   // Job Detail view (#job/<id>)
   //
-  // Loads one stored job's detail through exactly five canonical read GET
-  // endpoints (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications/{id},
-  // GET /review-decisions/{id}, GET /reminders?job_id={id}), issued
-  // concurrently via Promise.allSettled. The core job response is
-  // authoritative: a canonical 404 renders the whole-page "Job not found"
-  // state, while a network/500/malformed core failure renders a whole-page
+  // Loads one stored job's detail through exactly five read GET endpoints
+  // (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications?job_id={id},
+  // GET /review-decisions?job_id={id}, GET /reminders?job_id={id}), issued
+  // concurrently via Promise.allSettled. The application and review reads use
+  // the job-scoped list endpoints, so the normal absent state is an empty 200
+  // list ("Not tracked." / "Not reviewed.") rather than a canonical 404; the
+  // core job response is authoritative and renders the whole-page "Job not
+  // found" state. A network/500/malformed core failure renders a whole-page
   // error with a Retry that reruns the entire detail load. Ancillary sections
   // (opportunity, application, review, reminders) each fail independently with
   // a local error + Retry that refetches only that section. Opportunity
@@ -911,8 +913,8 @@
     return {
       job: base,
       group: base + "/group",
-      application: "/applications/" + jobId,
-      review: "/review-decisions/" + jobId,
+      application: "/applications?job_id=" + jobId,
+      review: "/review-decisions?job_id=" + jobId,
       reminders: "/reminders?job_id=" + jobId,
     };
   }
@@ -1232,16 +1234,8 @@
 
   function renderApplication(body, job, settled, retry) {
     if (settled.status === "rejected") {
-      if (settled.reason && settled.reason.status === 404) {
-        // The canonical GET 404 is the normal absent state: the job is not
-        // tracked yet. It is never an error, and the status actions must
-        // still render so the first application state can be assigned.
-        body.appendChild(
-          el("p", { className: "empty-note", textContent: "Not tracked." })
-        );
-        body.appendChild(buildApplicationStatusActions(body, job, null));
-        return;
-      }
+      // Any rejection (network/500/503) is a genuine section error with Retry.
+      // The canonical singular 404 is never used by this read path.
       body.appendChild(
         sectionErrorBox(
           "The application status could not be loaded.",
@@ -1251,7 +1245,41 @@
       );
       return;
     }
-    var app = settled.value;
+    var data = settled.value;
+    if (!isObject(data) || !Array.isArray(data.items)) {
+      body.appendChild(
+        sectionErrorBox(
+          "The application response did not match the expected shape.",
+          null,
+          retry
+        )
+      );
+      return;
+    }
+    // At most one current application per job (the applications.job_id UNIQUE
+    // constraint guarantees it); more than one would expose a data-integrity
+    // problem that must never be silently hidden by picking an arbitrary row.
+    if (data.items.length > 1) {
+      body.appendChild(
+        sectionErrorBox(
+          "The application response did not match the expected shape.",
+          null,
+          retry
+        )
+      );
+      return;
+    }
+    if (data.items.length === 0) {
+      // The empty 200 list is the normal absent state: the job is not
+      // tracked yet. It is never an error, and the status actions must
+      // still render so the first application state can be assigned.
+      body.appendChild(
+        el("p", { className: "empty-note", textContent: "Not tracked." })
+      );
+      body.appendChild(buildApplicationStatusActions(body, job, null));
+      return;
+    }
+    var app = data.items[0];
     if (!isObject(app) || typeof app.current_status !== "string") {
       body.appendChild(
         sectionErrorBox(
@@ -1271,9 +1299,9 @@
   }
 
   // Renders the six status action buttons. `app` is null exactly when the
-  // canonical GET returned 404 ("Not tracked."); the server response stays
-  // authoritative -- no optimistic updates anywhere. The currently active
-  // status (if any) is visually highlighted with .current and
+  // job-scoped list read returned an empty 200 list ("Not tracked."); the
+  // server response stays authoritative -- no optimistic updates anywhere. The
+  // currently active status (if any) is visually highlighted with .current and
   // aria-pressed="true".
   function buildApplicationStatusActions(body, job, app) {
     var group = el("div", { className: "status-actions" });
@@ -1343,10 +1371,10 @@
     }
   }
 
-  // After a successful mutation, refetch ONLY GET /applications/{id} and
-  // re-render just the Application section. A 404 from that GET is the
-  // canonical "Not tracked." absent state, never an error. The response is
-  // authoritative and the whole Job Detail view is never reloaded.
+  // After a successful mutation, refetch ONLY GET /applications?job_id={id}
+  // and re-render just the Application section. An empty items list from that
+  // GET is the canonical "Not tracked." absent state, never an error. The
+  // response is authoritative and the whole Job Detail view is never reloaded.
   async function refreshApplication(body, job, seq) {
     var jobId = job.id;
     var settled = await fetchDetailSection("application", jobId);
@@ -1358,10 +1386,15 @@
     if (
       settled.status === "fulfilled" &&
       isObject(settled.value) &&
-      typeof settled.value.current_status === "string"
+      Array.isArray(settled.value.items) &&
+      settled.value.items.length > 0 &&
+      isObject(settled.value.items[0]) &&
+      typeof settled.value.items[0].current_status === "string"
     ) {
       var group = section.querySelector(".status-actions");
-      if (group) focusCurrentStatusButton(group, settled.value.current_status);
+      if (group) {
+        focusCurrentStatusButton(group, settled.value.items[0].current_status);
+      }
     }
   }
 
@@ -1375,16 +1408,44 @@
 
   function renderReview(body, job, settled, retry) {
     if (settled.status === "rejected") {
-      if (settled.reason && settled.reason.status === 404) {
-        renderReviewDecisionSection(body, job, null);
-        return;
-      }
+      // Any rejection (network/500/503) is a genuine section error with Retry.
+      // The canonical singular 404 is never used by this read path.
       body.appendChild(
         sectionErrorBox("The review decision could not be loaded.", settled.reason, retry)
       );
       return;
     }
-    var review = settled.value;
+    var data = settled.value;
+    if (!isObject(data) || !Array.isArray(data.items)) {
+      body.appendChild(
+        sectionErrorBox(
+          "The review response did not match the expected shape.",
+          null,
+          retry
+        )
+      );
+      return;
+    }
+    // At most one current decision per job (the review_decisions.job_id UNIQUE
+    // constraint guarantees it); more than one would expose a data-integrity
+    // problem that must never be silently hidden by picking an arbitrary row.
+    if (data.items.length > 1) {
+      body.appendChild(
+        sectionErrorBox(
+          "The review response did not match the expected shape.",
+          null,
+          retry
+        )
+      );
+      return;
+    }
+    if (data.items.length === 0) {
+      // The empty 200 list is the normal absent state: the job has not been
+      // reviewed yet. It is never an error.
+      renderReviewDecisionSection(body, job, null);
+      return;
+    }
+    var review = data.items[0];
     if (!isObject(review) || typeof review.decision !== "string") {
       body.appendChild(
         sectionErrorBox(
@@ -1399,8 +1460,9 @@
   }
 
   // Renders the current decision state plus the action controls. `review` is
-  // null exactly when the canonical GET returned 404 ("Not reviewed."); the
-  // server response stays authoritative -- no optimistic updates anywhere.
+  // null exactly when the job-scoped list read returned an empty 200 list
+  // ("Not reviewed."); the server response stays authoritative -- no optimistic
+  // updates anywhere.
   function renderReviewDecisionSection(body, job, review) {
     if (review === null) {
       body.appendChild(
@@ -1513,10 +1575,10 @@
     }
   }
 
-  // After a successful mutation, refetch ONLY GET /review-decisions/{id} and
-  // re-render just the Review section. A 404 from that GET is the canonical
-  // "Not reviewed." absent state, never an error. The response is authoritative
-  // and the whole Job Detail view is never reloaded.
+  // After a successful mutation, refetch ONLY GET /review-decisions?job_id={id}
+  // and re-render just the Review section. An empty items list from that GET is
+  // the canonical "Not reviewed." absent state, never an error. The response is
+  // authoritative and the whole Job Detail view is never reloaded.
   async function refreshReviewDecision(body, job, seq) {
     var jobId = job.id;
     var settled = await fetchDetailSection("review", jobId);

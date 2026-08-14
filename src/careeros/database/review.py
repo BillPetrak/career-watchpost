@@ -237,6 +237,7 @@ def latest_event_note(
 def list_decisions(
     connection: sqlite3.Connection,
     *,
+    job_id: int | None = None,
     decisions: Sequence[str] | None = None,
     limit: int = 20,
 ) -> list[DecisionListItem]:
@@ -244,9 +245,15 @@ def list_decisions(
 
     Ordering is deterministic: ``updated_at DESC`` then ``id DESC``. An
     optional ``decisions`` filter restricts results to those decision values.
+    An optional ``job_id`` filter restricts results to one job's current
+    decision (at most one per job, enforced by the ``UNIQUE`` job_id
+    constraint; unreviewed and unknown jobs both return an empty list).
     """
     conditions: list[str] = []
     parameters: list[object] = []
+    if job_id is not None:
+        conditions.append("d.job_id = ?")
+        parameters.append(job_id)
     if decisions:
         placeholders = ", ".join("?" * len(decisions))
         conditions.append(f"d.decision IN ({placeholders})")

@@ -59,15 +59,20 @@ uv run uvicorn careeros.api:app           # serve; then open /ui in a browser
 ```
 
 It calls only the documented read endpoints (`GET /report`, `GET /jobs`,
-`GET /jobs/{id}`, `GET /jobs/{id}/group`, `GET /applications/{id}`,
-`GET /review-decisions/{id}`, `GET /reminders?job_id={id}`) plus the
+`GET /jobs/{id}`, `GET /jobs/{id}/group`,
+`GET /applications?job_id={id}`, `GET /review-decisions?job_id={id}`,
+`GET /reminders?job_id={id}`) plus the
 computation-only `POST /report` (the Review view's inline candidate-profile
 form) and the Job Detail workflow mutations (review-decision
 `PUT`/`DELETE /review-decisions/{id}`, application-status
 `PUT /applications/{id}`, and reminder `POST /reminders`,
 `PUT /reminders/{id}/complete` and `PUT /reminders/{id}/reopen`, plus a
 confirmed `DELETE /reminders/{id}` that always shows a native confirmation
-dialog before removing a reminder). These
+dialog before removing a reminder). The Job Detail application/review reads use
+the job-scoped list endpoints so the normal absent state ("Not tracked." /
+"Not reviewed.") is an empty 200 list rather than a canonical 404; the
+singular `GET /applications/{id}` and `GET /review-decisions/{id}` endpoints
+keep their authoritative 404 absent-state behavior for API clients. These
 mutations are local workflow state only and never touch Job rows,
 saved-searches, or the database itself.
 

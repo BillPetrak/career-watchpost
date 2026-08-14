@@ -7,21 +7,22 @@ fields plus its canonical group context, application status, review decision,
 and reminders. Like the earlier slices this suite is deliberately
 stdlib/Python-test-only (there is no Node toolchain), so most checks are
 source-level invariants on ``index.html`` / ``app.js`` / ``style.css`` plus
-behavioral checks through the FastAPI TestClient for the exact five canonical
-read GET route families the view depends on.
+behavioral checks through the FastAPI TestClient for the exact five read GET
+route families the view depends on.
 
 Covered behaviour: the ``#job/<positive-int>`` route parsing and its
 malformed-input contract; in-memory origin/back behavior (Jobs vs Review) with
 no storage APIs; the two card actions (View details / Open original) present in
-Jobs, Review, Recommendations, and group members; exactly five canonical read
-GET route families issued concurrently via ``Promise.allSettled`` with no
+Jobs, Review, Recommendations, and group members; exactly five read GET route
+families issued concurrently via ``Promise.allSettled`` with no
 per-member N+1 fetches and only the approved review-decision mutations
 (PUT/DELETE ``/review-decisions/{id}``) additionally permitted; the core job
 response being authoritative (404 -> whole-page not found, network/500 ->
 whole-page error + full retry); group failures being section errors with
 section-only retry (never a 404-tolerated absence); singleton groups omitting
-the Opportunity section; application/review 404s rendering "Not tracked." /
-"Not reviewed."; reminders rendering in server order with Open/Completed
+the Opportunity section; application/review reads using their job-scoped list
+endpoints so the empty-items state renders "Not tracked." / "Not reviewed."
+without any expected 404; reminders rendering in server order with Open/Completed
 states; private fields never rendered; safe http(s)-only external links; no
 unsafe HTML sinks; static serving, SCHEMA_VERSION, the no-``careeros.cli``
 import guarantee, the untouched real default database, missing/uninitialized
@@ -123,6 +124,18 @@ def _js() -> str:
 
 def _css() -> str:
     return _asset_text(_CSS_NAME)
+
+
+def _render_application_slice(js: str) -> str:
+    start = js.index("function renderApplication")
+    end = js.index("function buildApplicationStatusActions", start)
+    return js[start:end]
+
+
+def _render_review_slice(js: str) -> str:
+    start = js.index("function renderReview(body, job, settled, retry)")
+    end = js.index("function renderReviewDecisionSection", start)
+    return js[start:end]
 
 
 def _set_database(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
@@ -387,8 +400,8 @@ def test_five_canonical_route_families_built_once() -> None:
     for route in (
         "job: base",
         'group: base + "/group"',
-        'application: "/applications/" + jobId',
-        'review: "/review-decisions/" + jobId',
+        'application: "/applications?job_id=" + jobId',
+        'review: "/review-decisions?job_id=" + jobId',
         'reminders: "/reminders?job_id=" + jobId',
     ):
         assert route in js, route
@@ -519,13 +532,28 @@ def test_group_failure_is_section_error_not_absence() -> None:
     )
     # The Opportunity section must never special-case a 404 as "no group".
     assert "status === 404" not in opportunity
-    # The other sections DO tolerate their canonical 404s.
-    assert js.count("status === 404") >= 2  # application + review
+    # The core job response remains the only 404-tolerated read: a canonical
+    # 404 there is the whole-page "Job not found" state. Application/review
+    # absent state is now an empty 200 list, so the two sections never
+    # special-case a 404. The only other 404 special-case in the file is the
+    # reminder-DELETE mutation reconcile (a 404 from that DELETE is treated as
+    # success); every other rejection is a plain section error.
+    assert js.count("status === 404") == 2
+    assert "status === 404" not in _render_application_slice(js)
+    assert "status === 404" not in _render_review_slice(js)
 
 
 def test_application_not_tracked_and_public_shape() -> None:
     js = _js()
     assert 'textContent: "Not tracked."' in js
+    # The absent state is an empty 200 list from the job-scoped list endpoint,
+    # never a canonical 404: the empty-items branch renders the note and the
+    # action controls, and a >1 list is an explicit invariant error, never an
+    # arbitrary items[0] selection.
+    render = _render_application_slice(js)
+    assert "data.items.length === 0" in render
+    assert "buildApplicationStatusActions(body, job, null));" in render
+    assert "data.items.length > 1" in render
     # The Status field renders the friendly label; the transmitted value stays
     # the canonical backend status.
     assert (
@@ -539,6 +567,13 @@ def test_application_not_tracked_and_public_shape() -> None:
 def test_review_not_reviewed_and_public_shape() -> None:
     js = _js()
     assert 'textContent: "Not reviewed."' in js
+    # The absent state is an empty 200 list from the job-scoped list endpoint,
+    # never a canonical 404; a >1 list is an explicit invariant error, never an
+    # arbitrary items[0] selection.
+    render = _render_review_slice(js)
+    assert "data.items.length === 0" in render
+    assert "renderReviewDecisionSection(body, job, null);" in render
+    assert "data.items.length > 1" in render
     assert 'addField(fields, "Decision", review.decision);' in js
     assert 'addField(fields, "Decided", displayDate(review.created_at));' in js
     assert 'addField(fields, "Last updated", displayDate(review.updated_at));' in js

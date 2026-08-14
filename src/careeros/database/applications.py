@@ -217,6 +217,7 @@ def latest_event_note(
 def list_applications(
     connection: sqlite3.Connection,
     *,
+    job_id: int | None = None,
     statuses: Sequence[str] | None = None,
     limit: int = 20,
 ) -> list[ApplicationListItem]:
@@ -224,9 +225,15 @@ def list_applications(
 
     Ordering is deterministic: ``created_at DESC`` then ``id DESC``. An
     optional ``statuses`` filter restricts results to those current statuses.
+    An optional ``job_id`` filter restricts results to one job's application
+    (at most one current row per job, enforced by the ``UNIQUE`` job_id
+    constraint; untracked and unknown jobs both return an empty list).
     """
     conditions: list[str] = []
     parameters: list[object] = []
+    if job_id is not None:
+        conditions.append("a.job_id = ?")
+        parameters.append(job_id)
     if statuses:
         placeholders = ", ".join("?" * len(statuses))
         conditions.append(f"a.current_status IN ({placeholders})")

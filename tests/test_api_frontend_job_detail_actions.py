@@ -13,14 +13,16 @@ Covered behaviour: the three canonical decisions (`shortlist`, `dismiss`,
 the current-decision visual state (``.current`` class + ``aria-pressed``);
 the Clear decision control present only when reviewed; a strictly
 server-authoritative flow with NO optimistic updates (the PUT/DELETE response
-drives a re-fetch of ONLY ``GET /review-decisions/{id}`` and a re-render of
-only the Review section); controls disabled + section ``aria-busy`` during a
+drives a re-fetch of ONLY the job-scoped list read
+``GET /review-decisions?job_id={id}`` and a re-render of only the Review
+section, so the normal absent state is an empty 200 list rather than a
+canonical 404); controls disabled + section ``aria-busy`` during a
 mutation with a ``reviewOperationActive`` guard so rapid clicks cannot issue
 overlapping mutations; stale-response protection via a per-navigation
 ``detailRequestSeq`` token plus ``isCurrentDetailJob`` so a response for an old
 job can never overwrite the visible one; mutation failures (404/422/500/503)
 rendering a section error box that retries the SAME operation while preserving
-the previously rendered review state; a DELETE followed by the canonical 404
+the previously rendered review state; a DELETE followed by an empty list
 re-fetch rendering "Not reviewed." rather than an error; PUT/DELETE being the
 only newly permitted mutation methods with every forbidden endpoint absent; no
 storage APIs, unsafe HTML sinks, or private field/path access; Home/Jobs/
@@ -274,8 +276,9 @@ def test_successful_mutation_refetches_only_review_section() -> None:
     start = js.index("async function refreshReviewDecision")
     end = js.index("function renderReminders", start)
     refresh = js[start:end]
-    # Only GET /review-decisions/{id} is re-fetched and only the Review section
-    # re-renders; the whole Job Detail view is never reloaded.
+    # Only the job-scoped list GET /review-decisions?job_id={id} is re-fetched
+    # and only the Review section re-renders; the whole Job Detail view is never
+    # reloaded.
     assert 'var settled = await fetchDetailSection("review", jobId);' in refresh
     assert 'renderSectionBody(section, body, job, "review", settled);' in refresh
     assert "loadJobDetailData" not in refresh
@@ -285,19 +288,22 @@ def test_successful_mutation_refetches_only_review_section() -> None:
     assert 'fetchDetailSection("reminders"' not in refresh
 
 
-def test_delete_404_refetch_renders_not_reviewed() -> None:
+def test_delete_refetch_empty_list_renders_not_reviewed() -> None:
     js = _js()
     start = js.index("function renderReview(body, job, settled, retry)")
     end = js.index("function renderReviewDecisionSection", start)
     render = js[start:end]
-    # The canonical 404 after a DELETE is the "Not reviewed." absent state, not
-    # an error panel: the 404 branch renders the empty state and returns early,
-    # and only the non-404 rejection path falls through to the error box.
-    assert "if (settled.reason && settled.reason.status === 404) {" in render
+    # After a DELETE the refetched job-scoped list is empty: the empty-items
+    # branch renders the "Not reviewed." absent state, not an error panel, and
+    # only a rejected (network/5xx) response falls through to the error box.
+    assert "data.items.length === 0" in render
     assert "renderReviewDecisionSection(body, job, null);" in render
     assert "return;" in render
+    # The empty-list branch renders the absent state and returns early, so
+    # the tracked items[0] processing below it can never run for an empty
+    # list.
     assert render.index("renderReviewDecisionSection(body, job, null);") < render.index(
-        'sectionErrorBox("The review decision could not be loaded.'
+        "var review = data.items[0];"
     )
 
 
@@ -493,8 +499,8 @@ def test_read_only_detail_sections_unchanged() -> None:
         "function renderReminders(body, job, settled, retry)",
         "function buildCoreJobSection(job)",
         'base + "/group"',
-        '"/applications/" + jobId',
-        '"/review-decisions/" + jobId',
+        '"/applications?job_id=" + jobId',
+        '"/review-decisions?job_id=" + jobId',
         '"/reminders?job_id=" + jobId',
     ):
         assert signature in js, signature

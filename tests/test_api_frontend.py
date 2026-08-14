@@ -214,15 +214,17 @@ def test_js_uses_only_intended_endpoints() -> None:
     js = _asset_bytes(_JS_NAME).decode("utf-8")
     assert re.search(r'"/report"', js)
     assert re.search(r'"/jobs"', js)
-    # The Job Detail view calls exactly the five canonical read GET route
-    # families plus the Home/Jobs/Review GETs, and only the review-decision
-    # PUT/DELETE mutation routes. The computation-only endpoint /report stays
-    # the sole POST, and forbidden endpoints stay absent.
+    # The Job Detail view calls exactly the five read GET route families
+    # (application/review via their job-scoped list endpoints, so absent state
+    # is an empty 200 list, never a canonical 404) plus the Home/Jobs/Review
+    # GETs, and only the review-decision PUT/DELETE mutation routes. The
+    # computation-only endpoint /report stays the sole POST, and forbidden
+    # endpoints stay absent.
     for required in (
         '"/jobs/" + jobId',
         'base + "/group"',
-        '"/applications/" + jobId',
-        '"/review-decisions/" + jobId',
+        '"/applications?job_id=" + jobId',
+        '"/review-decisions?job_id=" + jobId',
         '"/reminders?job_id=" + jobId',
     ):
         assert required in js, required
