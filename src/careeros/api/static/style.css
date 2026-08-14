@@ -553,6 +553,80 @@ main {
   cursor: default;
 }
 
+/* Reminder actions (Job Detail view). */
+.reminder-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.reminder-label {
+  font-weight: 600;
+}
+
+.reminder-input {
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 0.95rem;
+}
+
+.reminder-input:disabled,
+.reminder-add-button:disabled,
+.reminder-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.reminder-add-button {
+  padding: 6px 14px;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--color-accent);
+  color: #ffffff;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.reminder-add-button:hover {
+  background: var(--color-accent-strong);
+}
+
+.reminder-validation {
+  margin: 0;
+  color: var(--color-error);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.reminder-actions {
+  margin-left: auto;
+}
+
+.reminder-button {
+  padding: 4px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.reminder-button:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
 /* Narrow / mobile layout. */
 @media (max-width: 600px) {
   main {

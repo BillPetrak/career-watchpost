@@ -11,11 +11,14 @@
   // endpoints (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications/{id},
   // GET /review-decisions/{id}, GET /reminders?job_id={id}), and -- for the
   // Review section actions -- the two review-decision mutations
-  // PUT /review-decisions/{id} and DELETE /review-decisions/{id}, and -- for
+  // PUT /review-decisions/{id} and DELETE /review-decisions/{id}, -- for
   // the Application section actions -- the application-status mutation
-  // PUT /applications/{id}. API-provided strings are always rendered with
-  // textContent/createElement -- never as HTML. The submitted profile is sent
-  // only to POST /report and is never stored by this frontend.
+  // PUT /applications/{id}, and -- for the Reminders section actions -- the
+  // three reminder mutations POST /reminders (create), PUT
+  // /reminders/{id}/complete, and PUT /reminders/{id}/reopen. API-provided
+  // strings are always rendered with textContent/createElement -- never as
+  // HTML. The submitted profile is sent only to POST /report and is never
+  // stored by this frontend.
 
   var HOME = "home";
   var JOBS = "jobs";
@@ -47,6 +50,13 @@
   // Application section. Buttons are disabled for the whole operation as well,
   // so this is defense-in-depth against programmatic/edge re-entry.
   var applicationOperationActive = false;
+
+  // Serializes the Reminder actions (create, complete, reopen): while a
+  // mutation and its immediate refetch/reconciliation are in flight, no second
+  // reminder mutation may start for the same Reminders section. Controls are
+  // disabled for the whole operation as well, so this is defense-in-depth
+  // against programmatic/edge re-entry and rapid-click duplicates.
+  var reminderOperationActive = false;
 
   // ---------------------------------------------------------------------------
   // Navigation (semantic hash links: #home, #jobs, #review; unknown hashes ->
@@ -209,6 +219,22 @@
       throw error;
     }
     return response.json();
+  }
+
+  // The Reminder create mutation (POST /reminders). Network failures and
+  // non-2xx responses follow the same friendly-error treatment as writeJson;
+  // the caller owns the reconciliation. POST /reminders is intentionally
+  // non-idempotent, so a failed creation is never blindly replayed (see
+  // handleCreateReminderFailure).
+  function postJson(url, body) {
+    return writeJson(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
   }
 
   // Thin adapters that carry the exact mutation method for the Review section.
@@ -964,6 +990,7 @@
     var seq = ++detailRequestSeq;
     reviewOperationActive = false;
     applicationOperationActive = false;
+    reminderOperationActive = false;
     var status = document.getElementById("job-detail-status");
     var content = document.getElementById("job-detail-content");
     setLoading(status, "Loading job details…");
@@ -1073,7 +1100,7 @@
     } else if (sectionKey === "review") {
       renderReview(body, job, settled, retry);
     } else {
-      renderReminders(body, settled, retry);
+      renderReminders(body, job, settled, retry);
     }
   }
 
@@ -1498,7 +1525,13 @@
     section.removeAttribute("aria-busy");
   }
 
-  function renderReminders(body, settled, retry) {
+  // The Reminders section always renders the always-visible create form first,
+  // then (in exact server order, soonest first) either the empty state or the
+  // reminder list with exactly one lifecycle action per item (Complete for an
+  // open reminder, Reopen for a completed one). The response is authoritative
+  // and the job never 404s this endpoint: an empty list is the normal "No
+  // reminders." absent state.
+  function renderReminders(body, job, settled, retry) {
     if (settled.status === "rejected") {
       body.appendChild(
         sectionErrorBox("The reminders could not be loaded.", settled.reason, retry)
@@ -1516,8 +1549,11 @@
       );
       return;
     }
+    body.appendChild(buildReminderCreateForm(body, job));
     if (data.items.length === 0) {
-      body.appendChild(el("p", { className: "empty-note", textContent: "No reminders." }));
+      body.appendChild(
+        el("p", { className: "empty-note", textContent: "No reminders." })
+      );
       return;
     }
     var list = el("ul", { className: "reminder-list" });
@@ -1525,7 +1561,10 @@
       if (!isObject(reminder)) return;
       var item = el("li", { className: "reminder-item" });
       item.appendChild(
-        el("span", { className: "reminder-kind", textContent: displayText(reminder.kind) })
+        el("span", {
+          className: "reminder-kind",
+          textContent: reminderKindLabel(reminder.kind),
+        })
       );
       item.appendChild(
         el("span", { className: "reminder-due", textContent: displayDate(reminder.due_at) })
@@ -1535,9 +1574,401 @@
           ? "Completed"
           : "Open";
       item.appendChild(el("span", { className: "health-count", textContent: state }));
+      item.appendChild(buildReminderActions(body, job, reminder));
       list.appendChild(item);
     });
     body.appendChild(list);
+  }
+
+  // Canonical reminder kinds (presentation labels only; the transmitted values
+  // are the exact backend vocabulary: follow_up, interview, offer, review,
+  // custom). The create form offers exactly these five kinds and sends the
+  // canonical value unchanged.
+  var REMINDER_KINDS = [
+    { value: "follow_up", label: "Follow up" },
+    { value: "interview", label: "Interview" },
+    { value: "offer", label: "Offer" },
+    { value: "review", label: "Review" },
+    { value: "custom", label: "Custom" },
+  ];
+
+  function reminderKindLabel(value) {
+    for (var index = 0; index < REMINDER_KINDS.length; index++) {
+      if (REMINDER_KINDS[index].value === value) {
+        return REMINDER_KINDS[index].label;
+      }
+    }
+    return value;
+  }
+
+  // The backend requires a full ISO-8601 due timestamp with an explicit UTC
+  // offset (naive and date-only values are rejected; Z is accepted). A native
+  // datetime-local input yields a naive local wall time, so the explicit
+  // offset is derived from the browser's actual zone FOR THE ENTERED DATE AND
+  // TIME (never today's offset, so DST changes are respected) and appended.
+  // No timezone/date library is used, no named timezone is guessed, no offset
+  // is silently assumed, and Date.toISOString() is never used as a shortcut
+  // because it would change the intended wall-clock semantics. The server
+  // remains authoritative and normalizes the value to UTC.
+  function localUtcOffset(value) {
+    var match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+    if (!match) return null;
+    var year = parseInt(match[1], 10);
+    var month = parseInt(match[2], 10);
+    var day = parseInt(match[3], 10);
+    var hour = parseInt(match[4], 10);
+    var minute = parseInt(match[5], 10);
+    var date = new Date(year, month - 1, day, hour, minute);
+    if (
+      date.getFullYear() !== year ||
+      date.getMonth() !== month - 1 ||
+      date.getDate() !== day ||
+      date.getHours() !== hour ||
+      date.getMinutes() !== minute
+    ) {
+      return null; // wall time does not exist in the local zone (e.g. DST gap)
+    }
+    // getTimezoneOffset() returns minutes behind UTC (e.g. -120 for UTC+02:00);
+    // the sign is flipped so a positive value means ahead of UTC.
+    var offsetMinutes = -date.getTimezoneOffset();
+    var sign = offsetMinutes >= 0 ? "+" : "-";
+    var absolute = Math.abs(offsetMinutes);
+    var offsetHours = Math.floor(absolute / 60);
+    var offsetMins = absolute % 60;
+    return (
+      sign +
+      String(offsetHours).padStart(2, "0") +
+      ":" +
+      String(offsetMins).padStart(2, "0")
+    );
+  }
+
+  // Serializes the datetime-local wall time into the canonical explicit-offset
+  // value the server accepts (e.g. "2026-08-10T14:00+02:00"). No seconds are
+  // invented: the backend parser accepts an HH:MM time component. Returns null
+  // for an empty or unusable value.
+  function dueTimestamp(value) {
+    if (typeof value !== "string" || value.length === 0) return null;
+    var offset = localUtcOffset(value);
+    if (offset === null) return null;
+    return value + offset;
+  }
+
+  function updateDueHint(due, hint) {
+    var offset = localUtcOffset(due.value);
+    if (offset === null) {
+      hint.textContent =
+        "Pick a due date and time to see the timezone it uses.";
+      return;
+    }
+    hint.textContent =
+      "Due time uses your browser's local timezone (UTC" + offset + ").";
+  }
+
+  // The always-visible compact create form at the top of the Reminders
+  // section: a canonical kind select plus a native datetime-local due input.
+  // No reminder message field exists: the API never accepts or exposes one.
+  function buildReminderCreateForm(body, job) {
+    var form = el("form", { className: "reminder-form" });
+    form.setAttribute("aria-label", "Add reminder");
+    var kindLabel = el("label", { className: "reminder-label", textContent: "Kind" });
+    kindLabel.setAttribute("for", "reminder-kind");
+    form.appendChild(kindLabel);
+    var kind = el("select", { id: "reminder-kind", className: "reminder-input" });
+    kind.setAttribute("name", "kind");
+    REMINDER_KINDS.forEach(function (entry) {
+      var option = el("option", { textContent: entry.label });
+      option.value = entry.value;
+      kind.appendChild(option);
+    });
+    form.appendChild(kind);
+    var dueLabel = el("label", { className: "reminder-label", textContent: "Due" });
+    dueLabel.setAttribute("for", "reminder-due");
+    form.appendChild(dueLabel);
+    var due = el("input", {
+      id: "reminder-due",
+      className: "reminder-input",
+      type: "datetime-local",
+    });
+    due.setAttribute("name", "due_at");
+    due.setAttribute("required", "");
+    form.appendChild(due);
+    var hint = el("p", { className: "field-hint", textContent: "" });
+    form.appendChild(hint);
+    var validation = el("p", { className: "reminder-validation" });
+    validation.hidden = true;
+    form.appendChild(validation);
+    var submit = el("button", {
+      type: "submit",
+      className: "reminder-add-button",
+      textContent: "Add reminder",
+    });
+    form.appendChild(submit);
+    updateDueHint(due, hint);
+    due.addEventListener("input", function () {
+      updateDueHint(due, hint);
+    });
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      createReminder(form, body, job, kind, due, validation);
+    });
+    return form;
+  }
+
+  function setReminderControlsDisabled(body, disabled) {
+    body
+      .querySelectorAll(
+        ".reminder-form input, .reminder-form select, .reminder-form button, .reminder-button"
+      )
+      .forEach(function (control) {
+        control.disabled = disabled;
+      });
+  }
+
+  // POST /reminders is intentionally NON-idempotent, so a failed creation is
+  // never blindly replayed. Client-side validation only improves UX: the
+  // server remains authoritative and the section stays on its previously
+  // rendered server state throughout.
+  async function createReminder(form, body, job, kind, due, validation) {
+    if (reminderOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    var dueAt = due.value;
+    if (dueAt.length === 0) {
+      validation.hidden = false;
+      validation.textContent = "Pick a due time.";
+      due.focus();
+      return;
+    }
+    var timestamp = dueTimestamp(dueAt);
+    if (timestamp === null) {
+      validation.hidden = false;
+      validation.textContent =
+        "That due time is not valid in your local timezone; pick another date and time.";
+      due.focus();
+      return;
+    }
+    clearText(validation);
+    validation.hidden = true;
+    reminderOperationActive = true;
+    var section = body.parentNode;
+    var jobId = job.id;
+    var seq = detailRequestSeq;
+    setReminderControlsDisabled(body, true);
+    section.setAttribute("aria-busy", "true");
+    try {
+      await postJson("/reminders", {
+        job_id: jobId,
+        kind: kind.value,
+        due_at: timestamp,
+      });
+      await refreshReminders(body, job, seq);
+    } catch (error) {
+      if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+      setReminderControlsDisabled(body, false);
+      section.removeAttribute("aria-busy");
+      handleCreateReminderFailure(body, form, job, seq, kind.value, dueAt, error);
+    } finally {
+      reminderOperationActive = false;
+    }
+  }
+
+  // A failed creation is never re-sent. A deterministic 422 means the server
+  // refused the payload (nothing was created): the form keeps its values and
+  // the server detail is shown next to the form so the user can correct and
+  // submit again normally. Any other failure (network drop, 500, 503) is
+  // reconciled against the server first: the section refreshes via a safe GET
+  // so the authoritative list reveals whether the reminder was actually
+  // created before the user decides to submit a fresh one.
+  function handleCreateReminderFailure(body, form, job, seq, kind, dueAt, error) {
+    if (error && error.status === 422) {
+      var validation = form.querySelector(".reminder-validation");
+      if (validation) {
+        validation.hidden = false;
+        validation.textContent = error.message;
+      }
+      return;
+    }
+    replaceReminderSaveError(body, error, function () {
+      reconcileReminders(body, job, seq, kind, dueAt);
+    });
+  }
+
+  // The create-failure error panel uses an explicit "Check reminders" action
+  // that reconciles against the server (a GET refresh) instead of re-sending
+  // the non-idempotent POST. It replaces any existing panel so a section never
+  // holds more than one error box.
+  function replaceReminderSaveError(body, error, reconcileAction) {
+    body.querySelectorAll(".error-box").forEach(function (box) {
+      box.remove();
+    });
+    var box = el("div", { className: "error-box" });
+    box.appendChild(
+      el("p", {
+        textContent:
+          "The reminder could not be saved. Check whether it was created, then submit again if it is still missing.",
+      })
+    );
+    if (error && error.message) {
+      box.appendChild(
+        el("p", { className: "error-detail", textContent: error.message })
+      );
+    }
+    var check = el("button", {
+      className: "retry-button",
+      textContent: "Check reminders",
+    });
+    check.addEventListener("click", function () {
+      box.remove();
+      reconcileAction();
+    });
+    box.appendChild(check);
+    body.appendChild(box);
+  }
+
+  // Reconciliation for a failed creation: refetch ONLY GET /reminders?job_id
+  // and re-render the section so the server-authoritative list reveals whether
+  // the reminder was actually created. Never re-POSTs. The previously entered
+  // kind and due time are restored into the fresh form so the user can submit
+  // again explicitly if the reminder is still absent.
+  async function reconcileReminders(body, job, seq, kind, dueAt) {
+    var settled = await fetchDetailSection("reminders", job.id);
+    if (seq !== detailRequestSeq || !isCurrentDetailJob(job.id)) return;
+    var section = body.parentNode;
+    clearText(body);
+    renderReminders(body, job, settled, function () {
+      retrySection(section, body, job, "reminders");
+    });
+    var form = body.querySelector(".reminder-form");
+    if (form) {
+      var kindSelect = form.querySelector("#reminder-kind");
+      var dueInput = form.querySelector("#reminder-due");
+      if (kindSelect && typeof kind === "string") kindSelect.value = kind;
+      if (dueInput && typeof dueAt === "string") dueInput.value = dueAt;
+      var hint = form.querySelector(".field-hint");
+      if (dueInput && hint) updateDueHint(dueInput, hint);
+    }
+    section.removeAttribute("aria-busy");
+  }
+
+  // Exactly one lifecycle action per reminder: an open reminder gets
+  // "Complete" and a completed one gets "Reopen" -- never both, and no
+  // delete/edit control in this slice.
+  function buildReminderActions(body, job, reminder) {
+    var completed =
+      typeof reminder.completed_at === "string" && reminder.completed_at.length > 0;
+    var group = el("div", { className: "reminder-actions" });
+    group.setAttribute("role", "group");
+    group.setAttribute("aria-label", "Reminder action");
+    var button = el("button", {
+      className: "reminder-button",
+      type: "button",
+      textContent: completed ? "Reopen" : "Complete",
+    });
+    button.addEventListener("click", function () {
+      if (completed) {
+        reopenReminder(group, body, job, reminder);
+      } else {
+        completeReminder(group, body, job, reminder);
+      }
+    });
+    group.appendChild(button);
+    return group;
+  }
+
+  // PUT /reminders/{id}/complete is idempotent, so its Retry action may safely
+  // re-issue the exact failed PUT; the server-authoritative response drives a
+  // refetch of ONLY GET /reminders?job_id and a re-render of just this section.
+  async function completeReminder(group, body, job, reminder) {
+    if (reminderOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    if (
+      !isObject(reminder) ||
+      !isFiniteNumber(reminder.reminder_id) ||
+      reminder.reminder_id < 1
+    ) {
+      return;
+    }
+    reminderOperationActive = true;
+    var section = body.parentNode;
+    var jobId = job.id;
+    var reminderId = reminder.reminder_id;
+    var seq = detailRequestSeq;
+    setReminderControlsDisabled(body, true);
+    section.setAttribute("aria-busy", "true");
+    try {
+      await putJson("/reminders/" + reminderId + "/complete");
+      await refreshReminders(body, job, seq);
+    } catch (error) {
+      if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+      setReminderControlsDisabled(body, false);
+      section.removeAttribute("aria-busy");
+      replaceSectionError(
+        body,
+        "The reminder could not be completed.",
+        error,
+        function () {
+          completeReminder(group, body, job, reminder);
+        }
+      );
+    } finally {
+      reminderOperationActive = false;
+    }
+  }
+
+  // PUT /reminders/{id}/reopen is idempotent, so its Retry action may safely
+  // re-issue the exact failed PUT; the server-authoritative response drives a
+  // refetch of ONLY GET /reminders?job_id and a re-render of just this section.
+  async function reopenReminder(group, body, job, reminder) {
+    if (reminderOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    if (
+      !isObject(reminder) ||
+      !isFiniteNumber(reminder.reminder_id) ||
+      reminder.reminder_id < 1
+    ) {
+      return;
+    }
+    reminderOperationActive = true;
+    var section = body.parentNode;
+    var jobId = job.id;
+    var reminderId = reminder.reminder_id;
+    var seq = detailRequestSeq;
+    setReminderControlsDisabled(body, true);
+    section.setAttribute("aria-busy", "true");
+    try {
+      await putJson("/reminders/" + reminderId + "/reopen");
+      await refreshReminders(body, job, seq);
+    } catch (error) {
+      if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+      setReminderControlsDisabled(body, false);
+      section.removeAttribute("aria-busy");
+      replaceSectionError(
+        body,
+        "The reminder could not be reopened.",
+        error,
+        function () {
+          reopenReminder(group, body, job, reminder);
+        }
+      );
+    } finally {
+      reminderOperationActive = false;
+    }
+  }
+
+  // After a successful mutation, refetch ONLY GET /reminders?job_id={id} and
+  // re-render just the Reminders section. The response is authoritative and
+  // the whole Job Detail view is never reloaded. The reminders GET never 404s
+  // for a job: an empty list is the normal "no reminders" absent state.
+  async function refreshReminders(body, job, seq) {
+    var jobId = job.id;
+    var settled = await fetchDetailSection("reminders", jobId);
+    if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+    var section = body.parentNode;
+    clearText(body);
+    renderReminders(body, job, settled, function () {
+      retrySection(section, body, job, "reminders");
+    });
+    section.removeAttribute("aria-busy");
   }
 
   // ---------------------------------------------------------------------------

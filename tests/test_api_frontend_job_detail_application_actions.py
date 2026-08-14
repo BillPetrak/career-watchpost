@@ -32,8 +32,8 @@ invented and no DELETE is issued for applications); PUT being the only newly
 permitted application mutation with every forbidden endpoint absent and no
 review/reminder mutation touched; no storage APIs, unsafe HTML sinks, or
 private field/path access; Home/Jobs/Review and the existing read-only detail
-sections unchanged; the shared method set invariant ``["POST", "PUT",
-"DELETE"]``; static serving, ``SCHEMA_VERSION``, the no-``careeros.cli`` import
+sections unchanged; the shared method set invariant ``["POST", "POST",
+"PUT", "DELETE"]``; static serving, ``SCHEMA_VERSION``, the no-``careeros.cli`` import
 guarantee, the untouched real default database, and wheel packaging of the
 static assets.
 """
@@ -491,7 +491,9 @@ def test_write_json_helpers_reused_and_put_is_exact() -> None:
 def test_method_set_is_exactly_post_put_delete_in_order() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "PUT", "DELETE"]
+    # POST /report (Review view), POST /reminders (create), PUT (review/
+    # application/reminder lifecycle), DELETE (review clear) -- in source order.
+    assert methods == ["POST", "POST", "PUT", "DELETE"]
 
 
 def test_forbidden_endpoints_remain_absent() -> None:
@@ -506,17 +508,22 @@ def test_forbidden_endpoints_remain_absent() -> None:
         assert f'"/{forbidden}' not in js, forbidden
 
 
-def test_no_review_or_reminder_mutation_touched() -> None:
+def test_reminder_mutations_are_lifecycle_only() -> None:
     js = _js()
-    # The review-decision PUT/DELETE mutation lines are unchanged and there is
-    # no reminder mutation anywhere; the only newly-routed mutation is the
-    # application PUT.
+    # The review-decision PUT/DELETE and application PUT mutation lines are
+    # unchanged. The reminder mutations are exactly the create POST plus the
+    # idempotent lifecycle PUTs (complete/reopen); PATCH (edit) and DELETE
+    # (remove) are deliberately not in this slice and must stay absent.
     assert 'putJson("/review-decisions/" + jobId, { decision: decision });' in js
     assert 'deleteJson("/review-decisions/" + jobId);' in js
     assert 'putJson("/applications/" + jobId, { status: status });' in js
     assert '"/reminders?job_id=" + jobId' in js
+    assert 'await postJson("/reminders", {' in js
+    assert 'putJson("/reminders/" + reminderId + "/complete");' in js
+    assert 'putJson("/reminders/" + reminderId + "/reopen");' in js
     assert 'deleteJson("/reminders' not in js
-    assert 'putJson("/reminders' not in js
+    assert 'PATCH "/reminders' not in js
+    assert "patchJson" not in js
 
 
 def test_home_jobs_review_regressions_intact() -> None:
@@ -532,7 +539,7 @@ def test_read_only_detail_sections_unchanged() -> None:
     for signature in (
         "function renderOpportunity(body, job, settled, retry)",
         "function buildMemberCard(member, currentJob)",
-        "function renderReminders(body, settled, retry)",
+        "function renderReminders(body, job, settled, retry)",
         "function buildCoreJobSection(job)",
         "function renderReview(body, job, settled, retry)",
         "function renderReviewDecisionSection(body, job, review)",

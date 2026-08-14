@@ -25,7 +25,7 @@ re-fetch rendering "Not reviewed." rather than an error; PUT/DELETE being the
 only newly permitted mutation methods with every forbidden endpoint absent; no
 storage APIs, unsafe HTML sinks, or private field/path access; Home/Jobs/
 Review and the existing read-only detail sections unchanged; the shared method
-set invariant ``["POST", "PUT", "DELETE"]``; static serving, ``SCHEMA_VERSION``,
+set invariant ``["POST", "POST", "PUT", "DELETE"]``; static serving, ``SCHEMA_VERSION``,
 the no-``careeros.cli`` import guarantee, the untouched real default database,
 and wheel packaging of the static assets.
 """
@@ -431,9 +431,10 @@ def test_repeated_review_mutation_failures_replace_not_append() -> None:
     assert 'body.querySelectorAll(".error-box")' in helper
     assert "box.remove();" in helper
     assert "body.appendChild(sectionErrorBox(message, error, retryAction));" in helper
-    # Exactly one definition plus one call in each mutation catch path
-    # (review apply, review clear, application apply).
-    assert js.count("replaceSectionError(") == 4
+    # Exactly one definition plus one call in each mutation catch path (review
+    # apply, review clear, application apply, reminder complete, reminder
+    # reopen); the reminder create failure uses its own non-replay panel.
+    assert js.count("replaceSectionError(") == 6
     for name in ("applyReviewDecision", "clearReviewDecision"):
         start = js.index(f"async function {name}")
         end = js.index("async function", start + len(name) + 30)
@@ -457,7 +458,9 @@ def test_repeated_review_mutation_failures_replace_not_append() -> None:
 def test_method_set_is_exactly_post_put_delete_in_order() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "PUT", "DELETE"]
+    # POST /report (Review view), POST /reminders (create), PUT (review/
+    # application/reminder lifecycle), DELETE (review clear) -- in source order.
+    assert methods == ["POST", "POST", "PUT", "DELETE"]
 
 
 def test_forbidden_endpoints_remain_absent() -> None:
@@ -486,7 +489,7 @@ def test_read_only_detail_sections_unchanged() -> None:
         "function renderOpportunity(body, job, settled, retry)",
         "function buildMemberCard(member, currentJob)",
         "function renderApplication(body, job, settled, retry)",
-        "function renderReminders(body, settled, retry)",
+        "function renderReminders(body, job, settled, retry)",
         "function buildCoreJobSection(job)",
         'base + "/group"',
         '"/applications/" + jobId',

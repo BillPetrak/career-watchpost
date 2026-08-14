@@ -507,10 +507,10 @@ def test_no_filesystem_or_config_access_from_frontend() -> None:
         assert forbidden not in combined, forbidden
 
 
-def test_app_js_methods_are_report_post_and_review_mutations() -> None:
+def test_app_js_methods_are_report_post_and_workflow_mutations() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "PUT", "DELETE"]
+    assert methods == ["POST", "POST", "PUT", "DELETE"]
     assert '"/report?grouped="' in js
     # The Job Detail view legitimately GETs the /applications/{id},
     # /review-decisions/{id}, and /reminders?job_id={id} route families and

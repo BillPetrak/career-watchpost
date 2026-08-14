@@ -62,8 +62,12 @@ It calls only the documented read endpoints (`GET /report`, `GET /jobs`,
 `GET /jobs/{id}`, `GET /jobs/{id}/group`, `GET /applications/{id}`,
 `GET /review-decisions/{id}`, `GET /reminders?job_id={id}`) plus the
 computation-only `POST /report` (the Review view's inline candidate-profile
-form) and never mutates Job, application, review, reminder, saved-search, or
-database state.
+form) and the Job Detail workflow mutations (review-decision
+`PUT`/`DELETE /review-decisions/{id}`, application-status
+`PUT /applications/{id}`, and reminder `POST /reminders` plus
+`PUT /reminders/{id}/complete` and `PUT /reminders/{id}/reopen`). These
+mutations are local workflow state only and never touch Job rows,
+saved-searches, or the database itself.
 
 ## Job sources
 

@@ -415,14 +415,16 @@ def test_no_per_member_n_plus_one_fetches() -> None:
         assert forbidden not in js, forbidden
 
 
-def test_only_review_decision_mutations_permitted() -> None:
+def test_only_workflow_mutations_permitted() -> None:
     js = _js()
-    # The only frontend mutations are the Job Detail Review actions: PUT and
-    # DELETE /review-decisions/{id}. The computation-only POST /report remains
-    # the sole POST, and every forbidden mutation/computation route stays
-    # absent.
+    # The only frontend mutations are the Job Detail workflow actions: PUT and
+    # DELETE /review-decisions/{id}, PUT /applications/{id}, and the reminder
+    # POST /reminders plus PUT /reminders/{id}/complete and
+    # PUT /reminders/{id}/reopen. The computation-only POST /report remains the
+    # Review view's sole POST, and every forbidden mutation/computation route
+    # stays absent.
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "PUT", "DELETE"]
+    assert methods == ["POST", "POST", "PUT", "DELETE"]
     for forbidden in (
         "/saved-searches",
         "/ranked-jobs",
