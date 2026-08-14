@@ -64,8 +64,10 @@ It calls only the documented read endpoints (`GET /report`, `GET /jobs`,
 computation-only `POST /report` (the Review view's inline candidate-profile
 form) and the Job Detail workflow mutations (review-decision
 `PUT`/`DELETE /review-decisions/{id}`, application-status
-`PUT /applications/{id}`, and reminder `POST /reminders` plus
-`PUT /reminders/{id}/complete` and `PUT /reminders/{id}/reopen`). These
+`PUT /applications/{id}`, and reminder `POST /reminders`,
+`PUT /reminders/{id}/complete` and `PUT /reminders/{id}/reopen`, plus a
+confirmed `DELETE /reminders/{id}` that always shows a native confirmation
+dialog before removing a reminder). These
 mutations are local workflow state only and never touch Job rows,
 saved-searches, or the database itself.
 

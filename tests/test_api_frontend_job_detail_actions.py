@@ -433,8 +433,9 @@ def test_repeated_review_mutation_failures_replace_not_append() -> None:
     assert "body.appendChild(sectionErrorBox(message, error, retryAction));" in helper
     # Exactly one definition plus one call in each mutation catch path (review
     # apply, review clear, application apply, reminder complete, reminder
-    # reopen); the reminder create failure uses its own non-replay panel.
-    assert js.count("replaceSectionError(") == 6
+    # reopen, reminder delete); the reminder create failure uses its own
+    # non-replay panel.
+    assert js.count("replaceSectionError(") == 7
     for name in ("applyReviewDecision", "clearReviewDecision"):
         start = js.index(f"async function {name}")
         end = js.index("async function", start + len(name) + 30)

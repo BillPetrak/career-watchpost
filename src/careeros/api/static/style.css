@@ -627,6 +627,15 @@ main {
   color: var(--color-accent);
 }
 
+.reminder-button.delete-reminder {
+  border-color: var(--color-error);
+  color: var(--color-error);
+}
+
+.reminder-button.delete-reminder:hover {
+  background: var(--color-error-bg);
+}
+
 /* Narrow / mobile layout. */
 @media (max-width: 600px) {
   main {

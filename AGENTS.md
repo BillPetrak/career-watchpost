@@ -1681,8 +1681,15 @@ reporting, or database logic, and never read SQLite, config files, candidate
 profiles, `profile_path`, filesystem paths, private notes/messages, or logs.
 Mutations are strictly confined to the Job Detail view (see below): the
 Review-decision actions call `PUT /review-decisions/{job_id}` /
-`DELETE /review-decisions/{job_id}` and the Application-status actions call
-`PUT /applications/{job_id}`; every other endpoint call is read-only
+`DELETE /review-decisions/{job_id}`, the Application-status actions call
+`PUT /applications/{job_id}`, and the Reminders actions call
+`POST /reminders` (create), `PUT /reminders/{reminder_id}/complete`,
+`PUT /reminders/{reminder_id}/reopen`, and a confirmed
+`DELETE /reminders/{reminder_id}` (the Delete control always shows a native
+`window.confirm` dialog before removing a reminder; cancelling is a true
+no-op, a DELETE 404 is reconciled as success via a reminder-only refresh, and
+a Retry re-issues the exact DELETE without re-confirming); every other endpoint
+call is read-only
 (`GET /report`, `GET /jobs`, `GET /jobs/{id}` and its section companions) or
 the Review view's computation-only `POST /report`.
 Job descriptions are not rendered because the public `GET /jobs` projection
@@ -1756,12 +1763,17 @@ call; a tracking filter, `notes`, and all other workflow state are never
 exposed.
 `tests/test_api_frontend_job_detail.py` covers the view and
 `tests/test_api_frontend_job_detail_actions.py` /
-`tests/test_api_frontend_job_detail_application_actions.py` cover the
-Review-decision and Application-status mutations; the shared
+`tests/test_api_frontend_job_detail_application_actions.py` /
+`tests/test_api_frontend_job_detail_reminder_actions.py` /
+`tests/test_api_frontend_job_detail_reminder_delete.py` cover the
+Review-decision, Application-status, and Reminder create/complete/reopen/
+delete mutations; the shared
 forbidden-endpoint invariants in `tests/test_api_frontend.py` and
 `tests/test_api_frontend_review.py` allow the five canonical read GET route
-families plus the three mutation routes (`PUT`/`DELETE /review-decisions/{job_id}`,
-`PUT /applications/{job_id}`) while still forbidding every other
+families plus the mutation routes (`PUT`/`DELETE /review-decisions/{job_id}`,
+`PUT /applications/{job_id}`, `POST /reminders`,
+`PUT /reminders/{reminder_id}/complete`, `PUT /reminders/{reminder_id}/reopen`,
+`DELETE /reminders/{reminder_id}`) while still forbidding every other
 mutation/computation route.
 
 The `/ui` routes take no database dependency: they never acquire the

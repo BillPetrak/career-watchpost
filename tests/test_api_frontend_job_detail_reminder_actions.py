@@ -26,16 +26,22 @@ with a single ``reminderOperationActive`` guard so rapid clicks cannot issue
 overlapping mutations; stale-response protection via the per-navigation
 ``detailRequestSeq`` token plus ``isCurrentDetailJob``; exactly one lifecycle
 action per reminder (open → "Complete", completed → "Reopen", never both, no
-edit/delete control in this slice); the non-idempotent CREATE retry contract —
+edit control in this slice, plus a separate Delete control for every
+reminder); the non-idempotent CREATE retry contract —
 a failed ``POST`` is NEVER blindly replayed, a deterministic 422 keeps the
 form's values and shows the server detail next to the form, and any other
 failure (network/500/503) renders a single error panel whose explicit
 "Check reminders" action reconciles against the server with a safe GET before
 the user submits again — while the idempotent complete/reopen PUTs may safely
 retry the exact failed PUT through the normal section error box; at most one
-error panel per section; no storage APIs, unsafe HTML sinks, private fields,
-``confirm()`` dialogs, or client-side sorting; Home/Jobs/Review and the other
-read-only detail sections unchanged; the method set invariant
+error panel per section; the destructive Delete action is gated by a native
+``window.confirm`` dialog that fires ONLY on the original click (cancelling is
+a true no-op, and an automated Retry re-issues the exact DELETE without
+re-confirming), a DELETE 404 is reconciled as success via the same
+reminder-only refresh, and all other DELETE failures render the single
+section error panel; no storage APIs, unsafe HTML sinks, private fields,
+custom ``confirm()`` implementations, or client-side sorting; Home/Jobs/Review
+and the other read-only detail sections unchanged; the method set invariant
 ``["POST", "POST", "PUT", "DELETE"]``; static serving, ``SCHEMA_VERSION``, the
 no-``careeros.cli`` import guarantee, and the untouched real default database.
 """
@@ -534,7 +540,13 @@ def test_one_lifecycle_action_complete_or_reopen() -> None:
     lifecycle = _reminders_lifecycle_slice(js)
     assert 'textContent: completed ? "Reopen" : "Complete"' in lifecycle
     assert "buildReminderActions(body, job, reminder)" in lifecycle
-    # No edit/delete control exists in this slice.
+    # Every reminder carries a separate Delete control gated by the native
+    # confirm dialog; the DELETE request itself lives after refreshReminders
+    # (outside this slice). No edit (PATCH) control exists anywhere.
+    assert 'textContent: "Delete"' in lifecycle
+    assert "delete-reminder" in lifecycle
+    assert "requestDeleteReminder(group, body, job, reminder);" in lifecycle
+    assert "window.confirm(" in lifecycle
     assert "deleteJson" not in lifecycle
     assert "PATCH" not in lifecycle
     assert "patchJson" not in lifecycle
@@ -605,7 +617,12 @@ def test_in_flight_disables_controls_and_aria_busy() -> None:
 
 def test_stale_response_guard_in_every_mutation() -> None:
     js = _js()
-    for func in ("createReminder", "completeReminder", "reopenReminder"):
+    for func in (
+        "createReminder",
+        "completeReminder",
+        "reopenReminder",
+        "deleteReminder",
+    ):
         start = js.index(f"async function {func}")
         end = js.index("  }\n", js.index("} finally {", start))
         body = js[start:end]
@@ -656,10 +673,14 @@ def test_no_private_fields_or_unsafe_sinks() -> None:
         "sessionStorage",
         "profile_path",
         ".sort(",
-        "confirm(",
         "eval(",
     ):
         assert forbidden not in js, forbidden
+    # The only confirmation mechanism is the native window.confirm dialog that
+    # gates the destructive Delete action; a custom/bare confirm() helper or a
+    # second confirm site is never introduced.
+    assert js.count("window.confirm(") == 1
+    assert js.replace("window.confirm(", "").count("confirm(") == 0
 
 
 def test_forbidden_endpoints_remain_absent() -> None:

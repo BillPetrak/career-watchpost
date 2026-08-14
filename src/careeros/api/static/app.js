@@ -14,8 +14,10 @@
   // PUT /review-decisions/{id} and DELETE /review-decisions/{id}, -- for
   // the Application section actions -- the application-status mutation
   // PUT /applications/{id}, and -- for the Reminders section actions -- the
-  // three reminder mutations POST /reminders (create), PUT
-  // /reminders/{id}/complete, and PUT /reminders/{id}/reopen. API-provided
+  // four reminder mutations POST /reminders (create), PUT
+  // /reminders/{id}/complete, PUT /reminders/{id}/reopen, and
+  // DELETE /reminders/{id} (Delete, always preceded by a native
+  // window.confirm dialog). API-provided
   // strings are always rendered with textContent/createElement -- never as
   // HTML. The submitted profile is sent only to POST /report and is never
   // stored by this frontend.
@@ -1851,8 +1853,8 @@
   }
 
   // Exactly one lifecycle action per reminder: an open reminder gets
-  // "Complete" and a completed one gets "Reopen" -- never both, and no
-  // delete/edit control in this slice.
+  // "Complete" and a completed one gets "Reopen" -- never both -- plus a
+  // separate Delete control that demands explicit confirmation.
   function buildReminderActions(body, job, reminder) {
     var completed =
       typeof reminder.completed_at === "string" && reminder.completed_at.length > 0;
@@ -1872,7 +1874,36 @@
       }
     });
     group.appendChild(button);
+    var deleteButton = el("button", {
+      className: "reminder-button delete-reminder",
+      type: "button",
+      textContent: "Delete",
+    });
+    deleteButton.addEventListener("click", function () {
+      requestDeleteReminder(group, body, job, reminder);
+    });
+    group.appendChild(deleteButton);
     return group;
+  }
+
+  // Deleting a reminder is destructive, so the Delete click is gated by a
+  // native window.confirm dialog before any request is issued. Confirmation
+  // lives ONLY in this click wrapper: cancelling is a true no-op (no request,
+  // no guard change, no control/aria-busy mutation), and an automated Retry
+  // after a network/500/503 failure re-issues the exact DELETE directly
+  // without asking again.
+  function requestDeleteReminder(group, body, job, reminder) {
+    if (reminderOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    if (
+      !isObject(reminder) ||
+      !isFiniteNumber(reminder.reminder_id) ||
+      reminder.reminder_id < 1
+    ) {
+      return;
+    }
+    if (!window.confirm("Delete this reminder? This cannot be undone.")) return;
+    deleteReminder(group, body, job, reminder);
   }
 
   // PUT /reminders/{id}/complete is idempotent, so its Retry action may safely
@@ -1969,6 +2000,56 @@
       retrySection(section, body, job, "reminders");
     });
     section.removeAttribute("aria-busy");
+  }
+
+  // DELETE /reminders/{id} is genuinely destructive: a 200 removes the row for
+  // good (no undo), and the response drives a refetch of ONLY GET
+  // /reminders?job_id and a re-render of just this section. A canonical 404
+  // means the reminder is already gone (the desired "reminder absent" state
+  // holds), so it is reconciled as success with the same reminder-only
+  // refresh and no error panel. Any other failure (422/500/503/network) keeps
+  // the existing list and shows exactly one section error panel whose Retry
+  // re-issues the exact failed DELETE -- never re-confirming, because the
+  // window.confirm gate lives only in requestDeleteReminder.
+  async function deleteReminder(group, body, job, reminder) {
+    if (reminderOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    if (
+      !isObject(reminder) ||
+      !isFiniteNumber(reminder.reminder_id) ||
+      reminder.reminder_id < 1
+    ) {
+      return;
+    }
+    reminderOperationActive = true;
+    var section = body.parentNode;
+    var jobId = job.id;
+    var reminderId = reminder.reminder_id;
+    var seq = detailRequestSeq;
+    setReminderControlsDisabled(body, true);
+    section.setAttribute("aria-busy", "true");
+    try {
+      await deleteJson("/reminders/" + reminderId);
+      await refreshReminders(body, job, seq);
+    } catch (error) {
+      if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+      if (error && error.status === 404) {
+        await refreshReminders(body, job, seq);
+        return;
+      }
+      setReminderControlsDisabled(body, false);
+      section.removeAttribute("aria-busy");
+      replaceSectionError(
+        body,
+        "The reminder could not be deleted.",
+        error,
+        function () {
+          deleteReminder(group, body, job, reminder);
+        }
+      );
+    } finally {
+      reminderOperationActive = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
