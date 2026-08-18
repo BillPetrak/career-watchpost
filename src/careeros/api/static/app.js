@@ -14,7 +14,8 @@
   // PUT /review-decisions/{id} and DELETE /review-decisions/{id}, -- for
   // the Application section actions -- the application-status mutation
   // PUT /applications/{id}, and -- for the Reminders section actions -- the
-  // four reminder mutations POST /reminders (create), PUT
+  // five reminder mutations POST /reminders (create), PATCH
+  // /reminders/{id} (inline Edit -> Save/Cancel), PUT
   // /reminders/{id}/complete, PUT /reminders/{id}/reopen, and
   // DELETE /reminders/{id} (Delete, always preceded by a native
   // window.confirm dialog). API-provided
@@ -118,6 +119,15 @@
     initialized = true;
     var name = view || visibleView() || HOME;
     var leaving = visibleView();
+    // Leaving the Job Detail view invalidates every in-flight job-detail
+    // continuation (reminder save/refresh/reconcile, section retries, and the
+    // review/application mutation refreshes): a late response captured for the
+    // old job must never update the DOM once the user has navigated away. The
+    // guard alone can leave a timing window, so the request token is bumped
+    // here as well as on every Job Detail entry.
+    if (leaving === JOB && name !== JOB) {
+      detailRequestSeq++;
+    }
     showView(name);
     // Only re-render when a real view route is set; otherwise (e.g. the #main
     // skip-link anchor) keep the currently visible, already-rendered view.
@@ -243,6 +253,18 @@
   function putJson(url, body) {
     return writeJson(url, {
       method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // PATCH adapter for the Reminder edit mutation (PATCH /reminders/{id}).
+  function patchJson(url, body) {
+    return writeJson(url, {
+      method: "PATCH",
       headers: {
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -1623,25 +1645,36 @@
     var list = el("ul", { className: "reminder-list" });
     data.items.forEach(function (reminder) {
       if (!isObject(reminder)) return;
-      var item = el("li", { className: "reminder-item" });
-      item.appendChild(
-        el("span", {
-          className: "reminder-kind",
-          textContent: reminderKindLabel(reminder.kind),
-        })
-      );
-      item.appendChild(
-        el("span", { className: "reminder-due", textContent: displayDate(reminder.due_at) })
-      );
-      var state =
-        typeof reminder.completed_at === "string" && reminder.completed_at.length > 0
-          ? "Completed"
-          : "Open";
-      item.appendChild(el("span", { className: "health-count", textContent: state }));
-      item.appendChild(buildReminderActions(body, job, reminder));
-      list.appendChild(item);
+      list.appendChild(buildReminderRow(body, job, reminder));
     });
     body.appendChild(list);
+  }
+
+  // One reminder's display row: kind, due date, open/completed state, and the
+  // action controls (Edit, Complete/Reopen, Delete). Used both by the initial
+  // server-order render and by the edit Cancel path to restore the row in
+  // place from the original server values -- never from re-derived DOM state.
+  function buildReminderRow(body, job, reminder) {
+    var item = el("li", { className: "reminder-item" });
+    item.appendChild(
+      el("span", {
+        className: "reminder-kind",
+        textContent: reminderKindLabel(reminder.kind),
+      })
+    );
+    item.appendChild(
+      el("span", {
+        className: "reminder-due",
+        textContent: displayDate(reminder.due_at),
+      })
+    );
+    var state =
+      typeof reminder.completed_at === "string" && reminder.completed_at.length > 0
+        ? "Completed"
+        : "Open";
+    item.appendChild(el("span", { className: "health-count", textContent: state }));
+    item.appendChild(buildReminderActions(body, job, reminder));
+    return item;
   }
 
   // Canonical reminder kinds (presentation labels only; the transmitted values
@@ -1718,6 +1751,62 @@
     return value + offset;
   }
 
+  // The minimal reverse conversion needed to PRE-POPULATE the per-reminder
+  // datetime-local editor: parse the server's explicit-offset ISO-8601 due
+  // timestamp (seconds optional) into the UTC instant, then format it in the
+  // browser's local timezone as a datetime-local value (YYYY-MM-DDTHH:MM).
+  // Minute granularity is INTENTIONAL: datetime-local cannot express seconds,
+  // and this value only ever pre-populates the editor. A kind-only Save never
+  // re-serializes it, so a CLI-created reminder with second precision keeps its
+  // stored due time byte-for-byte; only a genuine user change to the due field
+  // is re-serialized (to minute precision). The instant is always reconstructed
+  // from the explicit offset -- never from today's offset -- and no wall-clock
+  // shortcut is used. Returns "" for an empty or unusable value.
+  function localDatetimeValue(value) {
+    if (typeof value !== "string" || value.length === 0) return "";
+    var match =
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(
+        value
+      );
+    if (!match) return "";
+    var year = parseInt(match[1], 10);
+    var month = parseInt(match[2], 10);
+    var day = parseInt(match[3], 10);
+    var hour = parseInt(match[4], 10);
+    var minute = parseInt(match[5], 10);
+    var second = match[6] ? parseInt(match[6], 10) : 0;
+    var offset = match[7];
+    var offsetMinutes = 0;
+    if (offset !== "Z") {
+      var offsetSign = offset.charAt(0) === "-" ? -1 : 1;
+      offsetMinutes =
+        offsetSign *
+        (parseInt(offset.slice(1, 3), 10) * 60 + parseInt(offset.slice(4, 6), 10));
+    }
+    // The UTC instant for an explicit-offset timestamp is the wall components
+    // interpreted in that offset, converted to UTC (never from the local zone).
+    var instant =
+      Date.UTC(year, month - 1, day, hour, minute, second) -
+      offsetMinutes * 60 * 1000;
+    var local = new Date(instant);
+    var localYear = local.getFullYear();
+    var localMonth = String(local.getMonth() + 1).padStart(2, "0");
+    var localDay = String(local.getDate()).padStart(2, "0");
+    var localHour = String(local.getHours()).padStart(2, "0");
+    var localMinute = String(local.getMinutes()).padStart(2, "0");
+    return (
+      localYear +
+      "-" +
+      localMonth +
+      "-" +
+      localDay +
+      "T" +
+      localHour +
+      ":" +
+      localMinute
+    );
+  }
+
   function updateDueHint(due, hint) {
     var offset = localUtcOffset(due.value);
     if (offset === null) {
@@ -1782,7 +1871,7 @@
   function setReminderControlsDisabled(body, disabled) {
     body
       .querySelectorAll(
-        ".reminder-form input, .reminder-form select, .reminder-form button, .reminder-button"
+        ".reminder-form input, .reminder-form select, .reminder-form button, .reminder-edit-form input, .reminder-edit-form select, .reminder-edit-form button, .reminder-button"
       )
       .forEach(function (control) {
         control.disabled = disabled;
@@ -1915,14 +2004,27 @@
   }
 
   // Exactly one lifecycle action per reminder: an open reminder gets
-  // "Complete" and a completed one gets "Reopen" -- never both -- plus a
-  // separate Delete control that demands explicit confirmation.
+  // "Complete" and a completed one gets "Reopen" -- never both -- plus an
+  // Edit control for every reminder and a separate Delete control that demands
+  // explicit confirmation. Editing is available on open AND completed
+  // reminders: the backend PATCH updates only kind/due time and preserves the
+  // completion state.
   function buildReminderActions(body, job, reminder) {
     var completed =
       typeof reminder.completed_at === "string" && reminder.completed_at.length > 0;
     var group = el("div", { className: "reminder-actions" });
     group.setAttribute("role", "group");
     group.setAttribute("aria-label", "Reminder action");
+    var editButton = el("button", {
+      className: "reminder-button reminder-edit-button",
+      type: "button",
+      textContent: "Edit",
+    });
+    editButton.setAttribute("aria-label", "Edit reminder");
+    editButton.addEventListener("click", function () {
+      startReminderEdit(group.parentNode, body, job, reminder);
+    });
+    group.appendChild(editButton);
     var button = el("button", {
       className: "reminder-button",
       type: "button",
@@ -2112,6 +2214,243 @@
     } finally {
       reminderOperationActive = false;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reminder edit (inline per-reminder Edit -> Save/Cancel)
+  // ---------------------------------------------------------------------------
+
+  // Entering edit mode replaces ONLY the clicked reminder's row with the inline
+  // edit form (kind select + datetime-local due input + Save + Cancel). The
+  // rest of the section -- the create form, the other rows, and the server
+  // order -- stays untouched, and the kind select receives focus on entry.
+  function startReminderEdit(item, body, job, reminder) {
+    if (reminderOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    if (
+      !isObject(reminder) ||
+      !isFiniteNumber(reminder.reminder_id) ||
+      reminder.reminder_id < 1
+    ) {
+      return;
+    }
+    var form = buildReminderEditForm(body, job, reminder);
+    clearText(item);
+    item.appendChild(form);
+    var kind = form.querySelector(".reminder-edit-kind");
+    if (kind) kind.focus();
+  }
+
+  // The inline edit form. Only kind and due_at are editable -- no message
+  // field exists (the API never accepts or exposes one). Existing values are
+  // pre-populated: the current kind is pre-selected and the due instant is
+  // shown in the browser's local timezone via localDatetimeValue. The ORIGINAL
+  // values captured here (never values re-derived later from the DOM) are what
+  // a Save compares against, so a kind-only edit never re-serializes the
+  // untouched due time and stored seconds survive unchanged.
+  function buildReminderEditForm(body, job, reminder) {
+    var form = el("form", { className: "reminder-edit-form" });
+    form.setAttribute("aria-label", "Edit reminder");
+    var originalKind = reminder.kind;
+    var originalDueField = localDatetimeValue(reminder.due_at);
+    var kindLabel = el("label", { className: "reminder-label", textContent: "Kind" });
+    kindLabel.setAttribute("for", "reminder-edit-kind-" + reminder.reminder_id);
+    form.appendChild(kindLabel);
+    var kind = el("select", {
+      id: "reminder-edit-kind-" + reminder.reminder_id,
+      className: "reminder-input reminder-edit-kind",
+    });
+    kind.setAttribute("name", "kind");
+    REMINDER_KINDS.forEach(function (entry) {
+      var option = el("option", { textContent: entry.label });
+      option.value = entry.value;
+      kind.appendChild(option);
+    });
+    kind.value = originalKind;
+    form.appendChild(kind);
+    var dueLabel = el("label", { className: "reminder-label", textContent: "Due" });
+    dueLabel.setAttribute("for", "reminder-edit-due-" + reminder.reminder_id);
+    form.appendChild(dueLabel);
+    var due = el("input", {
+      id: "reminder-edit-due-" + reminder.reminder_id,
+      className: "reminder-input reminder-edit-due",
+      type: "datetime-local",
+    });
+    due.setAttribute("name", "due_at");
+    due.setAttribute("required", "");
+    due.value = originalDueField;
+    form.appendChild(due);
+    var hint = el("p", { className: "field-hint" });
+    form.appendChild(hint);
+    var validation = el("p", { className: "reminder-validation" });
+    validation.hidden = true;
+    form.appendChild(validation);
+    var save = el("button", {
+      type: "submit",
+      className: "reminder-add-button",
+      textContent: "Save",
+    });
+    form.appendChild(save);
+    var cancel = el("button", {
+      type: "button",
+      className: "reminder-button",
+      textContent: "Cancel",
+    });
+    form.appendChild(cancel);
+    updateDueHint(due, hint);
+    due.addEventListener("input", function () {
+      updateDueHint(due, hint);
+    });
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      saveReminderEdit(form, body, job, reminder, originalKind, originalDueField);
+    });
+    cancel.addEventListener("click", function () {
+      cancelReminderEdit(form, body, job, reminder);
+    });
+    return form;
+  }
+
+  // Cancel is a true local no-op: ZERO network requests and ZERO server
+  // mutation. The display row is restored in place from the original reminder
+  // values (server-authoritative), preserving the server order, and focus
+  // returns to that reminder's Edit button when practical.
+  function cancelReminderEdit(form, body, job, reminder) {
+    var item = form.parentNode;
+    if (!item || !item.parentNode) return;
+    var fresh = buildReminderRow(body, job, reminder);
+    item.parentNode.replaceChild(fresh, item);
+    var edit = fresh.querySelector(".reminder-edit-button");
+    if (edit) edit.focus();
+  }
+
+  // Detects what actually changed and builds the PATCH body from ONLY the
+  // changed fields. A kind-only edit sends exactly {"kind": ...} -- the
+  // untouched due time is never re-serialized, so a CLI-created reminder with
+  // second precision keeps its stored value byte-for-byte. A due-only edit
+  // sends exactly {"due_at": ...} (serialized with the explicit offset for the
+  // ENTERED date, so DST is respected). Both changed sends both fields.
+  // Changing nothing is a local no-op: exit edit mode, restore the display
+  // row, and make ZERO network requests -- the server state stays untouched.
+  function saveReminderEdit(form, body, job, reminder, originalKind, originalDueField) {
+    if (reminderOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    if (
+      !isObject(reminder) ||
+      !isFiniteNumber(reminder.reminder_id) ||
+      reminder.reminder_id < 1
+    ) {
+      return;
+    }
+    var kind = form.querySelector(".reminder-edit-kind");
+    var due = form.querySelector(".reminder-edit-due");
+    var validation = form.querySelector(".reminder-validation");
+    if (!kind || !due || !validation) return;
+    var kindChanged = kind.value !== originalKind;
+    var dueField = due.value;
+    var dueChanged = dueField !== originalDueField;
+    if (!kindChanged && !dueChanged) {
+      cancelReminderEdit(form, body, job, reminder);
+      return;
+    }
+    var payload = {};
+    if (kindChanged) payload.kind = kind.value;
+    if (dueChanged) {
+      var timestamp = dueTimestamp(dueField);
+      if (timestamp === null) {
+        validation.hidden = false;
+        validation.textContent =
+          "That due time is not valid in your local timezone; pick another date and time.";
+        due.focus();
+        return;
+      }
+      payload.due_at = timestamp;
+    }
+    clearText(validation);
+    validation.hidden = true;
+    submitReminderEdit(form, body, job, reminder, payload);
+  }
+
+  // The actual edit mutation (PATCH /reminders/{id}) under the shared
+  // reminderOperationActive guard: controls are disabled and the section marked
+  // aria-busy while the PATCH and its reminder-only refresh are in flight. A
+  // successful PATCH re-fetches ONLY GET /reminders?job_id and re-renders just
+  // the Reminders section (server-authoritative, no optimistic update). A
+  // canonical 404 means the reminder disappeared -- the desired "reminder
+  // absent" state holds -- so the same reminder-only refresh runs with no error
+  // panel. A deterministic 422 (the server refused the payload) keeps edit mode
+  // and the entered values, shows the server detail next to the form, and
+  // re-enables the controls so the user can correct and Save again; the invalid
+  // payload is never auto-retried. Every other failure (500/503/network)
+  // preserves the form and entered values and shows exactly one error panel
+  // whose Retry re-issues the EXACT failed PATCH payload (no re-confirmation).
+  async function submitReminderEdit(form, body, job, reminder, payload) {
+    if (reminderOperationActive) return;
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    if (
+      !isObject(reminder) ||
+      !isFiniteNumber(reminder.reminder_id) ||
+      reminder.reminder_id < 1
+    ) {
+      return;
+    }
+    reminderOperationActive = true;
+    var section = body.parentNode;
+    var jobId = job.id;
+    var reminderId = reminder.reminder_id;
+    var seq = detailRequestSeq;
+    setReminderControlsDisabled(body, true);
+    section.setAttribute("aria-busy", "true");
+    try {
+      await patchJson("/reminders/" + reminderId, payload);
+      await refreshReminders(body, job, seq);
+    } catch (error) {
+      if (seq !== detailRequestSeq || !isCurrentDetailJob(jobId)) return;
+      if (error && error.status === 404) {
+        await refreshReminders(body, job, seq);
+        return;
+      }
+      setReminderControlsDisabled(body, false);
+      section.removeAttribute("aria-busy");
+      if (error && error.status === 422) {
+        var validation = form.querySelector(".reminder-validation");
+        if (validation) {
+          validation.hidden = false;
+          validation.textContent = error.message;
+        }
+        return;
+      }
+      replaceReminderEditError(body, error, function () {
+        submitReminderEdit(form, body, job, reminder, payload);
+      });
+    } finally {
+      reminderOperationActive = false;
+    }
+  }
+
+  // One-error-panel-maximum for edit failures: any existing section error box
+  // is removed before a fresh one is appended, so a failed edit never
+  // accumulates duplicate panels. The Retry action re-issues the exact failed
+  // PATCH payload -- never a re-confirmation -- because the retry closure owns
+  // the captured payload, not the form.
+  function replaceReminderEditError(body, error, retryAction) {
+    body.querySelectorAll(".error-box").forEach(function (box) {
+      box.remove();
+    });
+    var box = el("div", { className: "error-box" });
+    box.appendChild(el("p", { textContent: "The reminder could not be saved." }));
+    if (error && error.message) {
+      box.appendChild(
+        el("p", { className: "error-detail", textContent: error.message })
+      );
+    }
+    var retry = el("button", { className: "retry-button", textContent: "Retry" });
+    retry.addEventListener("click", function () {
+      box.remove();
+      retryAction();
+    });
+    box.appendChild(retry);
+    body.appendChild(box);
   }
 
   // ---------------------------------------------------------------------------

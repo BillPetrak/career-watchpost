@@ -497,12 +497,13 @@ def test_write_json_helpers_reused_and_put_is_exact() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_method_set_is_exactly_post_put_delete_in_order() -> None:
+def test_method_set_is_exactly_post_put_patch_delete_in_order() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
     # POST /report (Review view), POST /reminders (create), PUT (review/
-    # application/reminder lifecycle), DELETE (review clear) -- in source order.
-    assert methods == ["POST", "POST", "PUT", "DELETE"]
+    # application/reminder lifecycle), PATCH (reminder edit), DELETE (review
+    # clear + reminder delete) -- in source order.
+    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
 
 
 def test_forbidden_endpoints_remain_absent() -> None:
@@ -521,8 +522,8 @@ def test_reminder_mutations_are_lifecycle_only() -> None:
     js = _js()
     # The review-decision PUT/DELETE and application PUT mutation lines are
     # unchanged. The reminder mutations are exactly the create POST, the
-    # idempotent lifecycle PUTs (complete/reopen), and the confirmed DELETE
-    # (remove); PATCH (edit) is deliberately absent.
+    # idempotent lifecycle PUTs (complete/reopen), the inline edit PATCH
+    # /reminders/{id}, and the confirmed DELETE (remove).
     assert 'putJson("/review-decisions/" + jobId, { decision: decision });' in js
     assert 'deleteJson("/review-decisions/" + jobId);' in js
     assert 'putJson("/applications/" + jobId, { status: status });' in js
@@ -531,8 +532,7 @@ def test_reminder_mutations_are_lifecycle_only() -> None:
     assert 'putJson("/reminders/" + reminderId + "/complete");' in js
     assert 'putJson("/reminders/" + reminderId + "/reopen");' in js
     assert 'await deleteJson("/reminders/" + reminderId);' in js
-    assert 'PATCH "/reminders' not in js
-    assert "patchJson" not in js
+    assert 'await patchJson("/reminders/" + reminderId, payload);' in js
 
 
 def test_home_jobs_review_regressions_intact() -> None:

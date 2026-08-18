@@ -540,16 +540,20 @@ def test_one_lifecycle_action_complete_or_reopen() -> None:
     lifecycle = _reminders_lifecycle_slice(js)
     assert 'textContent: completed ? "Reopen" : "Complete"' in lifecycle
     assert "buildReminderActions(body, job, reminder)" in lifecycle
-    # Every reminder carries a separate Delete control gated by the native
-    # confirm dialog; the DELETE request itself lives after refreshReminders
-    # (outside this slice). No edit (PATCH) control exists anywhere.
+    # Every reminder carries exactly one lifecycle action (Complete or Reopen)
+    # plus an Edit control that switches the row into the inline edit form; the
+    # lifecycle PUTs (complete/reopen) and the edit PATCH live outside this
+    # slice (after refreshReminders). Every reminder also carries a separate
+    # Delete control gated by the native confirm dialog; the DELETE request
+    # itself also lives after refreshReminders.
+    assert 'textContent: "Edit"' in lifecycle
+    assert "reminder-edit-button" in lifecycle
+    assert "startReminderEdit(group.parentNode, body, job, reminder);" in lifecycle
     assert 'textContent: "Delete"' in lifecycle
     assert "delete-reminder" in lifecycle
     assert "requestDeleteReminder(group, body, job, reminder);" in lifecycle
     assert "window.confirm(" in lifecycle
     assert "deleteJson" not in lifecycle
-    assert "PATCH" not in lifecycle
-    assert "patchJson" not in lifecycle
 
 
 def test_complete_put_url_and_idempotent_retry() -> None:
@@ -606,9 +610,13 @@ def test_render_job_detail_resets_guard() -> None:
 
 def test_in_flight_disables_controls_and_aria_busy() -> None:
     js = _js()
+    # The in-flight disable selector covers the create form, every reminder
+    # button (including the edit form's Save/Cancel and the edit button itself),
+    # so no reminder control stays usable while a reminder mutation runs.
     controls = (
         '".reminder-form input, .reminder-form select, .reminder-form '
-        'button, .reminder-button"'
+        "button, .reminder-edit-form input, .reminder-edit-form select, "
+        '.reminder-edit-form button, .reminder-button"'
     )
     assert controls in js
     assert 'section.setAttribute("aria-busy", "true");' in js
@@ -622,6 +630,7 @@ def test_stale_response_guard_in_every_mutation() -> None:
         "completeReminder",
         "reopenReminder",
         "deleteReminder",
+        "submitReminderEdit",
     ):
         start = js.index(f"async function {func}")
         end = js.index("  }\n", js.index("} finally {", start))
@@ -691,18 +700,22 @@ def test_forbidden_endpoints_remain_absent() -> None:
         "/review-queue",
         "/workflow",
         "/report/",
-        "PATCH",
     ):
         assert f'"/{forbidden}' not in js, forbidden
-    assert "patchJson" not in js
+    # The only PATCH is the reminder-edit mutation; the writeJson helper family
+    # (postJson/putJson/patchJson/deleteJson) is the sole HTTP surface.
+    assert "patchJson" in js
+    assert 'await patchJson("/reminders/" + reminderId, payload);' in js
+    assert js.count("patchJson(") == 2
 
 
-def test_method_set_is_exactly_post_post_put_delete_in_order() -> None:
+def test_method_set_is_exactly_post_post_put_patch_delete_in_order() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
     # POST /report (Review view), POST /reminders (create), PUT (review/
-    # application/reminder lifecycle), DELETE (review clear) -- in source order.
-    assert methods == ["POST", "POST", "PUT", "DELETE"]
+    # application/reminder lifecycle), PATCH (reminder edit), DELETE (review
+    # clear + reminder delete) -- in source order.
+    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
 
 
 def test_render_section_by_key_routes_reminders() -> None:

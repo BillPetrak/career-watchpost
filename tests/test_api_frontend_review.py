@@ -510,12 +510,12 @@ def test_no_filesystem_or_config_access_from_frontend() -> None:
 def test_app_js_methods_are_report_post_and_workflow_mutations() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "POST", "PUT", "DELETE"]
+    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
     assert '"/report?grouped="' in js
     # The Job Detail view legitimately GETs the /applications?job_id={id},
     # /review-decisions?job_id={id}, and /reminders?job_id={id} route families
-    # and PUTs/DELETEs only the review-decision route; no other computation or
-    # mutation endpoint is ever called.
+    # and PUTs/DELETEs only the review-decision route (plus the PATCH reminder
+    # edit); no other computation or mutation endpoint is ever called.
     for forbidden in (
         "/saved-searches",
         "/ranked-jobs",

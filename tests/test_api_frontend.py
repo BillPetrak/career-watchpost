@@ -240,16 +240,18 @@ def test_js_uses_only_intended_endpoints() -> None:
         )
 
 
-def test_js_mutation_methods_are_only_post_put_delete_for_review() -> None:
+def test_js_mutation_methods_are_only_post_put_patch_delete() -> None:
     js = _asset_bytes(_JS_NAME).decode("utf-8")
-    # The frontend's explicit HTTP methods are exactly four: POST for the
+    # The frontend's explicit HTTP methods are exactly five: POST for the
     # computation-only POST /report (Review view form submission) and the
-    # non-idempotent reminder create POST /reminders, plus PUT/DELETE for the
-    # Job Detail Review-section mutations. Every other request (Home, Jobs, Job
+    # non-idempotent reminder create POST /reminders, PUT for the Job Detail
+    # Review-section and Application-section mutations, PATCH for the
+    # per-reminder edit mutation PATCH /reminders/{id}, and DELETE for the
+    # review clear and reminder delete. Every other request (Home, Jobs, Job
     # Detail reads) stays an implicit GET through the GET-only fetchJson
     # helper, which carries no method option.
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "POST", "PUT", "DELETE"]
+    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
     # The POST target is the /report path with the grouped/limit query pair the
     # Review view sends; a path-only "/report/" suffix is never used.
     assert '"/report?grouped="' in js

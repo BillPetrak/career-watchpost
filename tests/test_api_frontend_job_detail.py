@@ -432,12 +432,13 @@ def test_only_workflow_mutations_permitted() -> None:
     js = _js()
     # The only frontend mutations are the Job Detail workflow actions: PUT and
     # DELETE /review-decisions/{id}, PUT /applications/{id}, and the reminder
-    # POST /reminders plus PUT /reminders/{id}/complete and
-    # PUT /reminders/{id}/reopen. The computation-only POST /report remains the
+    # POST /reminders plus PATCH /reminders/{id} (edit),
+    # PUT /reminders/{id}/complete, PUT /reminders/{id}/reopen, and
+    # DELETE /reminders/{id}. The computation-only POST /report remains the
     # Review view's sole POST, and every forbidden mutation/computation route
     # stays absent.
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "POST", "PUT", "DELETE"]
+    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
     for forbidden in (
         "/saved-searches",
         "/ranked-jobs",
@@ -535,10 +536,11 @@ def test_group_failure_is_section_error_not_absence() -> None:
     # The core job response remains the only 404-tolerated read: a canonical
     # 404 there is the whole-page "Job not found" state. Application/review
     # absent state is now an empty 200 list, so the two sections never
-    # special-case a 404. The only other 404 special-case in the file is the
-    # reminder-DELETE mutation reconcile (a 404 from that DELETE is treated as
-    # success); every other rejection is a plain section error.
-    assert js.count("status === 404") == 2
+    # special-case a 404. The only other 404 special-cases in the file are the
+    # reminder-DELETE and reminder-edit-PATCH mutation reconciles (a 404 from
+    # those mutations is treated as "the reminder is gone", which is the desired
+    # state); every other rejection is a plain section error.
+    assert js.count("status === 404") == 3
     assert "status === 404" not in _render_application_slice(js)
     assert "status === 404" not in _render_review_slice(js)
 

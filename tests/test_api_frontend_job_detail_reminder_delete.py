@@ -276,12 +276,16 @@ def test_delete_button_uses_destructive_styling() -> None:
 
 def test_delete_control_is_not_an_edit_or_bulk_control() -> None:
     js = _js()
-    assert "PATCH" not in js
-    assert "patchJson" not in js
+    # The Delete control is a distinct per-reminder destructive action. The
+    # reminder edit PATCH does exist (the per-reminder Edit -> Save/Cancel
+    # flow) but lives entirely outside this delete slice; nothing here is a
+    # bulk or undo control.
     assert "Bulk" not in js
     assert "Undo" not in js
-    assert 'deleteJson("/reminders/" + reminderId);' in js
+    assert 'await deleteJson("/reminders/" + reminderId);' in js
     assert 'deleteJson("/reminders?job_id' not in js
+    # The edit flow is the sibling PATCH mutation, not part of delete.
+    assert 'await patchJson("/reminders/" + reminderId, payload);' in js
 
 
 # --------------------------------------------------------------------------- #
@@ -486,19 +490,23 @@ def test_forbidden_endpoints_remain_absent() -> None:
         "/review-queue",
         "/workflow",
         "/report/",
-        "PATCH",
     ):
         assert f'"/{forbidden}' not in js, forbidden
-    assert "patchJson" not in js
+    # The reminder-edit PATCH is the only PATCH: patchJson is defined once and
+    # called once, always against /reminders/{id} with the captured payload.
+    assert "patchJson" in js
+    assert 'await patchJson("/reminders/" + reminderId, payload);' in js
+    assert js.count("patchJson(") == 2
 
 
-def test_method_set_is_exactly_post_post_put_delete_in_order() -> None:
+def test_method_set_is_exactly_post_post_put_patch_delete_in_order() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
     # POST /report (Review view), POST /reminders (create), PUT (review/
-    # application/reminder lifecycle), DELETE (review clear + reminder delete)
-    # -- in source order. The reminder delete reuses the existing deleteJson.
-    assert methods == ["POST", "POST", "PUT", "DELETE"]
+    # application/reminder lifecycle), PATCH (reminder edit), DELETE (review
+    # clear + reminder delete) -- in source order. The reminder delete reuses
+    # the existing deleteJson.
+    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
 
 
 def test_server_ordering_preserved_no_client_sort() -> None:

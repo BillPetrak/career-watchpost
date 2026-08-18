@@ -462,12 +462,13 @@ def test_repeated_review_mutation_failures_replace_not_append() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_method_set_is_exactly_post_put_delete_in_order() -> None:
+def test_method_set_is_exactly_post_put_patch_delete_in_order() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
     # POST /report (Review view), POST /reminders (create), PUT (review/
-    # application/reminder lifecycle), DELETE (review clear) -- in source order.
-    assert methods == ["POST", "POST", "PUT", "DELETE"]
+    # application/reminder lifecycle), PATCH (reminder edit), DELETE (review
+    # clear + reminder delete) -- in source order.
+    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
 
 
 def test_forbidden_endpoints_remain_absent() -> None:
