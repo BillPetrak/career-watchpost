@@ -42,9 +42,10 @@ Current CLI capabilities include multi-source job collection (`collect
 <source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
 persistent run history, read-only collection observability (`collect status`,
 `collect history`), plus `search`, `show`, `rank`, `group`,
-`saved-search`, `application`, `reminder`, `review`, `profile` (init/show/
+`saved-search`, `application`, `reminder` (including local `notify-due`/`
+notify-history` notifications), `review`, `profile` (init/show/
 validate for JSON or YAML candidate profiles), a read-only `report` (Career
-Snapshot), and `diagnose`.
+Snapshot), and `diagnose` (including notification readiness).
 Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
@@ -75,6 +76,23 @@ singular `GET /applications/{id}` and `GET /review-decisions/{id}` endpoints
 keep their authoritative 404 absent-state behavior for API clients. These
 mutations are local workflow state only and never touch Job rows,
 saved-searches, or the database itself.
+
+Reminder notifications are the third, **independent** piece: a background
+systemd user timer (`careeros-reminder-notify.timer`) runs
+`careeros reminder notify-due --backend auto` and surfaces due reminders as
+local desktop pop-ups (via `notify-send`) even when no browser tab and no
+server is open. Installing it is opt-in and separate from the web UI/server:
+
+```bash
+uv run python systemd/install.py --units notify --enable   # install + enable the notify timer
+```
+
+`careeros diagnose` reports notification readiness (notify-send availability,
+which backend `auto` resolves to, and whether the notify timer is
+installed/enabled/active) with actionable guidance. Delivery is local only —
+CareerOS never uses web push, email, or any external service — and each
+reminder fires exactly once per scheduled time (rescheduling counts as a new
+occurrence, and a due time missed across a reboot still fires once).
 
 ## Job sources
 
@@ -184,6 +202,46 @@ guesses a timezone. Values are normalized and stored as UTC. `complete` and
 supports deliberate message clearing. The write commands (`add`, `update`,
 `complete`, `reopen`, `delete`) respect the per-database lock and exit 75 on
 contention; the reads (`list`, `show`) never lock.
+
+### Reminder notifications
+
+Separate from storing/editing reminders, `careeros reminder notify-due` delivers
+a **local** notification when a reminder comes due, so a due reminder surfaces
+without keeping the web UI open. Delivery is **local only** — never web push,
+email, or any external service — and never completes, reschedules, or deletes a
+reminder. The delivery audit lives in the `reminder_notifications` table.
+
+```bash
+uv run careeros reminder notify-due --dry-run          # preview due reminders (no delivery)
+uv run careeros reminder notify-due                    # deliver due reminders
+uv run careeros reminder notify-due --backend stdout   # force text-line delivery
+uv run careeros reminder notify-history                # delivery history, newest first
+uv run careeros reminder notify-history --failed       # failed attempts only
+```
+
+Occurrence semantics: a reminder notifies **once per scheduled time** (the
+`(reminder_id, due_at)` pair). Rescheduling (`update --due-at`) creates a new
+occurrence and notifies again; reopening a completed reminder does **not**
+re-notify a time already delivered; deleting or completing a reminder silences
+it; an overdue time notifies exactly once when first observed — including
+across a reboot that spanned the due time.
+
+`--backend auto` (the default) uses the `desktop` backend when `notify-send`
+is on `PATH` **and** a session bus is reachable (the standard
+`DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus` socket), otherwise it
+falls back to `stdout` with an explanatory note. The bus — not the
+`DISPLAY`/`WAYLAND_DISPLAY` variables — is the delivery signal, so the systemd
+user timer delivers visible pop-ups inside a graphical login session even when
+the user manager inherits no display environment. `auto` never touches the
+network and keeps retrying failed deliveries on later runs. "Delivered" means
+notify-send (the desktop notification service) accepted the notification with
+exit code 0; CareerOS cannot prove that your desktop rendered a visible banner,
+so a transient or unnoticed pop-up is presentation behavior after a successful
+delivery, not a delivery failure.
+
+The independent systemd user timer runs the notifier periodically; see
+"Current status" above for installation. `careeros diagnose` verifies
+notification readiness end to end.
 
 ## Daily review queue
 

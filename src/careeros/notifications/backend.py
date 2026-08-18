@@ -2,9 +2,9 @@
 
 The desktop backend shells out to the standard ``notify-send`` command with an
 argument list (never ``shell=True``), a bounded timeout, and sanitized title and
-body. Executable-not-found, timeout, nonzero exit, and unavailable display or
-session bus are each converted into a structured :class:`DeliveryResult` so the
-caller can record a retryable failure. Nothing here ever uses the network.
+body. Executable-not-found, timeout, nonzero exit, and unavailable session bus
+are each converted into a structured :class:`DeliveryResult` so the caller can
+record a retryable failure. Nothing here ever uses the network.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Protocol
 
 from careeros.notifications.models import (
@@ -48,10 +49,14 @@ def resolve_backend(preference: str) -> tuple[str, str]:
     """Resolve a backend preference to an actual backend plus a note.
 
     ``stdout`` is always usable. ``desktop`` requires ``notify-send`` on PATH.
-    ``auto`` selects desktop only when a usable graphical session (a matching
-    display variable for the session type) and a session bus are present;
-    otherwise it falls back to ``stdout`` with an explanatory note, so a
-    headless timer run never fails on environment alone.
+    ``auto`` selects desktop when ``notify-send`` is present AND a session bus
+    appears reachable (``DBUS_SESSION_BUS_ADDRESS`` set, or the standard
+    per-user socket ``$XDG_RUNTIME_DIR/bus`` present); a missing display
+    environment is recorded as a soft note, never a veto, so a systemd user
+    timer can deliver desktop notifications inside a graphical login session
+    even when it inherited no ``DISPLAY``/``WAYLAND_DISPLAY``. ``auto``
+    otherwise falls back to ``stdout`` with an explanatory note, so a headless
+    timer run never fails on environment alone.
     """
     if preference == "stdout":
         return "stdout", ""
@@ -61,13 +66,16 @@ def resolve_backend(preference: str) -> tuple[str, str]:
                 "--backend desktop requires notify-send on PATH, but it was not found."
             )
         return "desktop", ""
-    if (
-        shutil.which("notify-send") is not None
-        and _graphical_session()
-        and _session_bus()
-    ):
+    if shutil.which("notify-send") is None:
+        return "stdout", "fallback; notify-send not found on PATH"
+    if not _session_bus():
+        return "stdout", "fallback; no usable session bus for desktop notifications"
+    if _graphical_session():
         return "desktop", ""
-    return "stdout", "fallback; no usable graphical session or notify-send"
+    return (
+        "desktop",
+        "no display environment detected; desktop notifications may not be visible",
+    )
 
 
 def _graphical_session() -> bool:
@@ -78,7 +86,19 @@ def _graphical_session() -> bool:
 
 
 def _session_bus() -> bool:
-    return bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS"))
+    """Return True when a session D-Bus appears reachable.
+
+    Desktop notification delivery happens over the session bus, so the
+    reachability signal is the bus address or the standard per-user bus socket
+    (``$XDG_RUNTIME_DIR/bus``) rather than the X/Wayland display variables: a
+    systemd user service routinely has a bus but no display environment, and
+    vice versa. Checking both covers a timer run that only inherits
+    ``XDG_RUNTIME_DIR``.
+    """
+    if os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        return True
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    return bool(runtime_dir and Path(runtime_dir, "bus").exists())
 
 
 def format_occurrence_line(occurrence: DueOccurrence) -> str:

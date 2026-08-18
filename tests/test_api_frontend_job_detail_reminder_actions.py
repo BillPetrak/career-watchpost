@@ -413,7 +413,15 @@ def test_due_hint_visible_and_offset_explicit() -> None:
         'hint.textContent = "Pick a date and time to see the timezone it uses."' in js
         or ('"Pick a due date and time to see the timezone it uses."' in js)
     )
+    # The hint names the browser/IANA zone when resolvable (never hard-coded)
+    # plus the DST-correct per-date numeric offset.
+    assert (
+        '"Due time uses your local timezone (" + zone + ", UTC" + offset'
+        ' + " for this date)."' in js
+    )
     assert '"Due time uses your browser\'s local timezone (UTC" + offset + ")."' in js
+    assert "Intl.DateTimeFormat().resolvedOptions()" in js
+    assert "browserTimezoneName" in js
     # The hint updates live as the user edits the due input.
     assert 'due.addEventListener("input", function () {' in js
     assert "updateDueHint(due, hint);" in js

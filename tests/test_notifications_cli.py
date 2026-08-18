@@ -222,6 +222,36 @@ def test_notify_due_desktop_backend_unavailable(
     assert _notification_rows(db_path) == []
 
 
+def test_notify_due_desktop_explains_delivered_meaning(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    from careeros.notifications.models import DeliveryResult
+
+    db_path, _job_id, _reminder_id = _seed_due_reminder_db(tmp_path)
+
+    def _ok(_backend: str, _occurrence) -> DeliveryResult:
+        return DeliveryResult(success=True)
+
+    monkeypatch.setattr("careeros.cli.commands.reminders.deliver", _ok)
+
+    exit_code = cli.main(
+        [
+            "reminder",
+            "notify-due",
+            "--backend",
+            "desktop",
+            "--database",
+            str(db_path),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "Delivered: 1" in captured.out
+    assert "notify-send (the desktop notification service)" in captured.out
+    assert "cannot prove that a visible banner was rendered" in captured.out
+
+
 def test_notify_due_conflicts_with_held_notification_lock(
     tmp_path: Path, capsys
 ) -> None:

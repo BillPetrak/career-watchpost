@@ -1807,6 +1807,26 @@
     );
   }
 
+  // The browser's IANA timezone name (e.g. "Europe/Athens") via the standard
+  // Intl API -- never guessed, never hard-coded, and not a named-timezone
+  // library. Returns null when the runtime cannot resolve one (then the hint
+  // falls back to the numeric-offset-only wording). The name identifies the
+  // zone, while the numeric offset below stays the DST-correct value for the
+  // specific date and time entered, so e.g. a Greek user in August sees the
+  // zone "Europe/Athens" together with UTC+03:00 (its daylight-saving offset)
+  // rather than the standard-time UTC+02:00.
+  function browserTimezoneName() {
+    try {
+      var resolved = Intl.DateTimeFormat().resolvedOptions();
+      if (resolved && typeof resolved.timeZone === "string" && resolved.timeZone.length > 0) {
+        return resolved.timeZone;
+      }
+    } catch (error) {
+      // ignore: fall back to the numeric-offset wording
+    }
+    return null;
+  }
+
   function updateDueHint(due, hint) {
     var offset = localUtcOffset(due.value);
     if (offset === null) {
@@ -1814,8 +1834,14 @@
         "Pick a due date and time to see the timezone it uses.";
       return;
     }
+    var zone = browserTimezoneName();
+    if (zone === null) {
+      hint.textContent =
+        "Due time uses your browser's local timezone (UTC" + offset + ").";
+      return;
+    }
     hint.textContent =
-      "Due time uses your browser's local timezone (UTC" + offset + ").";
+      "Due time uses your local timezone (" + zone + ", UTC" + offset + " for this date).";
   }
 
   // The always-visible compact create form at the top of the Reminders

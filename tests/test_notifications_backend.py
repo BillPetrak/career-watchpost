@@ -94,15 +94,81 @@ def test_auto_selects_desktop_when_graphical_session_usable(
     assert resolve_backend("auto") == ("desktop", "")
 
 
-def test_auto_falls_back_to_stdout_in_headless_session(
+def test_auto_selects_desktop_with_bus_but_no_display(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # A systemd user service routinely inherits a session bus but no display
+    # variables; the bus is the delivery signal, so this still selects desktop
+    # and only records a soft note.
     _patch_which(monkeypatch, "/usr/bin/notify-send")
     _patch_env(
         monkeypatch,
         XDG_SESSION_TYPE="x11",
         DISPLAY=None,
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus",
+    )
+    backend_name, note = resolve_backend("auto")
+    assert backend_name == "desktop"
+    assert "display" in note
+
+
+def test_auto_wayland_uses_session_bus_not_display_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_which(monkeypatch, "/usr/bin/notify-send")
+    _patch_env(
+        monkeypatch,
+        XDG_SESSION_TYPE="wayland",
+        WAYLAND_DISPLAY=None,
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus",
+    )
+    backend_name, note = resolve_backend("auto")
+    assert backend_name == "desktop"
+    assert "display" in note
+
+    _patch_env(
+        monkeypatch,
+        XDG_SESSION_TYPE="wayland",
+        WAYLAND_DISPLAY="wayland-0",
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus",
+    )
+    assert resolve_backend("auto") == ("desktop", "")
+
+
+def test_auto_detects_bus_via_xdg_runtime_dir_socket(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    # The standard per-user bus socket at $XDG_RUNTIME_DIR/bus is enough: a
+    # user timer may carry XDG_RUNTIME_DIR without DBUS_SESSION_BUS_ADDRESS.
+    _patch_which(monkeypatch, "/usr/bin/notify-send")
+    _patch_env(
+        monkeypatch,
+        XDG_SESSION_TYPE="x11",
+        DISPLAY=":0",
+        DBUS_SESSION_BUS_ADDRESS=None,
+        XDG_RUNTIME_DIR=None,
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    (runtime_dir / "bus").touch()
+    _patch_env(monkeypatch, XDG_RUNTIME_DIR=str(runtime_dir))
+    assert resolve_backend("auto") == ("desktop", "")
+
+
+def test_auto_falls_back_to_stdout_without_session_bus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # notify-send alone is not enough: without DBUS_SESSION_BUS_ADDRESS or the
+    # $XDG_RUNTIME_DIR/bus socket there is no way to reach a notification
+    # daemon, so auto falls back to stdout rather than failing the run.
+    _patch_which(monkeypatch, "/usr/bin/notify-send")
+    _patch_env(
+        monkeypatch,
+        XDG_SESSION_TYPE="x11",
+        DISPLAY=":0",
+        DBUS_SESSION_BUS_ADDRESS=None,
+        XDG_RUNTIME_DIR=None,
     )
     backend_name, note = resolve_backend("auto")
     assert backend_name == "stdout"
@@ -121,27 +187,7 @@ def test_auto_falls_back_when_notify_send_missing(
     )
     backend_name, note = resolve_backend("auto")
     assert backend_name == "stdout"
-    assert "fallback" in note
-
-
-def test_auto_wayland_requires_wayland_display(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_which(monkeypatch, "/usr/bin/notify-send")
-    _patch_env(
-        monkeypatch,
-        XDG_SESSION_TYPE="wayland",
-        WAYLAND_DISPLAY=None,
-        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus",
-    )
-    backend_name, _note = resolve_backend("auto")
-    assert backend_name == "stdout"
-
-    _patch_env(
-        monkeypatch,
-        XDG_SESSION_TYPE="wayland",
-        WAYLAND_DISPLAY="wayland-0",
-        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus",
-    )
-    assert resolve_backend("auto") == ("desktop", "")
+    assert "fallback; notify-send not found on PATH" in note
 
 
 def test_stdout_backend_is_deterministic(capsys: pytest.CaptureFixture[str]) -> None:

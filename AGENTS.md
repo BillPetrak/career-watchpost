@@ -63,6 +63,9 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros reminder complete REMINDER_ID [--database PATH]` | Mark an open reminder completed (write; locks the DB) |
 | `uv run careeros reminder reopen REMINDER_ID [--database PATH]` | Reopen a completed reminder (write; locks the DB) |
 | `uv run careeros reminder delete REMINDER_ID [--database PATH]` | Delete a reminder (write; locks the DB) |
+| `uv run careeros reminder notify-due [--backend auto\|desktop\|stdout] [--dry-run] [--limit N] [--database PATH]` | Deliver local desktop (or stdout) notifications for due reminders (write; takes the notification lock) |
+| `uv run careeros reminder notify-history [--reminder ID] [--failed] [--limit N] [--database PATH]` | Show notification delivery history (read-only) |
+| `uv run careeros diagnose` | Verify environment; includes notification readiness (notify-send, auto backend, notify timer state) |
 | `uv run careeros saved-search create NAME QUERY --mode {search,rank} [--profile PATH] [FILTERS...]` | Create a reusable search/rank workflow (write; locks the DB) |
 | `uv run careeros saved-search list [--database PATH]` | List saved workflows, ordered case-insensitively by name |
 | `uv run careeros saved-search show NAME [--database PATH]` | Show a saved workflow definition |
@@ -318,6 +321,63 @@ after its application note, so a job's follow-up context is visible in one
 place. Application status changes never create, complete, reschedule, or delete
 reminders automatically, and grouped `search`/`rank` results are not annotated
 with reminders.
+
+## Reminder notifications
+
+`reminder notify-due` delivers a **local** notification when a stored reminder
+comes due, so a due reminder actually surfaces without keeping the web UI open.
+Notifications are **local delivery only**: CareerOS never uses web push, email,
+a cloud provider, or any external service, and delivery is a separate fact from
+reminder completion — it never completes a reminder and never touches
+application or review state. Delivery history lives in the `reminder_notifications`
+table (schema v7), anchored to `reminders.id` with `ON DELETE RESTRICT`, so the
+audit trail is never cascade-deleted.
+
+Occurrence identity: a reminder is notified **once per occurrence**, where an
+occurrence is the pair `(reminder_id, due_at)`. A delivered occurrence is unique
+(partial unique index on `(reminder_id, due_at)` where `status = 'delivered'`),
+so repeated runs never re-notify. Rescheduling a reminder (`reminder update
+--due-at`) creates a new occurrence and notifies again; reopening a reminder
+does **not** re-notify an already-delivered occurrence; completing or deleting a
+reminder makes it ineligible (`completed_at IS NULL` and row presence gate the
+candidate query). Overdue reminders notify exactly once when first observed
+past due, including across a reboot that spanned the due time.
+
+Concurrency and crash safety (`src/careeros/notifications/service.py`): a worker
+claims up to `--limit` due occurrences inside one `BEGIN IMMEDIATE` transaction
+under the per-database **notification lock** (`careeros.locking.notification_lock`,
+a `.notify.lock` `flock` distinct from the collection lock; contention exits
+75). It then dispatches with **no lock held**, and each outcome is finalized
+under the lock with a `WHERE status = 'attempted'` guard. A worker that crashes
+between claim and finalize leaves an `attempted` row that is expired after
+`CLAIM_TIMEOUT` (5 minutes) and the occurrence becomes eligible again; a failed
+delivery is recorded `failed` and retried on the next run with no cap.
+A `delivered` outcome means notify-send (the desktop notification service)
+accepted the notification with exit code 0; CareerOS cannot prove that a
+visible banner was rendered, so a transient or unnoticed desktop pop-up is
+presentation behavior after a successful delivery, not a delivery failure.
+
+Backends (`src/careeros/notifications/backend.py`): `desktop` shells out to
+`notify-send` (argv-only, bounded timeout, sanitized text, never `shell=True`,
+never the network); `stdout` prints a deterministic line (for headless/test
+environments); `auto` (default) selects `desktop` when `notify-send` is on PATH
+**and** a session bus is reachable (`DBUS_SESSION_BUS_ADDRESS` set, or the
+standard `$XDG_RUNTIME_DIR/bus` socket present), otherwise falls back to
+`stdout` with an explanatory note. The bus — not the `DISPLAY`/`WAYLAND_DISPLAY`
+variables — is the delivery signal, so the systemd user timer delivers visible
+pop-ups inside a graphical login session even when the user manager inherits no
+display environment. `--dry-run` previews the exact candidate set without
+writing anything. `reminder notify-history` lists attempts newest first
+(`--failed` narrows to failures, `--reminder` to one reminder); `reminder show`
+prints a reminder's recent attempts, and `report` renders a Notifications
+summary (pending/delivered/failed/last times). The HTTP slice deliberately
+exposes **no** delivery state (`notification_summary` is pruned), keeping the
+delivery audit local.
+
+Readiness: `careeros diagnose` reports notify-send availability, the backend
+`auto` resolves to and why, and whether the reminder-notification systemd timer
+is installed/enabled/active, with actionable guidance when notifications are
+not operational.
 
 ## Daily review queue
 
@@ -1802,26 +1862,39 @@ no-`careeros.cli`-import guarantee, and static-asset hygiene.
 ## systemd user units
 
 The `systemd/` directory holds templates, an installer, and an uninstaller for
-a periodic user-manager collection. One timer drives the `careeros-collect`
-oneshot service, which runs `careeros collect due` so CareerOS stays
-authoritative for source eligibility. Defaults: `OnStartupSec=5min`,
-`OnUnitActiveSec=15min`, `RandomizedDelaySec=3min`,
+periodic user-manager jobs. Two independent unit sets exist:
+
+- **`collect`** — the `careeros-collect` oneshot service runs
+  `careeros collect due` so CareerOS stays authoritative for source
+  eligibility. Defaults: `OnStartupSec=5min`, `OnUnitActiveSec=15min`,
+  `RandomizedDelaySec=3min`, `SuccessExitStatus=75`.
+- **`notify`** — the `careeros-reminder-notify` oneshot service runs
+  `careeros reminder notify-due --backend auto` so due reminders surface as
+  desktop pop-ups. Defaults: `OnStartupSec=1min`, `OnUnitActiveSec=5min`,
+  `RandomizedDelaySec=1min`, `SuccessExitStatus=75`. It is **independent** of
+  the web UI/server: reminders fire whether or not a browser tab or the FastAPI
+  server is open, as long as the timer is installed and enabled. Notification
+  delivery needs a graphical login session with a reachable session bus (see
+  "Reminder notifications"); the notifier keeps retrying failed deliveries, so
+  a reminder that comes due while no desktop is available pops up once the next
+  run finds one.
+
 `SuccessExitStatus=75` (exit 75 is the expected temporary lock-contention
 result and is treated as success; genuine failures still mark the service
-failed).
-
-The installer renders the templates with the absolute `uv` binary path and
-absolute project root, writes them to `~/.config/systemd/user`, and runs
+failed). The installer renders the templates with the absolute `uv` binary path
+and absolute project root, writes them to `~/.config/systemd/user`, and runs
 `systemctl --user daemon-reload`. It never touches the database. Existing unit
 files that differ from the generated content abort the install unless
-`--force` is passed. `--enable` enables and starts the timer; without it the
-units are installed but not started. `--dry-run` previews everything without
-writing, and `--no-systemctl` writes the units while only printing the
-systemctl commands (used by tests). The uninstaller removes only files whose
-content matches the rendered templates and never touches the database.
+`--force` is passed. `--units {collect,notify,all}` selects which unit set to
+install (default `collect`), and `--enable` enables and starts the selected
+timer(s); without it the units are installed but not started. `--dry-run`
+previews everything without writing, and `--no-systemctl` writes the units
+while only printing the systemctl commands (used by tests). The uninstaller
+removes only files whose content matches the rendered templates and never
+touches the database.
 
 Lingering is intentionally never enabled automatically; run
-`loginctl enable-linger "$USER"` manually if the timer must run without a login
+`loginctl enable-linger "$USER"` manually if a timer must run without a login
 session. The units embed the absolute project path, so re-run the installer
 after moving the repository (uninstall first if the old units should go).
 
@@ -1834,6 +1907,7 @@ after moving the repository (uninstall first if the old units should go).
 - `src/careeros/collectors/` — job-board API clients
 - `src/careeros/database/` — SQLite layer (schema, connection, persistence)
 - `src/careeros/grouping/` — duplicate detection (normalization, matcher)
+- `src/careeros/notifications/` — local notification delivery (models, backend, service)
 - `src/careeros/presenters.py` — shared presentation helpers (job/group/ranked/coverage dicts, location display)
 - `src/careeros/saved_searches/` — saved workflow definitions and shared execution
 - `src/careeros/settings.py` — runtime settings (e.g. the `CAREEROS_DATABASE` env var)

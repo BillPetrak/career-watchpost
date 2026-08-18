@@ -425,6 +425,13 @@ def run_reminder_notify_due(
         print("Failed details:")
         for item, failure in failures:
             print(f"  - reminder {item.reminder_id} (job {item.job_id}): {failure}")
+    if backend == "desktop":
+        print()
+        print(
+            "Delivered means notify-send (the desktop notification service) "
+            "accepted the notification;"
+        )
+        print("CareerOS cannot prove that a visible banner was rendered.")
 
     return 0 if failed == 0 else 1
 
