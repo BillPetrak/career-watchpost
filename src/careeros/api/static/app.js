@@ -9,13 +9,16 @@
   // POST /report after the user submits the candidate-profile form, -- for
   // the Job Detail view (#job/<id>) -- exactly five read GET endpoints
   // (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications?job_id={id},
-  // GET /review-decisions?job_id={id}, GET /reminders?job_id={id}), and -- for the
-  // Review section actions -- the two review-decision mutations
-  // PUT /review-decisions/{id} and DELETE /review-decisions/{id}, -- for
-  // the Application section actions -- the application-status mutation
-  // PUT /applications/{id}, and -- for the Reminders section actions -- the
-  // five reminder mutations POST /reminders (create), PATCH
-  // /reminders/{id} (inline Edit -> Save/Cancel), PUT
+  // GET /review-decisions?job_id={id}, GET /reminders?job_id={id}), -- for
+  // the Reminders overview view (#reminders) -- exactly three read GET
+  // /reminders queries (overdue, due soon, and upcoming later, derived from a
+  // single captured "now" through the endpoint's state/as_of/before/after
+  // semantics), and -- for the Review section actions -- the two
+  // review-decision mutations PUT /review-decisions/{id} and
+  // DELETE /review-decisions/{id}, -- for the Application section actions --
+  // the application-status mutation PUT /applications/{id}, and -- for the
+  // Reminders section actions -- the five reminder mutations POST /reminders
+  // (create), PATCH /reminders/{id} (inline Edit -> Save/Cancel), PUT
   // /reminders/{id}/complete, PUT /reminders/{id}/reopen, and
   // DELETE /reminders/{id} (Delete, always preceded by a native
   // window.confirm dialog). API-provided
@@ -26,6 +29,7 @@
   var HOME = "home";
   var JOBS = "jobs";
   var REVIEW = "review";
+  var REMINDERS = "reminders";
   var JOB = "job";
   var initialized = false;
 
@@ -41,6 +45,14 @@
   // it before awaiting so a response for an older page can never overwrite the
   // currently visible job.
   var detailRequestSeq = 0;
+
+  // Stale-response guard for the Reminders overview view (#reminders): every
+  // full render of the view increments this token, and every async operation
+  // that touches the overview DOM (initial load, section retry) captures it
+  // before awaiting so a response for an older render can never overwrite the
+  // currently visible view. navigate() also bumps it the moment the user
+  // leaves the view for another view.
+  var remindersRequestSeq = 0;
 
   // Serializes the Review decision actions: while a mutation (PUT/DELETE) and
   // its immediate refetch are in flight, no second mutation may start for the
@@ -72,6 +84,7 @@
     var raw = window.location.hash.replace(/^#\/?/, "").trim().toLowerCase();
     if (raw === JOBS) return JOBS;
     if (raw === REVIEW) return REVIEW;
+    if (raw === REMINDERS) return REMINDERS;
     if (raw === HOME) return HOME;
     return null; // unknown / absent / non-view (e.g. #main)
   }
@@ -128,6 +141,9 @@
     if (leaving === JOB && name !== JOB) {
       detailRequestSeq++;
     }
+    if (leaving === REMINDERS && name !== REMINDERS) {
+      remindersRequestSeq++;
+    }
     showView(name);
     // Only re-render when a real view route is set; otherwise (e.g. the #main
     // skip-link anchor) keep the currently visible, already-rendered view.
@@ -135,6 +151,9 @@
       // The Review view renders its static form and never auto-submits; clear
       // any prior results so nothing stale is shown when the view is entered.
       resetReviewResults();
+    } else if (view === REMINDERS) {
+      if (leaving === REVIEW) resetReviewResults();
+      await renderRemindersView();
     } else if (view === JOBS) {
       if (leaving === REVIEW) resetReviewResults();
       await renderJobs();
@@ -909,6 +928,319 @@
       );
     }
     return card;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reminders overview view (#reminders)
+  //
+  // Read-only presentation of the OPEN reminders, split into three sections by
+  // the GET /reminders endpoint's own state/as_of/before/after semantics. All
+  // open reminders are classified by comparing their due time to ONE "now"
+  // captured when the view renders:
+  //
+  //   Overdue       state=overdue&as_of=now      open, due before now
+  //   Due soon      state=open&after=now&        open, due within the next
+  //                before=now+24h                 24 hours (both ends included)
+  //   Upcoming      state=upcoming&as_of=        open, due after now+24h
+  //                now+24h
+  //
+  // The three queries are mutually exclusive and together cover every open
+  // reminder: a reminder due at exactly now lands in Due soon (after=now and
+  // before=now+24h are both inclusive), and one due at exactly now+24h also
+  // lands in Due soon (before=now+24h is inclusive). Completed reminders are
+  // deliberately not shown. No classification, sorting, or grouping is
+  // re-implemented here: the endpoint returns each section already ordered
+  // (due_at ASC, then id ASC) and the view renders that server order verbatim.
+  // Due times are displayed in the browser's local time from the
+  // offset-bearing ISO value -- never a client-created timestamp -- so the
+  // instant is exact and the timezone is the browser's, never a guess.
+  //
+  // The view is strictly read-only (three GETs via fetchJson) with no
+  // mutation controls; every job row links to its canonical Job Detail view
+  // (#job/<id>) where reminder actions live.
+  // ---------------------------------------------------------------------------
+
+  // How far ahead "due soon" reaches: 24 hours from the captured now.
+  var REMINDERS_HORIZON_MS = 24 * 60 * 60 * 1000;
+
+  // The three overview sections in display order. Each query is built from the
+  // same captured now (and the horizon derived from it).
+  var REMINDER_OVERVIEW_SECTIONS = [
+    { key: "overdue", heading: "Overdue" },
+    { key: "dueSoon", heading: "Due soon" },
+    { key: "upcoming", heading: "Upcoming" },
+  ];
+
+  // Builds the three GET /reminders query strings from one captured now.
+  function reminderOverviewUrls(nowIso, horizonIso) {
+    var overdue = new URLSearchParams();
+    overdue.set("state", "overdue");
+    overdue.set("as_of", nowIso);
+    var dueSoon = new URLSearchParams();
+    dueSoon.set("state", "open");
+    dueSoon.set("after", nowIso);
+    dueSoon.set("before", horizonIso);
+    var upcoming = new URLSearchParams();
+    upcoming.set("state", "upcoming");
+    upcoming.set("as_of", horizonIso);
+    return {
+      overdue: "/reminders?" + overdue,
+      dueSoon: "/reminders?" + dueSoon,
+      upcoming: "/reminders?" + upcoming,
+    };
+  }
+
+  // Formats a Date as a UTC ISO-8601 timestamp with an explicit Z suffix
+  // (YYYY-MM-DDTHH:MM:SSZ), which the API's timestamp parsing accepts. The
+  // representation is built from the UTC accessors directly -- never the
+  // Date's own ISO shortcut -- so the caller controls the exact output.
+  function utcTimestamp(value) {
+    var year = value.getUTCFullYear();
+    var month = String(value.getUTCMonth() + 1).padStart(2, "0");
+    var day = String(value.getUTCDate()).padStart(2, "0");
+    var hour = String(value.getUTCHours()).padStart(2, "0");
+    var minute = String(value.getUTCMinutes()).padStart(2, "0");
+    var second = String(value.getUTCSeconds()).padStart(2, "0");
+    return (
+      year + "-" + month + "-" + day + "T" + hour + ":" + minute + ":" + second + "Z"
+    );
+  }
+
+  // Renders an offset-bearing ISO timestamp (e.g. 2026-08-10T14:00:00+02:00 or
+  // 2026-08-10T12:00:00Z) as a local-time YYYY-MM-DD HH:MM string. The offset
+  // is parsed from the string so the instant is exact regardless of the
+  // browser's timezone, then the local part is formatted with the browser's
+  // local getters. Unusable values render as "—".
+  function displayLocalDateTime(value) {
+    var match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(
+      typeof value === "string" ? value : ""
+    );
+    if (!match) return "—";
+    var offsetMinutes = 0;
+    if (match[7] !== "Z") {
+      var sign = match[7].charAt(0) === "-" ? -1 : 1;
+      var offsetHours = parseInt(match[7].slice(1, 3), 10);
+      var offsetMins = parseInt(match[7].slice(4, 6), 10);
+      offsetMinutes = sign * (offsetHours * 60 + offsetMins);
+    }
+    var instant =
+      Date.UTC(
+        parseInt(match[1], 10),
+        parseInt(match[2], 10) - 1,
+        parseInt(match[3], 10),
+        parseInt(match[4], 10),
+        parseInt(match[5], 10),
+        match[6] ? parseInt(match[6], 10) : 0
+      ) -
+      offsetMinutes * 60 * 1000;
+    var local = new Date(instant);
+    var month = String(local.getMonth() + 1).padStart(2, "0");
+    var day = String(local.getDate()).padStart(2, "0");
+    var hour = String(local.getHours()).padStart(2, "0");
+    var minute = String(local.getMinutes()).padStart(2, "0");
+    return (
+      local.getFullYear() + "-" + month + "-" + day + " " + hour + ":" + minute
+    );
+  }
+
+  // Renders one open reminder row inside an overview section. Only public
+  // fields are shown (kind, local due time, job title/company); the "View
+  // details" hash link opens the canonical Job Detail view. No mutation
+  // controls exist here.
+  function buildReminderOverviewRow(reminder) {
+    var item = el("li", { className: "reminder-item reminder-overview-item" });
+    item.appendChild(
+      el("span", {
+        className: "reminder-kind",
+        textContent: reminderKindLabel(reminder.kind),
+      })
+    );
+    item.appendChild(
+      el("span", {
+        className: "reminder-due",
+        textContent: displayLocalDateTime(reminder.due_at),
+      })
+    );
+    var job = isObject(reminder.job) ? reminder.job : null;
+    item.appendChild(
+      el("span", {
+        className: "reminder-job",
+        textContent:
+          job && typeof job.title === "string" && job.title.length > 0
+            ? job.title
+            : "—",
+      })
+    );
+    if (job && typeof job.company === "string" && job.company.length > 0) {
+      item.appendChild(
+        el("span", { className: "reminder-company", textContent: job.company })
+      );
+    }
+    if (job && isFiniteNumber(job.id) && job.id >= 1) {
+      item.appendChild(
+        el("a", {
+          className: "job-link",
+          href: "#job/" + job.id,
+          textContent: "View details",
+        })
+      );
+    }
+    return item;
+  }
+
+  // Fills one overview section from its GET /reminders response. Empty
+  // sections are omitted entirely; a failed/malformed section gets a
+  // section-local error box whose Retry refetches only that section. Returns
+  // "items" when at least one row was rendered, "empty" when the section
+  // succeeded with no reminders, and "error" when it failed.
+  function fillRemindersSection(key, state, container, body, nowIso, horizonIso) {
+    body.textContent = "";
+    if (state.status === "rejected") {
+      body.appendChild(
+        sectionErrorBox("The reminders could not be loaded.", state.reason, function () {
+          retryRemindersSection(key, container, body, nowIso, horizonIso);
+        })
+      );
+      return "error";
+    }
+    var data = state.value;
+    if (!isObject(data) || !Array.isArray(data.items)) {
+      body.appendChild(
+        sectionErrorBox("The reminders could not be loaded.", null, function () {
+          retryRemindersSection(key, container, body, nowIso, horizonIso);
+        })
+      );
+      return "error";
+    }
+    if (data.items.length === 0) {
+      container.remove();
+      return "empty";
+    }
+    var list = el("ul", { className: "reminder-list" });
+    data.items.forEach(function (reminder) {
+      if (!isObject(reminder)) return;
+      list.appendChild(buildReminderOverviewRow(reminder));
+    });
+    body.appendChild(list);
+    return "items";
+  }
+
+  // Re-fetches one overview section after a Retry click. Captures the request
+  // token before awaiting so a late response for a superseded render is
+  // discarded.
+  async function retryRemindersSection(key, container, body, nowIso, horizonIso) {
+    var seq = remindersRequestSeq;
+    var urls = reminderOverviewUrls(nowIso, horizonIso);
+    var data;
+    try {
+      data = await fetchJson(urls[key]);
+    } catch (error) {
+      if (seq !== remindersRequestSeq) return;
+      body.textContent = "";
+      body.appendChild(
+        sectionErrorBox("The reminders could not be loaded.", error, function () {
+          retryRemindersSection(key, container, body, nowIso, horizonIso);
+        })
+      );
+      return;
+    }
+    if (seq !== remindersRequestSeq) return;
+    fillRemindersSection(
+      key,
+      { status: "fulfilled", value: data },
+      container,
+      body,
+      nowIso,
+      horizonIso
+    );
+  }
+
+  // Renders the three overview sections into the view content in the exact
+  // section order, rendering each section's server-returned order verbatim.
+  function renderRemindersContent(content, results, nowIso, horizonIso) {
+    content.textContent = "";
+    var renderedAny = false;
+    var succeededAny = false;
+    var failedAny = false;
+    REMINDER_OVERVIEW_SECTIONS.forEach(function (section) {
+      var container = el("section", {
+        className: "chunk",
+        textContent: section.heading,
+      });
+      var body = el("div", { className: "section-body" });
+      container.appendChild(body);
+      var outcome = fillRemindersSection(
+        section.key,
+        results[section.key],
+        container,
+        body,
+        nowIso,
+        horizonIso
+      );
+      if (outcome === "items") {
+        renderedAny = true;
+        succeededAny = true;
+        content.appendChild(container);
+      } else if (outcome === "empty") {
+        succeededAny = true;
+      } else {
+        failedAny = true;
+        content.appendChild(container);
+      }
+    });
+    if (!renderedAny && !failedAny && succeededAny) {
+      content.appendChild(
+        el("p", { className: "empty-note", textContent: "No reminders." })
+      );
+    }
+  }
+
+  async function renderRemindersView() {
+    var seq = ++remindersRequestSeq;
+    var status = document.getElementById("reminders-status");
+    var content = document.getElementById("reminders-content");
+    var now = new Date();
+    var nowIso = utcTimestamp(now);
+    var horizonIso = utcTimestamp(new Date(now.getTime() + REMINDERS_HORIZON_MS));
+    var urls = reminderOverviewUrls(nowIso, horizonIso);
+    setLoading(status, "Loading reminders…");
+    clearText(content);
+    var results = {};
+    try {
+      var settled = await Promise.allSettled(
+        ["overdue", "dueSoon", "upcoming"].map(function (key) {
+          return fetchJson(urls[key]);
+        })
+      );
+      settled.forEach(function (item, index) {
+        results[["overdue", "dueSoon", "upcoming"][index]] = item;
+      });
+    } catch (error) {
+      if (seq !== remindersRequestSeq) return;
+      clearText(content);
+      renderError(status, error.message, renderRemindersView);
+      return;
+    }
+    if (seq !== remindersRequestSeq) return;
+    var allFailed = ["overdue", "dueSoon", "upcoming"].every(function (key) {
+      var state = results[key];
+      return (
+        state.status === "rejected" ||
+        !isObject(state.value) ||
+        !Array.isArray(state.value.items)
+      );
+    });
+    if (allFailed) {
+      clearText(content);
+      renderError(
+        status,
+        results.overdue.status === "rejected" ? results.overdue.reason.message : null,
+        renderRemindersView
+      );
+      return;
+    }
+    renderRemindersContent(content, results, nowIso, horizonIso);
+    doneLoading(status);
   }
 
   // ---------------------------------------------------------------------------

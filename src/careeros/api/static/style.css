@@ -473,6 +473,19 @@ main {
   margin-bottom: 0;
 }
 
+/* Reminders overview view (#reminders). */
+.reminder-overview-item {
+  align-items: center;
+}
+
+.reminder-company {
+  color: var(--color-muted);
+}
+
+.reminder-overview-item .job-link {
+  margin: 0 0 0 auto;
+}
+
 .current-job {
   color: var(--color-accent);
   font-weight: 600;
