@@ -42,6 +42,7 @@ def _make_job(
     remote_status: str = "remote",
     description: str = "Build things with Python.",
     url: str | None = None,
+    published_at: str = "2026-07-29T10:00:00Z",
 ) -> CollectedJob:
     return CollectedJob(
         source=source,
@@ -53,7 +54,7 @@ def _make_job(
         url=url or f"https://example.com/{source}/{source_job_id}",
         employment_type="Full-time",
         remote_status=remote_status,
-        published_at="2026-07-29T10:00:00Z",
+        published_at=published_at,
         collected_at="2026-08-01T08:00:00+00:00",
     )
 
@@ -154,6 +155,51 @@ def _build(tmp_path: Path, **kwargs: object) -> Report:
 
 def _seed_profile(tmp_path: Path) -> Path:
     return _write_profile(tmp_path)
+
+
+def _seed_recency_jobs(connection: sqlite3.Connection) -> None:
+    """Seed one old high-scoring job plus three newer lower-scoring jobs.
+
+    The profile prefers "Python Engineer"/"Python"/"Berlin"/remote, so
+    "old-high" scores ~53 while each "Rust Engineer" scores ~25. All three
+    newer jobs publish after "old-high", so a load-time ``limit`` that picks
+    the newest-N first would silently drop the highest-scoring job.
+    """
+    save_jobs(
+        connection,
+        [
+            _make_job(
+                source="arbeitnow",
+                source_job_id="old-high",
+                title="Python Engineer",
+                published_at="2026-07-01T10:00:00Z",
+            ),
+            _make_job(
+                source="remoteok",
+                source_job_id="new-1",
+                title="Rust Engineer",
+                company="Alpha GmbH",
+                description="Systems programming in Rust.",
+                published_at="2026-07-29T10:00:00Z",
+            ),
+            _make_job(
+                source="jobicy",
+                source_job_id="new-2",
+                title="Rust Engineer",
+                company="Beta GmbH",
+                description="Systems programming in Rust.",
+                published_at="2026-07-28T10:00:00Z",
+            ),
+            _make_job(
+                source="weworkremotely",
+                source_job_id="new-3",
+                title="Rust Engineer",
+                company="Gamma GmbH",
+                description="Systems programming in Rust.",
+                published_at="2026-07-27T10:00:00Z",
+            ),
+        ],
+    )
 
 
 def test_empty_database_report(tmp_path: Path) -> None:
@@ -637,6 +683,97 @@ def test_grouped_recommendations_do_not_double_count(
     assert len(grouped.recommendations.ranked_groups) < len(
         flat.recommendations.ranked_jobs
     )
+
+
+def test_recommendations_include_older_highest_scoring_job(tmp_path: Path) -> None:
+    profile = _seed_profile(tmp_path)
+    with _open(tmp_path) as connection:
+        _seed_recency_jobs(connection)
+
+    report = _build(tmp_path, profile=load_profile(profile), grouped=False, limit=2)
+    ranked = report.recommendations.ranked_jobs
+    # "old-high" is older than the three newest jobs but scores highest; it must
+    # be ranked first even though it is outside the newest two.
+    assert [job.job.source_job_id for job in ranked] == ["old-high", "new-1"]
+    assert ranked[0].job.title == "Python Engineer"
+
+
+def test_recommendations_limit_applied_after_scoring(tmp_path: Path) -> None:
+    profile = _seed_profile(tmp_path)
+    with _open(tmp_path) as connection:
+        _seed_recency_jobs(connection)
+
+    report = _build(tmp_path, profile=load_profile(profile), grouped=False, limit=2)
+    # The limit trims the scored, sorted results: two items out of a pool of
+    # four, ordered by match score (highest first), not by recency.
+    assert len(report.recommendations.ranked_jobs) == 2
+    assert [job.job.source_job_id for job in report.recommendations.ranked_jobs] == [
+        "old-high",
+        "new-1",
+    ]
+
+
+def test_recommendations_candidate_count_reflects_full_pool(tmp_path: Path) -> None:
+    profile = _seed_profile(tmp_path)
+    with _open(tmp_path) as connection:
+        _seed_recency_jobs(connection)
+
+    report = _build(tmp_path, profile=load_profile(profile), grouped=False, limit=2)
+    # candidate_count is the full eligible untracked pool, not the pre-limited
+    # newest-N count.
+    assert report.recommendations.candidate_count == 4
+
+
+def test_recommendations_older_high_scorer_in_grouped_mode(tmp_path: Path) -> None:
+    profile = _seed_profile(tmp_path)
+    with _open(tmp_path) as connection:
+        _seed_recency_jobs(connection)
+        ensure_grouped(connection)
+
+    report = _build(tmp_path, profile=load_profile(profile), grouped=True, limit=2)
+    ranked = report.recommendations.ranked_groups
+    assert len(ranked) == 2
+    assert ranked[0].group.representative.source_job_id == "old-high"
+    assert ranked[0].group.representative.title == "Python Engineer"
+    assert report.recommendations.candidate_count == 4
+
+
+def test_saved_search_result_limit_still_caps_before_scoring(
+    tmp_path: Path,
+) -> None:
+    profile = _seed_profile(tmp_path)
+    with _open(tmp_path) as connection:
+        _seed_recency_jobs(connection)
+        saved = _create_rank_search(
+            tmp_path,
+            connection,
+            name="engineer",
+            query="Engineer",
+            profile_path=profile,
+            result_limit=1,
+        )
+
+    report = _build(tmp_path, saved_search=saved, profile=load_profile(profile))
+    ranked = report.recommendations.ranked_jobs
+    # The saved-search branch is unchanged: result_limit caps the candidate
+    # pool before scoring, so the newest matching job wins, never the older
+    # highest-scoring one.
+    assert len(ranked) == 1
+    assert ranked[0].job.source_job_id == "new-1"
+    assert report.recommendations.candidate_count == 1
+
+
+def test_review_queue_and_recommendations_share_top_job(tmp_path: Path) -> None:
+    profile = _seed_profile(tmp_path)
+    with _open(tmp_path) as connection:
+        _seed_recency_jobs(connection)
+
+    report = _build(tmp_path, profile=load_profile(profile), grouped=False, limit=2)
+    queue_ids = [item.group.representative.id for item in report.review.items]
+    rec_ids = [job.job.id for job in report.recommendations.ranked_jobs]
+    assert queue_ids and rec_ids
+    # The top eligible untracked/unreviewed job appears in both sections.
+    assert queue_ids[0] == rec_ids[0]
 
 
 def test_report_is_deterministic_with_fixed_now(tmp_path: Path) -> None:

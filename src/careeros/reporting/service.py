@@ -143,9 +143,12 @@ def _build_recommendations(
 
     A saved rank search governs its own query, filters, min score, and result
     limit (the report's ``limit`` only ever trims afterwards). Without a saved
-    search, ``--profile`` ranks every untracked job. Without either, the
-    section is honestly skipped with a note. ``feedback`` is shared with the
-    review queue so the database is queried once per report.
+    search, ``--profile`` ranks the full eligible untracked pool and the
+    report's ``limit`` trims the sorted results after scoring (matching the
+    review queue), so an older high-scoring job is never dropped before
+    scoring. Without either, the section is honestly skipped with a note.
+    ``feedback`` is shared with the review queue so the database is queried
+    once per report.
     """
     if saved_search is not None:
         assert profile is not None
@@ -182,7 +185,7 @@ def _build_recommendations(
             profile=profile,
             grouped=grouped,
             untracked=True,
-            limit=limit,
+            limit=None,
             feedback=feedback,
         )
         if outcome.grouped:
@@ -191,7 +194,7 @@ def _build_recommendations(
                 source="profile",
                 source_name=None,
                 ranked_jobs=(),
-                ranked_groups=tuple(outcome.grouped_ranked),
+                ranked_groups=tuple(outcome.grouped_ranked[:limit]),
                 candidate_count=outcome.grouped_candidate_count,
                 min_score=0,
                 note=None,
@@ -200,7 +203,7 @@ def _build_recommendations(
             grouped=False,
             source="profile",
             source_name=None,
-            ranked_jobs=tuple(outcome.flat_ranked),
+            ranked_jobs=tuple(outcome.flat_ranked[:limit]),
             ranked_groups=(),
             candidate_count=outcome.flat_candidate_count,
             min_score=0,
