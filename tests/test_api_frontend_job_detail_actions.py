@@ -439,9 +439,9 @@ def test_repeated_review_mutation_failures_replace_not_append() -> None:
     assert "body.appendChild(sectionErrorBox(message, error, retryAction));" in helper
     # Exactly one definition plus one call in each mutation catch path (review
     # apply, review clear, application apply, reminder complete, reminder
-    # reopen, reminder delete); the reminder create failure uses its own
-    # non-replay panel.
-    assert js.count("replaceSectionError(") == 7
+    # reopen, reminder delete, and the Review Queue card decision); the
+    # reminder create failure uses its own non-replay panel.
+    assert js.count("replaceSectionError(") == 8
     for name in ("applyReviewDecision", "clearReviewDecision"):
         start = js.index(f"async function {name}")
         end = js.index("async function", start + len(name) + 30)
@@ -487,7 +487,8 @@ def test_home_jobs_review_regressions_intact() -> None:
     js = _js()
     assert 'var data = await fetchJson("/report");' in js
     assert 'await loadJobs(qs ? "/jobs?" + qs : "/jobs");' in js
-    assert js.count("await postReportJson(") == 1
+    # Review uses one initial report and one queue-only post-decision refresh.
+    assert js.count("await postReportJson(") == 2
     assert 'addEventListener("submit", reviewFormSubmitted);' in js
 
 

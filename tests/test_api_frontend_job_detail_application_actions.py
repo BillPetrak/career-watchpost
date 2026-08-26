@@ -539,7 +539,7 @@ def test_home_jobs_review_regressions_intact() -> None:
     js = _js()
     assert 'var data = await fetchJson("/report");' in js
     assert 'await loadJobs(qs ? "/jobs?" + qs : "/jobs");' in js
-    assert js.count("await postReportJson(") == 1
+    assert js.count("await postReportJson(") == 2
     assert 'addEventListener("submit", reviewFormSubmitted);' in js
 
 

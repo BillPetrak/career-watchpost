@@ -144,7 +144,8 @@ def test_review_never_auto_submits_on_navigation_or_load() -> None:
     # The only POST invocation is inside the submit pipeline: exactly one call
     # of the POST helper exists in the whole file, so navigating to #review
     # (which only resets prior results) can never issue the request.
-    assert js.count("await postReportJson(") == 1
+    # Initial report plus the queue-only post-decision refresh.
+    assert js.count("await postReportJson(") == 2
     # Entering the view shortly after navigation runs presentation reset only.
     assert js.count("resetReviewResults();") >= 1
     # Submission begins exclusively through the form's submit listeners wired

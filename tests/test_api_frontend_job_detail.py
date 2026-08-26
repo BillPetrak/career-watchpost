@@ -978,9 +978,9 @@ def test_wheel_packaging_declares_all_static_assets() -> None:
 
 def test_prior_views_still_driven_by_their_single_endpoint() -> None:
     js = _js()
-    # Home is still GET /report; Jobs is still GET /jobs; the only POST is the
-    # Review view's computation-only /report.
+    # Home is still GET /report; Jobs is still GET /jobs; Review uses POST
+    # /report initially and POST /review-queue after a successful decision.
     assert 'var data = await fetchJson("/report");' in js
     assert 'await loadJobs(qs ? "/jobs?" + qs : "/jobs");' in js
-    assert js.count("await postReportJson(") == 1
+    assert js.count("await postReportJson(") == 2
     assert 'addEventListener("submit", reviewFormSubmitted)' in js

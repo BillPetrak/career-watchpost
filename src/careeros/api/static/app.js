@@ -5,8 +5,13 @@
   //
   // This file contains ONLY presentation and local navigation/loading state.
   // It calls the documented Home endpoint (GET /report), the Jobs listing
-  // (GET /jobs), -- for the Review view -- the computation-only
-  // POST /report after the user submits the candidate-profile form, -- for
+  // (GET /jobs), -- for the Review view -- the computation-only POST /report
+  // after the user submits the candidate-profile form plus POST /review-queue
+  // for authoritative post-decision queue refreshes plus the
+  // per-card review-decision mutation PUT /review-decisions/{representative id}
+  // on each Review Queue card (the same canonical endpoint the Job Detail
+  // Review section uses; there is no client-side ranking or re-ranking and no
+  // optimistic removal), -- for
   // the Job Detail view (#job/<id>) -- exactly five read GET endpoints
   // (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications?job_id={id},
   // GET /review-decisions?job_id={id}, GET /reminders?job_id={id}), -- for
@@ -53,6 +58,32 @@
   // currently visible view. navigate() also bumps it the moment the user
   // leaves the view for another view.
   var remindersRequestSeq = 0;
+
+  // Stale-response guard for the Review view (#review): every authoritative
+  // POST /report run increments this token, navigate() bumps it when the user
+  // leaves the view, and every async continuation (render, error path, or a
+  // queue-card mutation's refresh) captures it before awaiting so an older
+  // response can never overwrite newer results -- in particular an older
+  // refresh can never restore a queue card that a later successful decision
+  // removed.
+  var reviewRequestSeq = 0;
+
+  var reviewViewGeneration = 0;
+  var reviewDataGeneration = 0;
+  var reviewQueueRefreshActive = false;
+  var reviewQueueRefreshOwner = null;
+  var reviewQueueRefreshDirty = false;
+  var reviewOperationSeq = 0;
+
+  // Per-card in-flight guard values are operation identities, not booleans, so
+  // old finally blocks cannot clean up a newer operation after re-entry.
+  var reviewCardInFlight = {};
+
+  // The exact fields of the most recent POST /report run. A successful
+  // queue-card decision reuses these fields for POST /review-queue so the
+  // authoritative server response alone removes the decided opportunity --
+  // there is no client-side ranking, re-ranking, or optimistic removal.
+  var lastReviewFields = null;
 
   // Serializes the Review decision actions: while a mutation (PUT/DELETE) and
   // its immediate refetch are in flight, no second mutation may start for the
@@ -143,6 +174,19 @@
     }
     if (leaving === REMINDERS && name !== REMINDERS) {
       remindersRequestSeq++;
+    }
+    if (leaving === REVIEW && name !== REVIEW) {
+      // Invalidate any in-flight Review continuation (the form's POST /report
+      // refresh or a queue-card mutation) the moment the user leaves the
+      // view, so a late response can never update a hidden view or restore a
+      // card after re-entry.
+      reviewRequestSeq++;
+      reviewViewGeneration++;
+      reviewQueueRefreshDirty = false;
+    }
+    if (name === REVIEW && leaving !== REVIEW) {
+      reviewViewGeneration++;
+      reviewQueueRefreshDirty = false;
     }
     showView(name);
     // Only re-render when a real view route is set; otherwise (e.g. the #main
@@ -703,10 +747,16 @@
     if (content) clearText(content);
     if (status) clearText(status);
     if (validation) clearText(validation);
+    // The previous result cards are gone; drop their per-card in-flight
+    // markers so the map can never describe a card that is no longer
+    // rendered. Any still-running mutation for a removed card is separately
+    // invalidated by the reviewRequestSeq token it captured.
+    reviewCardInFlight = {};
     var section = document.getElementById("view-review");
     if (section) section.removeAttribute("aria-busy");
     var submit = document.getElementById("review-submit");
     if (submit) submit.disabled = false;
+    reviewQueueRefreshDirty = false;
   }
 
   function parseListValue(raw) {
@@ -797,7 +847,15 @@
     return { profile: profile };
   }
 
+  // The Review view's single authoritative request. Every run captures a
+  // fresh reviewRequestSeq token so only the newest run may render results:
+  // a superseded response (newer form submission, a queue-card refresh, or
+  // navigation away) is discarded whole -- it can never restore a queue card
+  // that a later successful decision removed.
   async function runReviewRequest(fields) {
+    var seq = ++reviewRequestSeq;
+    reviewDataGeneration++;
+    lastReviewFields = fields;
     var status = document.getElementById("review-status");
     var content = document.getElementById("review-content");
     var submit = document.getElementById("review-submit");
@@ -807,6 +865,7 @@
     if (submit) submit.disabled = true;
     try {
       var data = await postReportJson(url, buildProfilePayload(fields));
+      if (seq !== reviewRequestSeq || visibleView() !== REVIEW) return;
       if (
         !isObject(data) ||
         !isObject(data.review_queue) ||
@@ -817,24 +876,35 @@
       renderReviewContent(content, data);
       doneLoading(status);
     } catch (error) {
+      if (seq !== reviewRequestSeq || visibleView() !== REVIEW) return;
       clearText(content);
       renderError(status, error.message, function () {
         runReviewRequest(fields);
       });
     } finally {
-      if (submit) submit.disabled = false;
+      // Only the current run may touch the submit button; a newer run owns
+      // its disabled state until it settles.
+      if (submit && seq === reviewRequestSeq) submit.disabled = false;
     }
   }
 
   function renderReviewContent(content, data) {
     content.textContent = "";
-    content.appendChild(buildReviewSummary(data.review_queue, data.recommendations));
-    content.appendChild(buildReviewQueueSection(data.review_queue));
+    var summary = buildReviewSummary(data.review_queue, data.recommendations);
+    var queue = buildReviewQueueSection(data.review_queue);
+    summary.setAttribute("data-review-summary", "true");
+    queue.setAttribute("data-review-queue", "true");
+    content.appendChild(summary);
+    content.appendChild(queue);
     content.appendChild(buildRecommendationsSection(data.recommendations));
   }
 
   function buildReviewSummary(review, recommendations) {
     var section = el("section", { className: "chunk" });
+    section.setAttribute(
+      "data-recommendation-count",
+      String(countValue(recommendations.candidate_count))
+    );
     section.appendChild(el("h2", { textContent: "Summary" }));
     var message =
       countValue(review.candidate_count) + " opportunities to review. " +
@@ -842,6 +912,40 @@
       (review.grouped === true ? "Grouped." : "Individual jobs.");
     section.appendChild(el("p", { className: "result-summary", textContent: message }));
     return section;
+  }
+
+  function normalizeReviewQueueResponse(data, fields) {
+    if (!isObject(data) || !Array.isArray(data.items) || !isFiniteNumber(data.total)) {
+      throw new Error("The /review-queue response did not match the expected shape.");
+    }
+    return {
+      items: data.items,
+      candidate_count: data.total,
+      grouped: fields.grouped,
+      note: data.items.length === 0 ? "No opportunities to review." : "",
+    };
+  }
+
+  function renderAuthoritativeQueue(data, fields) {
+    var content = document.getElementById("review-content");
+    if (!content) return;
+    var queue = content.querySelector("[data-review-queue]");
+    var summary = content.querySelector("[data-review-summary]");
+    if (!queue || !summary) return;
+    var review = normalizeReviewQueueResponse(data, fields);
+    var replacement = buildReviewQueueSection(review);
+    replacement.setAttribute("data-review-queue", "true");
+    queue.replaceWith(replacement);
+    var recommendationCount = summary.getAttribute("data-recommendation-count") || "0";
+    var summaryText = summary.querySelector(".result-summary");
+    if (summaryText) {
+      summaryText.textContent =
+        countValue(review.candidate_count) +
+        " opportunities to review. " +
+        recommendationCount +
+        " recommendations. " +
+        (review.grouped ? "Grouped." : "Individual jobs.");
+    }
   }
 
   function buildReviewQueueSection(review) {
@@ -866,7 +970,14 @@
       var group = isObject(item.group) ? item.group : null;
       if (!group) return;
       var card = buildJobCard(group.representative, item.match_score, null, group);
-      if (card) list.appendChild(card);
+      if (card) {
+        // Queue-only controls: the representative job id is exactly what the
+        // card's "View details" link targets, so deciding the card reviews
+        // that same canonical opportunity (the whole duplicate group in
+        // grouped mode). Recommendations never receive these controls.
+        attachQueueDecisionActions(card, group.representative);
+        list.appendChild(card);
+      }
     });
     section.appendChild(list);
     return section;
@@ -928,6 +1039,179 @@
       );
     }
     return card;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Review Queue card actions (#review results)
+  //
+  // Each Review Queue card carries the three canonical decision controls
+  // wired to the SAME endpoint and semantics as the Job Detail Review
+  // section: PUT /review-decisions/{id} with the exact vocabulary values
+  // (shortlist, dismiss, review_later). Grouped cards send the representative
+  // job id, which the shared review service resolves to the whole canonical
+  // opportunity.
+  //
+  // Protection is PER CARD: while one card's PUT is in flight only that
+  // card's buttons are disabled and its job id is marked busy; every other
+  // queue card stays fully usable. There is no optimistic removal and no
+  // client-side ranking: a successful PUT is followed by re-running the exact
+  // captured profile fields (lastReviewFields), so the authoritative
+  // /review-queue response alone removes the decided opportunity and updates
+  // the summary counts. A failed PUT never triggers that refresh: the card stays
+  // visible, its buttons are re-enabled, and one recoverable inline error
+  // offers a Retry that reissues the exact failed request.
+  // ---------------------------------------------------------------------------
+
+  function setQueueDecisionDisabled(card, disabled) {
+    card.querySelectorAll(".decision-button").forEach(function (button) {
+      button.disabled = disabled;
+    });
+    if (disabled) {
+      card.setAttribute("aria-busy", "true");
+    } else {
+      card.removeAttribute("aria-busy");
+    }
+  }
+
+  function attachQueueDecisionActions(card, job) {
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return;
+    var actions = el("div", { className: "decision-actions" });
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", "Review queue decision");
+    REVIEW_DECISIONS.forEach(function (entry) {
+      var button = el("button", {
+        className: "decision-button",
+        type: "button",
+        textContent: entry.label,
+      });
+      button.addEventListener("click", function () {
+        submitQueueDecision(card, job.id, entry.value);
+      });
+      actions.appendChild(button);
+    });
+    card.appendChild(actions);
+  }
+
+  function queueRefreshError(error, generation, fields) {
+    if (generation !== reviewViewGeneration || visibleView() !== REVIEW) return;
+    renderError(
+      document.getElementById("review-status"),
+      "Decision saved, but the Review Queue could not be refreshed. " + error.message,
+      function () {
+        requestReviewQueueRefresh(generation, fields);
+      }
+    );
+  }
+
+  async function runReviewQueueRefresh(generation, dataGeneration, fields) {
+    if (
+      generation !== reviewViewGeneration ||
+      dataGeneration !== reviewDataGeneration ||
+      visibleView() !== REVIEW
+    ) return false;
+    var url =
+      "/review-queue?grouped=" +
+      (fields.grouped ? "true" : "false") +
+      "&limit=" +
+      fields.limit;
+    try {
+      var data = await postReportJson(url, buildProfilePayload(fields));
+      if (
+        generation !== reviewViewGeneration ||
+        dataGeneration !== reviewDataGeneration ||
+        visibleView() !== REVIEW
+      ) return false;
+      renderAuthoritativeQueue(data, fields);
+      doneLoading(document.getElementById("review-status"));
+      return true;
+    } catch (error) {
+      queueRefreshError(error, generation, fields);
+      return false;
+    }
+  }
+
+  function requestReviewQueueRefresh(generation, fields) {
+    if (!fields || generation !== reviewViewGeneration || visibleView() !== REVIEW) return;
+    reviewQueueRefreshDirty = true;
+    var dataGeneration = reviewDataGeneration;
+    if (
+      reviewQueueRefreshActive &&
+      reviewQueueRefreshOwner &&
+      reviewQueueRefreshOwner.generation === generation &&
+      reviewQueueRefreshOwner.dataGeneration === dataGeneration
+    ) return;
+    var owner = {
+      generation: generation,
+      dataGeneration: dataGeneration,
+    };
+    reviewQueueRefreshActive = true;
+    reviewQueueRefreshOwner = owner;
+    (async function () {
+      try {
+        while (
+          reviewQueueRefreshDirty &&
+          reviewQueueRefreshOwner === owner &&
+          owner.generation === reviewViewGeneration &&
+          owner.dataGeneration === reviewDataGeneration &&
+          visibleView() === REVIEW
+        ) {
+          reviewQueueRefreshDirty = false;
+          await runReviewQueueRefresh(owner.generation, owner.dataGeneration, fields);
+        }
+      } finally {
+        if (reviewQueueRefreshOwner === owner) {
+          reviewQueueRefreshOwner = null;
+          reviewQueueRefreshActive = false;
+        }
+      }
+    })();
+  }
+
+  function findQueueCard(jobId) {
+    var content = document.getElementById("review-content");
+    if (!content) return null;
+    var links = content.querySelectorAll('a[href="#job/' + jobId + '"]');
+    for (var index = 0; index < links.length; index++) {
+      var card = links[index].closest(".job-card");
+      if (card && card.querySelector(".decision-button")) return card;
+    }
+    return null;
+  }
+
+  async function submitQueueDecision(card, jobId, decision) {
+    // Per-card duplicate protection: a second activation for this card while
+    // its PUT is in flight is ignored outright. Other queue cards are not
+    // consulted, so they remain usable by design.
+    if (reviewCardInFlight[jobId]) return;
+    if (visibleView() !== REVIEW || !lastReviewFields) return;
+    var generation = reviewViewGeneration;
+    var fields = lastReviewFields;
+    var operation = { id: ++reviewOperationSeq, generation: generation };
+    reviewCardInFlight[jobId] = operation;
+    if (card && card.isConnected) setQueueDecisionDisabled(card, true);
+    try {
+      await putJson("/review-decisions/" + jobId, { decision: decision });
+      // The mutation has settled. Keep this now-stale card's decision controls
+      // unavailable until the authoritative queue replaces it, but do not
+      // continue announcing the card as busy while a separately retryable
+      // queue refresh is pending.
+      if (card && card.isConnected) card.removeAttribute("aria-busy");
+      requestReviewQueueRefresh(generation, fields);
+    } catch (error) {
+      if (generation !== reviewViewGeneration || visibleView() !== REVIEW) return;
+      if (card && card.isConnected) {
+        setQueueDecisionDisabled(card, false);
+        replaceSectionError(card, "The review decision could not be saved.", error, function () {
+          submitQueueDecision(card, jobId, decision);
+        });
+      } else {
+        renderError(document.getElementById("review-status"), "The review decision could not be saved. " + error.message, function () {
+          submitQueueDecision(findQueueCard(jobId), jobId, decision);
+        });
+      }
+    } finally {
+      if (reviewCardInFlight[jobId] === operation) delete reviewCardInFlight[jobId];
+    }
   }
 
   // ---------------------------------------------------------------------------

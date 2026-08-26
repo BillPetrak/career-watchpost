@@ -1751,7 +1751,7 @@ navigation (`#home`/`#jobs`/`#review` hash routing; unknown hashes default to
 values. It must never re-implement ranking, grouping, tracking, review-state,
 reporting, or database logic, and never read SQLite, config files, candidate
 profiles, `profile_path`, filesystem paths, private notes/messages, or logs.
-Mutations are strictly confined to the Job Detail view (see below): the
+Mutations live in exactly two places: the Job Detail view (see below) — the
 Review-decision actions call `PUT /review-decisions/{job_id}` /
 `DELETE /review-decisions/{job_id}`, the Application-status actions call
 `PUT /applications/{job_id}`, and the Reminders actions call
@@ -1760,7 +1760,10 @@ Review-decision actions call `PUT /review-decisions/{job_id}` /
 `DELETE /reminders/{reminder_id}` (the Delete control always shows a native
 `window.confirm` dialog before removing a reminder; cancelling is a true
 no-op, a DELETE 404 is reconciled as success via a reminder-only refresh, and
-a Retry re-issues the exact DELETE without re-confirming); every other endpoint
+a Retry re-issues the exact DELETE without re-confirming) — and the Review
+view's Review Queue cards (see below), which call
+`PUT /review-decisions/{representative job id}` followed, after success, by
+the existing authoritative `POST /review-queue` refresh; every other endpoint
 call is read-only
 (`GET /report`, `GET /jobs`, `GET /jobs/{id}` and its section companions) or
 the Review view's computation-only `POST /report`.
@@ -1775,6 +1778,41 @@ empty 200 collection is the canonical absent state, so normal browsing issues
 NO expected `404`s — the only `404` a Job Detail page can produce is the core
 job "not found" state. A basic CSP (`default-src 'self'`) is set in
 `index.html` with no inline script/style.
+
+The **Review Queue card actions** let the Review view's queue cards decide the
+opportunity inline. Each card in the review-queue section (never the
+recommendations section) renders the three canonical decision controls —
+`Shortlist`, `Dismiss`, `Review later` — wired to the SAME canonical endpoint
+and semantics as the Job Detail Review section:
+`PUT /review-decisions/{id}` with the exact vocabulary values, sent unchanged.
+Grouped mode sends the representative job id (the same id the card's
+"View details" link targets), which the shared review service resolves to the
+whole canonical opportunity; flat mode sends that job's own id. The flow is
+strictly server-authoritative: there is NO optimistic removal and NO
+client-side ranking or re-ranking — after a successful PUT the frontend
+refreshes only the existing `POST /review-queue` endpoint with the captured
+profile, grouping mode, and display limit. The refreshed authoritative queue
+response alone removes the decided opportunity and updates its count;
+Recommendations remain the last authoritative report section and are not
+recomputed. Protection is per card: while one card's PUT is in
+flight only that card's buttons are disabled (plus `aria-busy` on the card) and
+its job id is marked in a `reviewCardInFlight` map whose duplicate activations
+are rejected outright; every other queue card stays usable, and no view-wide
+queue mutation lock exists. A single queue-refresh coordinator coalesces
+overlapping successful decisions and reruns once if another decision lands
+while a refresh is active. A captured Review view generation and per-operation
+identity tokens invalidate stale work on navigation/re-entry and make marker
+cleanup conditional, so an old operation cannot overwrite a new view or clear
+its same-job marker. A failed PUT never triggers that refresh: the card stays
+visible with its buttons re-enabled and ONE recoverable inline error (the
+shared `replaceSectionError` boundary) whose Retry reissues the exact failed
+request. If a concurrent refresh already replaced the originating card, that
+failure is reported at the durable Review status boundary so it remains
+visible; hidden or older Review generations remain untouched. After a
+successful PUT, the stale card stays disabled until authoritative replacement
+but drops `aria-busy` because the mutation itself has settled. Queue-refresh
+failure has its own refresh-only Retry and never repeats a successful PUT. Entering/leaving
+`#review` clears the results area together with the per-card markers.
 
 The **Job Detail view** (`#job/<positive-integer-id>`) is the third milestone:
 a same-origin detail page opened via the "View details" action on every job
@@ -1843,7 +1881,8 @@ workflow state are never exposed.
 `tests/test_api_frontend_job_detail_reminder_actions.py` /
 `tests/test_api_frontend_job_detail_reminder_delete.py` cover the
 Review-decision, Application-status, and Reminder create/complete/reopen/
-delete mutations; the shared
+delete mutations; `tests/test_api_frontend_review_queue_actions.py` covers
+the Review Queue card decisions; the shared
 forbidden-endpoint invariants in `tests/test_api_frontend.py` and
 `tests/test_api_frontend_review.py` allow the five canonical read GET route
 families plus the mutation routes (`PUT`/`DELETE /review-decisions/{job_id}`,

@@ -764,7 +764,7 @@ def test_patch_json_defined_once_called_once_against_reminders() -> None:
     # The only PATCH is the reminder edit; no other route is patched.
     assert '"/saved-searches' not in js
     assert '"/ranked-jobs' not in js
-    assert '"/review-queue' not in js
+    assert '"/review-queue?grouped="' in js
 
 
 def test_no_client_side_sort_and_server_order_preserved() -> None:

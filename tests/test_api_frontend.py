@@ -218,8 +218,8 @@ def test_js_uses_only_intended_endpoints() -> None:
     # (application/review via their job-scoped list endpoints, so absent state
     # is an empty 200 list, never a canonical 404) plus the Home/Jobs/Review
     # GETs, and only the review-decision PUT/DELETE mutation routes. The
-    # computation-only endpoint /report stays the sole POST, and forbidden
-    # endpoints stay absent.
+    # computation-only endpoints /report and /review-queue are the only
+    # ranking/report POSTs, and forbidden endpoints stay absent.
     for required in (
         '"/jobs/" + jobId',
         'base + "/group"',
@@ -231,7 +231,6 @@ def test_js_uses_only_intended_endpoints() -> None:
     for forbidden in (
         "/saved-searches",
         "/ranked-jobs",
-        "/review-queue",
         "/report/",
         "/workflow",
     ):

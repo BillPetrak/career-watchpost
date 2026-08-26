@@ -64,12 +64,21 @@ It calls only the documented read endpoints (`GET /report`, `GET /jobs`,
 `GET /applications?job_id={id}`, `GET /review-decisions?job_id={id}`,
 `GET /reminders?job_id={id}`) plus the
 computation-only `POST /report` (the Review view's inline candidate-profile
-form) and the Job Detail workflow mutations (review-decision
+form) and the workflow mutations: the Job Detail review-decision
 `PUT`/`DELETE /review-decisions/{id}`, application-status
 `PUT /applications/{id}`, and reminder `POST /reminders`,
 `PUT /reminders/{id}/complete` and `PUT /reminders/{id}/reopen`, plus a
 confirmed `DELETE /reminders/{id}` that always shows a native confirmation
-dialog before removing a reminder). The Job Detail application/review reads use
+dialog before removing a reminder — and, in the Review view, per-card
+review-decision buttons (`Shortlist` / `Dismiss` / `Review later`) on every
+Review Queue card, which send the same `PUT /review-decisions/{id}`
+(representative job id in grouped mode) and let the refreshed server response
+alone remove the decided opportunity. After a successful card decision, the
+frontend refreshes only the authoritative `POST /review-queue` section using
+the same profile/grouping/limit fields; it does not rerun the full `POST
+/report`, and the last authoritative Recommendations response is preserved.
+Overlapping successful decisions are coalesced into one queue refresh followed
+by one dirty rerun when needed. The Job Detail application/review reads use
 the job-scoped list endpoints so the normal absent state ("Not tracked." /
 "Not reviewed.") is an empty 200 list rather than a canonical 404; the
 singular `GET /applications/{id}` and `GET /review-decisions/{id}` endpoints
