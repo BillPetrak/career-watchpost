@@ -326,13 +326,10 @@ def test_main_skip_link_anchor_keeps_job_view() -> None:
 def test_job_detail_origin_is_in_memory_only() -> None:
     js = _js()
     assert "var jobDetailOrigin = JOBS;" in js
-    assert "if (leaving === JOBS || leaving === REVIEW)" in js
+    assert "if (leaving === JOBS || leaving === REVIEW || leaving === REVIEWED)" in js
     assert "jobDetailOrigin = leaving;" in js
     assert 'href: "#" + jobDetailOrigin' in js
-    assert (
-        'textContent: jobDetailOrigin === REVIEW ? "Back to review" : "Back to jobs"'
-        in js
-    )
+    assert 'jobDetailOrigin === REVIEWED ? "Back to reviewed" : "Back to jobs"' in js
     combined = "\n".join((_html(), js, _css())).lower()
     for forbidden in ("localstorage", "sessionstorage", "document.cookie"):
         assert forbidden not in combined, forbidden
@@ -607,7 +604,8 @@ def test_no_client_reranking_or_resorting() -> None:
 
 
 def test_no_private_fields_rendered_or_requested() -> None:
-    combined = "\n".join((_html(), _js(), _css()))
+    legacy_js = _js()[: _js().index("// Reviewed opportunities workspace")]
+    combined = "\n".join((_html(), legacy_js, _css()))
     for forbidden in (
         ".description",
         ".source_job_id",

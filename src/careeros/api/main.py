@@ -182,7 +182,7 @@ import importlib.resources
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -235,6 +235,9 @@ from careeros.api.schemas import (
     ReviewDecisionItem,
     ReviewDecisionListResponse,
     ReviewDecisionRequest,
+    ReviewedOpportunityCounts,
+    ReviewedOpportunityItem,
+    ReviewedOpportunityResponse,
     ReviewQueueItem,
     ReviewQueueRequest,
     ReviewQueueResponse,
@@ -290,6 +293,7 @@ from careeros.presenters import (
     review_decision_event_dict,
     review_decision_item_dict,
     review_queue_item_dict,
+    reviewed_opportunity_item_dict,
     saved_search_item_dict,
     source_stats_dict,
     source_status_item_dict,
@@ -331,6 +335,7 @@ from careeros.review.service import (
     get_decision,
     list_decision_events,
     list_decisions,
+    list_reviewed_opportunities,
     resolve_group_decision,
     set_decision,
 )
@@ -1533,6 +1538,61 @@ def create_app() -> FastAPI:
             total=len(matches),
             offset=offset,
             limit=limit,
+        )
+
+    @app.get(
+        "/reviewed-opportunities",
+        response_model=ReviewedOpportunityResponse,
+    )
+    def list_reviewed_opportunities_endpoint(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        decision: Literal["shortlist", "review_later", "dismiss"] = "shortlist",
+        grouped: bool = True,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+    ) -> ReviewedOpportunityResponse:
+        """List reviewed opportunities without ranking or report computation."""
+        try:
+            validate_decision(decision)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        if connection is None:
+            return ReviewedOpportunityResponse(
+                items=[],
+                counts=ReviewedOpportunityCounts(
+                    shortlist=0, review_later=0, dismiss=0
+                ),
+                grouped=grouped,
+                decision=decision,
+                total=0,
+                offset=offset,
+                limit=limit,
+            )
+        try:
+            page = list_reviewed_opportunities(
+                connection,
+                decision=decision,
+                grouped=grouped,
+                offset=offset,
+                limit=limit,
+            )
+        except ReviewValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        return ReviewedOpportunityResponse(
+            items=[
+                ReviewedOpportunityItem.model_validate(
+                    reviewed_opportunity_item_dict(item)
+                )
+                for item in page.items
+            ],
+            counts=ReviewedOpportunityCounts.model_validate(page.counts),
+            grouped=page.grouped,
+            decision=cast(
+                Literal["shortlist", "review_later", "dismiss"], page.decision
+            ),
+            total=page.total,
+            offset=page.offset,
+            limit=page.limit,
         )
 
     @app.get("/review-decisions/{job_id}", response_model=ReviewDecisionItem)

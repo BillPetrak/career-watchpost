@@ -50,8 +50,8 @@ Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
 
-A read-only web dashboard (Home, Jobs, a Review view with an inline
-candidate-profile form, and a per-job detail view) is served by the optional
+A local web dashboard (Home, Jobs, Review, Reviewed, Reminders, and a per-job
+detail view) is served by the optional
 FastAPI slice at <http://127.0.0.1:8000/ui>:
 
 ```bash
@@ -62,7 +62,7 @@ uv run uvicorn careeros.api:app           # serve; then open /ui in a browser
 It calls only the documented read endpoints (`GET /report`, `GET /jobs`,
 `GET /jobs/{id}`, `GET /jobs/{id}/group`,
 `GET /applications?job_id={id}`, `GET /review-decisions?job_id={id}`,
-`GET /reminders?job_id={id}`) plus the
+`GET /reviewed-opportunities`, `GET /reminders?job_id={id}`) plus the
 computation-only `POST /report` (the Review view's inline candidate-profile
 form) and the workflow mutations: the Job Detail review-decision
 `PUT`/`DELETE /review-decisions/{id}`, application-status
@@ -77,6 +77,13 @@ alone remove the decided opportunity. After a successful card decision, the
 frontend refreshes only the authoritative `POST /review-queue` section using
 the same profile/grouping/limit fields; it does not rerun the full `POST
 /report`, and the last authoritative Recommendations response is preserved.
+The top-level Reviewed workspace loads reviewed opportunities without ranking,
+defaults to Shortlist, and provides Review later and Dismissed tabs, grouped or
+flat display, authoritative counts, pagination, decision changes, and clearing.
+Grouped actions target the server-returned concrete `decision_job_id`, not
+necessarily the displayed representative. Reviewed mutations refresh only
+`GET /reviewed-opportunities`; Shortlist remains evaluation intent and never
+creates or changes an application status.
 Overlapping successful decisions are coalesced into one queue refresh followed
 by one dirty rerun when needed. The Job Detail application/review reads use
 the job-scoped list endpoints so the normal absent state ("Not tracked." /

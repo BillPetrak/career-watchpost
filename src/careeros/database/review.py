@@ -331,3 +331,23 @@ def decisions_for_jobs(
         ids,
     ).fetchall()
     return {int(row["job_id"]): row["decision"] for row in rows}
+
+
+def decision_records_for_jobs(
+    connection: sqlite3.Connection,
+    job_ids: Iterable[int],
+) -> dict[int, StoredDecision]:
+    """Return complete current decision records for a batch of jobs."""
+    ids = tuple(dict.fromkeys(int(job_id) for job_id in job_ids))
+    if not ids:
+        return {}
+    placeholders = ", ".join("?" * len(ids))
+    rows = connection.execute(
+        f"""
+        SELECT id, job_id, decision, created_at, updated_at
+        FROM review_decisions
+        WHERE job_id IN ({placeholders})
+        """,
+        ids,
+    ).fetchall()
+    return {int(row["job_id"]): _decision_from_row(row) for row in rows}

@@ -34,6 +34,7 @@
   var HOME = "home";
   var JOBS = "jobs";
   var REVIEW = "review";
+  var REVIEWED = "reviewed";
   var REMINDERS = "reminders";
   var JOB = "job";
   var initialized = false;
@@ -91,6 +92,19 @@
   // so this is defense-in-depth against programmatic/edge re-entry.
   var reviewOperationActive = false;
 
+  // Reviewed is a durable, server-authoritative view separate from the
+  // profile-driven Review Queue. Tokens are deliberately independent so a
+  // late queue operation cannot affect this workspace (or vice versa).
+  var reviewedViewGeneration = 0;
+  var reviewedRequestSeq = 0;
+  var reviewedDataGeneration = 0;
+  var reviewedRefreshActive = false;
+  var reviewedRefreshOwner = null;
+  var reviewedRefreshDirty = false;
+  var reviewedOperationSeq = 0;
+  var reviewedCardInFlight = {};
+  var reviewedState = { decision: "shortlist", grouped: true, offset: 0, limit: 20 };
+
   // Serializes the Application status actions: while a mutation (PUT) and its
   // immediate refetch are in flight, no second mutation may start for the same
   // Application section. Buttons are disabled for the whole operation as well,
@@ -115,6 +129,7 @@
     var raw = window.location.hash.replace(/^#\/?/, "").trim().toLowerCase();
     if (raw === JOBS) return JOBS;
     if (raw === REVIEW) return REVIEW;
+    if (raw === REVIEWED) return REVIEWED;
     if (raw === REMINDERS) return REMINDERS;
     if (raw === HOME) return HOME;
     return null; // unknown / absent / non-view (e.g. #main)
@@ -184,6 +199,15 @@
       reviewViewGeneration++;
       reviewQueueRefreshDirty = false;
     }
+    if (leaving === REVIEWED && name !== REVIEWED) {
+      reviewedRequestSeq++;
+      reviewedViewGeneration++;
+      reviewedRefreshDirty = false;
+    }
+    if (name === REVIEWED && leaving !== REVIEWED) {
+      reviewedViewGeneration++;
+      reviewedRefreshDirty = false;
+    }
     if (name === REVIEW && leaving !== REVIEW) {
       reviewViewGeneration++;
       reviewQueueRefreshDirty = false;
@@ -195,6 +219,8 @@
       // The Review view renders its static form and never auto-submits; clear
       // any prior results so nothing stale is shown when the view is entered.
       resetReviewResults();
+    } else if (view === REVIEWED) {
+      await renderReviewedView();
     } else if (view === REMINDERS) {
       if (leaving === REVIEW) resetReviewResults();
       await renderRemindersView();
@@ -206,7 +232,7 @@
       await renderHome();
     } else if (view === JOB) {
       if (leaving === REVIEW) resetReviewResults();
-      if (leaving === JOBS || leaving === REVIEW) {
+      if (leaving === JOBS || leaving === REVIEW || leaving === REVIEWED) {
         jobDetailOrigin = leaving;
       }
       await renderJobDetail(jobId);
@@ -1215,6 +1241,228 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Reviewed opportunities workspace (#reviewed)
+  //
+  // This view is intentionally a narrow GET read model. It never calls the
+  // report or review-queue computations: decisions and counts move only when
+  // the server's reviewed-opportunities response is rendered.
+  // ---------------------------------------------------------------------------
+
+  function reviewedItemJob(item) {
+    if (!isObject(item)) return null;
+    if (isObject(item.group) && isObject(item.group.representative)) {
+      return item.group.representative;
+    }
+    return isObject(item.job) ? item.job : null;
+  }
+
+  function reviewedItemOwnerId(item) {
+    var owner = item && item.decision_job_id;
+    return isFiniteNumber(owner) && owner >= 1
+      ? owner
+      : null;
+  }
+
+  function reviewedCounts(data) {
+    var counts = isObject(data && data.counts) ? data.counts : {};
+    return {
+      shortlist: countValue(counts.shortlist),
+      review_later: countValue(counts.review_later),
+      dismiss: countValue(counts.dismiss),
+    };
+  }
+
+  function reviewedUrl(state) {
+    return "/reviewed-opportunities?decision=" + encodeURIComponent(state.decision) +
+      "&grouped=" + (state.grouped ? "true" : "false") +
+      "&offset=" + state.offset + "&limit=" + state.limit;
+  }
+
+  function reviewedTabLabel(decision) {
+    return decision === "shortlist" ? "Shortlist" :
+      decision === "review_later" ? "Review later" : "Dismissed";
+  }
+
+  function renderReviewedView(options) {
+    options = options || {};
+    var refreshing = options.refresh === true;
+    reviewedDataGeneration++;
+    var generation = reviewedViewGeneration;
+    var seq = ++reviewedRequestSeq;
+    var state = {
+      decision: reviewedState.decision,
+      grouped: reviewedState.grouped,
+      offset: reviewedState.offset,
+      limit: reviewedState.limit,
+    };
+    var status = document.getElementById("reviewed-status");
+    var content = document.getElementById("reviewed-content");
+    if (!status || !content) return Promise.resolve();
+    setLoading(status, "Loading reviewed opportunities…");
+    return fetchJson(reviewedUrl(state)).then(function (data) {
+      if (seq !== reviewedRequestSeq || generation !== reviewedViewGeneration ||
+          visibleView() !== REVIEWED) return;
+      if (!isObject(data) || !Array.isArray(data.items) || !isFiniteNumber(data.total)) {
+        throw new Error("The /reviewed-opportunities response did not match the expected shape.");
+      }
+      renderReviewedContent(content, data, state, generation);
+      doneLoading(status);
+    }).catch(function (error) {
+      if (seq !== reviewedRequestSeq || generation !== reviewedViewGeneration ||
+          visibleView() !== REVIEWED) return;
+      if (!refreshing) clearText(content);
+      renderError(status, refreshing
+        ? "Decision saved, but Reviewed could not be refreshed. " + error.message
+        : error.message, function () { renderReviewedView({ refresh: refreshing }); });
+    });
+  }
+
+  function renderReviewedContent(content, data, state, generation) {
+    clearText(content);
+    var counts = reviewedCounts(data);
+    var toolbar = el("div", { className: "reviewed-toolbar" });
+    toolbar.setAttribute("role", "tablist");
+    ["shortlist", "review_later", "dismiss"].forEach(function (decision) {
+      var tab = el("button", { className: "reviewed-tab", type: "button",
+        textContent: reviewedTabLabel(decision) + " (" + counts[decision === "dismiss" ? "dismiss" : decision] + ")" });
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(state.decision === decision));
+      tab.setAttribute("aria-controls", "reviewed-list");
+      tab.disabled = state.decision === decision;
+      tab.addEventListener("click", function () {
+        reviewedState.decision = decision;
+        reviewedState.offset = 0;
+        renderReviewedView();
+      });
+      toolbar.appendChild(tab);
+    });
+    var label = el("label", { className: "inline-label" });
+    var toggle = el("input", { type: "checkbox" });
+    toggle.checked = state.grouped;
+    toggle.addEventListener("change", function () {
+      reviewedState.grouped = toggle.checked;
+      reviewedState.offset = 0;
+      renderReviewedView();
+    });
+    label.appendChild(toggle);
+    label.appendChild(document.createTextNode(" Collapse duplicates"));
+    toolbar.appendChild(label);
+    content.appendChild(toolbar);
+    var summary = el("p", { className: "result-summary", textContent:
+      "Showing " + data.items.length + " of " + countValue(data.total) + " " +
+      reviewedTabLabel(state.decision).toLowerCase() + " opportunities." });
+    content.appendChild(summary);
+    var list = el("ul", { className: "job-list", id: "reviewed-list" });
+    data.items.forEach(function (item) {
+      var job = reviewedItemJob(item);
+      var ownerId = reviewedItemOwnerId(item);
+      if (!job || ownerId === null) return;
+      var group = isObject(item.group) ? item.group : null;
+      var card = buildJobCard(job, null, null, group);
+      if (!card) return;
+      var details = card.querySelector('a[href^="#job/"]');
+      if (details) details.href = "#job/" + ownerId;
+      if (item.conflict === true) {
+        card.appendChild(el("p", { className: "reviewed-conflict", textContent:
+          "Conflicting decisions exist across these listings; the canonical decision owner is job " + ownerId + "." }));
+      }
+      attachReviewedDecisionActions(card, ownerId, item.review_decision);
+      list.appendChild(card);
+    });
+    if (list.childNodes.length === 0) {
+      content.appendChild(el("p", { className: "empty-note", textContent: "No reviewed opportunities in this view." }));
+    } else {
+      content.appendChild(list);
+    }
+    var pager = el("div", { className: "reviewed-pager" });
+    var previous = el("button", { type: "button", textContent: "Previous" });
+    previous.disabled = state.offset <= 0;
+    previous.addEventListener("click", function () {
+      reviewedState.offset = Math.max(0, state.offset - state.limit); renderReviewedView();
+    });
+    var next = el("button", { type: "button", textContent: "Next" });
+    next.disabled = state.offset + state.limit >= countValue(data.total);
+    next.addEventListener("click", function () {
+      reviewedState.offset = state.offset + state.limit; renderReviewedView();
+    });
+    pager.appendChild(previous); pager.appendChild(next); content.appendChild(pager);
+  }
+
+  function setReviewedDecisionDisabled(card, disabled) {
+    card.querySelectorAll(".reviewed-decision-button").forEach(function (button) {
+      button.disabled = disabled;
+    });
+    if (disabled) card.setAttribute("aria-busy", "true");
+    else card.removeAttribute("aria-busy");
+  }
+
+  function attachReviewedDecisionActions(card, jobId, currentDecision) {
+    var actions = el("div", { className: "decision-actions" });
+    actions.setAttribute("role", "group"); actions.setAttribute("aria-label", "Reviewed opportunity decision");
+    REVIEW_DECISIONS.forEach(function (entry) {
+      var button = el("button", { className: "decision-button reviewed-decision-button", type: "button", textContent: entry.label });
+      button.setAttribute("aria-pressed", String(currentDecision === entry.value));
+      button.addEventListener("click", function () { submitReviewedDecision(card, jobId, entry.value); });
+      actions.appendChild(button);
+    });
+    var clear = el("button", { className: "decision-button reviewed-decision-button", type: "button", textContent: "Clear decision" });
+    clear.addEventListener("click", function () { clearReviewedDecision(card, jobId); });
+    actions.appendChild(clear); card.appendChild(actions);
+  }
+
+  function requestReviewedRefresh() {
+    if (visibleView() !== REVIEWED) return;
+    reviewedRefreshDirty = true;
+    var generation = reviewedViewGeneration;
+    if (reviewedRefreshActive && reviewedRefreshOwner && reviewedRefreshOwner.generation === generation) return;
+    var owner = { generation: generation, dataGeneration: reviewedDataGeneration };
+    reviewedRefreshActive = true; reviewedRefreshOwner = owner;
+    (async function () {
+      try {
+        while (reviewedRefreshDirty && reviewedRefreshOwner === owner &&
+          owner.generation === reviewedViewGeneration &&
+          owner.dataGeneration === reviewedDataGeneration && visibleView() === REVIEWED) {
+          reviewedRefreshDirty = false;
+          await renderReviewedView({ refresh: true });
+          owner.dataGeneration = reviewedDataGeneration;
+        }
+      } finally {
+        if (reviewedRefreshOwner === owner) { reviewedRefreshOwner = null; reviewedRefreshActive = false; }
+      }
+    })();
+  }
+
+  function reviewedRefreshError(error, operation) {
+    if (operation.generation !== reviewedViewGeneration || visibleView() !== REVIEWED) return;
+    renderError(document.getElementById("reviewed-status"),
+      "Decision saved, but Reviewed could not be refreshed. " + error.message,
+      requestReviewedRefresh);
+  }
+
+  async function submitReviewedMutation(card, jobId, decision, clear) {
+    if (reviewedCardInFlight[jobId] || visibleView() !== REVIEWED) return;
+    var operation = { id: ++reviewedOperationSeq, generation: reviewedViewGeneration };
+    reviewedCardInFlight[jobId] = operation; setReviewedDecisionDisabled(card, true);
+    try {
+      if (clear) await deleteJson("/review-decisions/" + jobId);
+      else await putJson("/review-decisions/" + String(jobId), { decision: decision });
+      if (card && card.isConnected) card.removeAttribute("aria-busy");
+      requestReviewedRefresh();
+    } catch (error) {
+      if (operation.generation !== reviewedViewGeneration || visibleView() !== REVIEWED) return;
+      setReviewedDecisionDisabled(card, false);
+      replaceSectionError(card, "The review decision could not be saved.", error, function () {
+        submitReviewedMutation(card, jobId, decision, clear);
+      });
+    } finally {
+      if (reviewedCardInFlight[jobId] === operation) delete reviewedCardInFlight[jobId];
+    }
+  }
+
+  function submitReviewedDecision(card, jobId, decision) { submitReviewedMutation(card, jobId, decision, false); }
+  function clearReviewedDecision(card, jobId) { submitReviewedMutation(card, jobId, null, true); }
+
+  // ---------------------------------------------------------------------------
   // Reminders overview view (#reminders)
   //
   // Read-only presentation of the OPEN reminders, split into three sections by
@@ -1586,7 +1834,8 @@
     return el("a", {
       className: "job-back",
       href: "#" + jobDetailOrigin,
-      textContent: jobDetailOrigin === REVIEW ? "Back to review" : "Back to jobs",
+      textContent: jobDetailOrigin === REVIEW ? "Back to review" :
+        jobDetailOrigin === REVIEWED ? "Back to reviewed" : "Back to jobs",
     });
   }
 

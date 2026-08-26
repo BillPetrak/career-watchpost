@@ -25,7 +25,7 @@ from careeros.database.jobs import StoredJob
 from careeros.database.reminders import ReminderListEntry
 from careeros.database.review import DecisionListItem, ReviewEvent
 from careeros.ranking.scorer import RankedGroup, RankedJob, component_to_dict
-from careeros.review.service import QueueItem
+from careeros.review.service import QueueItem, ReviewedOpportunity
 from careeros.saved_searches.models import SavedSearch
 
 if TYPE_CHECKING:
@@ -243,6 +243,17 @@ def review_decision_item_dict(item: DecisionListItem) -> dict[str, Any]:
     }
 
 
+def reviewed_opportunity_item_dict(item: ReviewedOpportunity) -> dict[str, Any]:
+    """Serialize a reviewed opportunity with its concrete decision owner."""
+    return {
+        "group": group_dict(item.group),
+        "review_decision": item.group_decision.decision,
+        "decision_job_id": item.decision_record.job_id,
+        "decision_updated_at": item.decision_record.updated_at,
+        "conflict": item.group_decision.conflict,
+    }
+
+
 def review_decision_event_dict(event: ReviewEvent) -> dict[str, Any]:
     """Serialize one append-only review-decision transition.
 
@@ -379,6 +390,7 @@ __all__: tuple[str, ...] = (
     "report_review_queue_item_dict",
     "review_decision_event_dict",
     "review_decision_item_dict",
+    "reviewed_opportunity_item_dict",
     "review_queue_item_dict",
     "saved_search_item_dict",
     "source_stats_dict",

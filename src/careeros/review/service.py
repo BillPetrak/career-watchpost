@@ -50,6 +50,9 @@ from careeros.database.review import (
     update_decision,
 )
 from careeros.database.review import (
+    decision_records_for_jobs as _decision_records_for_jobs,
+)
+from careeros.database.review import (
     decisions_for_jobs as _decisions_for_jobs,
 )
 from careeros.database.review import (
@@ -128,6 +131,28 @@ class QueueOutcome:
     candidate_count: int
     min_score: int
     include_tracked: bool
+
+
+@dataclass(frozen=True)
+class ReviewedOpportunity:
+    """One reviewed opportunity with its canonical decision owner."""
+
+    group: GroupedJob
+    group_decision: GroupDecision
+    decision_record: StoredDecision
+
+
+@dataclass(frozen=True)
+class ReviewedOpportunityPage:
+    """A deterministic page of reviewed opportunities and all-state counts."""
+
+    grouped: bool
+    decision: str
+    items: tuple[ReviewedOpportunity, ...]
+    counts: Mapping[str, int]
+    total: int
+    offset: int
+    limit: int
 
 
 def _single_member_group(member: StoredJob) -> GroupedJob:
@@ -370,6 +395,93 @@ def decisions_for_jobs(
     return _decisions_for_jobs(connection, job_ids)
 
 
+def decision_records_for_jobs(
+    connection: sqlite3.Connection,
+    job_ids: Iterable[int],
+) -> dict[int, StoredDecision]:
+    """Map job ids to complete current review decision records."""
+    return _decision_records_for_jobs(connection, job_ids)
+
+
+def list_reviewed_opportunities(
+    connection: sqlite3.Connection,
+    *,
+    decision: str = "shortlist",
+    grouped: bool = True,
+    offset: int = 0,
+    limit: int = 20,
+) -> ReviewedOpportunityPage:
+    """List reviewed opportunities without ranking or other workflow joins."""
+    if offset < 0:
+        raise ValidationError("offset must be non-negative.")
+    if limit < 1:
+        raise ValidationError("limit must be at least 1.")
+    try:
+        validate_decision(decision)
+    except ValueError as error:
+        raise ValidationError(str(error)) from error
+
+    canonical_groups = list_all_groups(connection)
+    member_ids = {member.id for group in canonical_groups for member in group.members}
+    records = _decision_records_for_jobs(connection, member_ids)
+    decisions = {job_id: record.decision for job_id, record in records.items()}
+
+    opportunities: list[ReviewedOpportunity] = []
+    if grouped:
+        candidates = canonical_groups
+    else:
+        candidates = [
+            _single_member_group(member)
+            for group in canonical_groups
+            for member in group.members
+        ]
+
+    for group in candidates:
+        resolved = resolve_group_decision(group, decisions)
+        if resolved.decision is None or resolved.owner is None:
+            continue
+        record = records.get(resolved.owner.id)
+        if record is None:
+            continue
+        opportunities.append(
+            ReviewedOpportunity(
+                group=group, group_decision=resolved, decision_record=record
+            )
+        )
+
+    opportunities.sort(
+        key=lambda item: (
+            item.decision_record.updated_at,
+            item.decision_record.id,
+            -item.group.representative.id,
+        ),
+        reverse=True,
+    )
+    counts = {
+        "shortlist": sum(
+            item.group_decision.decision == "shortlist" for item in opportunities
+        ),
+        "review_later": sum(
+            item.group_decision.decision == "review_later" for item in opportunities
+        ),
+        "dismiss": sum(
+            item.group_decision.decision == "dismiss" for item in opportunities
+        ),
+    }
+    selected = [
+        item for item in opportunities if item.group_decision.decision == decision
+    ]
+    return ReviewedOpportunityPage(
+        grouped=grouped,
+        decision=decision,
+        items=tuple(selected[offset : offset + limit]),
+        counts=counts,
+        total=len(selected),
+        offset=offset,
+        limit=limit,
+    )
+
+
 def review_group_summary(connection: sqlite3.Connection) -> ReviewGroupSummary:
     """Compute group-level review counters (read-only, no profile needed).
 
@@ -545,12 +657,16 @@ __all__: tuple[str, ...] = (
     "GroupDecision",
     "QueueItem",
     "QueueOutcome",
+    "ReviewedOpportunity",
+    "ReviewedOpportunityPage",
     "ReviewGroupSummary",
     "ValidationError",
     "UnknownJobError",
     "build_queue",
     "clear_decision",
     "decisions_for_jobs",
+    "decision_records_for_jobs",
+    "list_reviewed_opportunities",
     "get_decision",
     "list_decision_events",
     "list_decisions",

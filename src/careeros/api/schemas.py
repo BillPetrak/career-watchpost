@@ -534,6 +534,36 @@ class GroupListResponse(BaseModel):
     limit: int
 
 
+class ReviewedOpportunityItem(BaseModel):
+    """One grouped or concrete reviewed opportunity."""
+
+    group: Group
+    review_decision: Literal["shortlist", "review_later", "dismiss"]
+    decision_job_id: int
+    decision_updated_at: str
+    conflict: bool
+
+
+class ReviewedOpportunityCounts(BaseModel):
+    """Counts across all reviewed opportunities, before selection/pagination."""
+
+    shortlist: int
+    review_later: int
+    dismiss: int
+
+
+class ReviewedOpportunityResponse(BaseModel):
+    """A page of reviewed opportunities and authoritative decision counts."""
+
+    items: list[ReviewedOpportunityItem]
+    counts: ReviewedOpportunityCounts
+    grouped: bool
+    decision: Literal["shortlist", "review_later", "dismiss"]
+    total: int
+    offset: int
+    limit: int
+
+
 class GroupSummaryResponse(BaseModel):
     """Aggregate grouping counts for the current database.
 
@@ -915,6 +945,9 @@ __all__: tuple[str, ...] = (
     "Group",
     "GroupListResponse",
     "GroupSummaryResponse",
+    "ReviewedOpportunityCounts",
+    "ReviewedOpportunityItem",
+    "ReviewedOpportunityResponse",
     "HealthResponse",
     "Job",
     "JobListResponse",

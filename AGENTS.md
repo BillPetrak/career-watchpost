@@ -1201,6 +1201,20 @@ canonical `No job found with ID {id}.` message locally.
   decision event history, reminders, application notes, and review-feedback
   detail are deliberately omitted from every response. A missing database file
   returns an empty envelope without creating the file.
+- `GET /reviewed-opportunities` — narrow, read-only reviewed-workspace model.
+  Query parameters are `decision` (`shortlist` by default), `grouped` (`true`
+  by default), and deterministic `offset`/`limit` pagination (0/20 by default,
+  limit capped at 100). The response is `{items, counts, grouped, decision,
+  total, offset, limit}`; counts for `shortlist`, `review_later`, and `dismiss`
+  are calculated before selected-state filtering and pagination. Each item
+  contains the canonical public `group`, `review_decision`, concrete
+  `decision_job_id`, `decision_updated_at`, and `conflict`. Grouped resolution
+  reuses `review.service.resolve_group_decision`: the lowest decided job ID is
+  authoritative and conflicting member decisions are surfaced. Ordering is
+  owner decision `updated_at DESC`, decision-row ID DESC, then representative
+  job ID ASC. Flat mode treats decided concrete jobs independently. The
+  endpoint performs no ranking, feedback, report, review-queue, application,
+  or reminder work and never creates a missing database.
 - `GET /review-decisions/{job_id}` — one current review decision using the
   exact same shape as a list item. An unknown job returns `404` with the
   canonical `No job found with ID {job_id}.` message; an existing-but-unreviewed
@@ -1778,6 +1792,21 @@ empty 200 collection is the canonical absent state, so normal browsing issues
 NO expected `404`s — the only `404` a Job Detail page can produce is the core
 job "not found" state. A basic CSP (`default-src 'self'`) is set in
 `index.html` with no inline script/style.
+
+The top-level **Reviewed opportunities workspace** at `#reviewed` is the durable
+destination for current decisions. It defaults to Shortlist, with Review later
+and Dismissed tabs, authoritative counts, grouped display by default, a
+Collapse duplicates toggle, and 20-item server pagination. Cards change or
+clear decisions through the canonical `PUT`/`DELETE /review-decisions/{id}`
+routes, always targeting the response's concrete `decision_job_id`; the group
+representative is never guessed as the owner. No card or count changes
+optimistically. Successful mutations refresh only the current
+`GET /reviewed-opportunities` region, while mutation retry and refresh-only
+retry remain distinct. Per-card operation identities, view/request/data
+generations, conditional cleanup, and a dirty refresh coordinator protect
+double-click, overlapping mutation, navigation, re-entry, and stale-response
+cases. API strings render only through safe DOM creation/text content.
+Shortlist is evaluation intent, not an application status.
 
 The **Review Queue card actions** let the Review view's queue cards decide the
 opportunity inline. Each card in the review-queue section (never the

@@ -425,7 +425,9 @@ def test_empty_review_queue_and_recommendations() -> None:
 
 
 def test_review_renders_public_job_fields_only() -> None:
-    js = _js()
+    # The Reviewed workspace has a public review_decision field by design.
+    # Keep this legacy Review privacy assertion scoped to the Review renderer.
+    js = _js()[: _js().index("// Reviewed opportunities workspace")]
     for label in (
         '"Company"',
         '"Location"',
