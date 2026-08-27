@@ -557,7 +557,9 @@ def _report_response(report: Report) -> ReportResponse:
     approved safe values (the shared HTTP-safe job/group/reminder/source-status
     projections), never by serializing the internal ``Report`` wholesale.
     ``notification_summary``, provider ``last_error`` text, notes, reminder
-    messages, scoring reasons/components, and feedback are structurally absent.
+    messages, raw scoring reasons/components, and feedback provenance remain
+    structurally absent; ranked items carry the deliberate public explanation
+    projection.
     ``GET /report`` is profile-less, so the review-queue items and
     recommendation jobs/groups the domain service reports are empty; the
     sections remain present with ``source="none"``.

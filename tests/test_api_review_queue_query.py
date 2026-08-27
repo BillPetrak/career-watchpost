@@ -78,6 +78,7 @@ _ITEM_FIELDS = [
     "score",
     "review_decision",
     "application_status",
+    "explanation",
 ]
 
 _MAIN_PROFILE = {
@@ -768,6 +769,18 @@ def test_envelope_item_and_group_field_order_with_query(
     assert list(payload) == ["items", "total", "offset", "limit"]
     for item in payload["items"]:
         assert list(item) == _ITEM_FIELDS
+        assert set(item["explanation"]) == {
+            "scope",
+            "listing_count",
+            "summary",
+            "score",
+            "matches",
+            "gaps",
+            "unknowns",
+            "other_factors",
+        }
+        assert "reasons" not in item["explanation"]
+        assert "score_components" not in item["explanation"]
         group = item["group"]
         assert list(group) == _GROUP_FIELDS
         for job in (group["representative"], *group["members"]):

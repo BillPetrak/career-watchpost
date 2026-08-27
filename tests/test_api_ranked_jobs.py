@@ -233,7 +233,20 @@ def test_ranked_envelope_and_item_field_order(
 
     assert list(payload) == ["items", "total", "offset", "limit"]
     for item in payload["items"]:
-        assert list(item) == ["job", "match_score", "score"]
+        assert list(item) == ["job", "match_score", "score", "explanation"]
+        assert set(item["explanation"]) == {
+            "scope",
+            "listing_count",
+            "summary",
+            "score",
+            "matches",
+            "gaps",
+            "unknowns",
+            "other_factors",
+        }
+        assert "description" not in item["explanation"]
+        assert "reasons" not in item["explanation"]
+        assert "score_components" not in item["explanation"]
 
 
 def test_ranked_nested_job_field_order(
@@ -732,13 +745,12 @@ def test_ranked_privacy_exclusions(
     payload = response.json()
     assert payload["total"] == 4
     for item in payload["items"]:
-        assert list(item) == ["job", "match_score", "score"]
+        assert list(item) == ["job", "match_score", "score", "explanation"]
         assert list(item["job"]) == _JOB_FIELDS
         assert "description" not in item["job"]
 
     for leaked in (
         "NebulousRole",
-        "Frobnicate",
         "Nowhereland",
         "mysticterm",
         "reasons",

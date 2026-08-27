@@ -47,6 +47,13 @@
   // keeps working naturally because every navigation is a real hash change.
   var jobDetailOrigin = JOBS;
 
+  // A ranked explanation belongs to one response item from one in-memory
+  // ranking run. It is deliberately never serialized into the URL or browser
+  // storage. A new run replaces this value, and unranked navigation clears it.
+  var rankingContextGeneration = 0;
+  var rankedJobContext = null;
+  var pendingRankedNavigation = null;
+
   // Stale-response guard for the Job Detail view: every full render of
   // #job/<id> increments this token, and every async operation that touches the
   // detail DOM (initial load, section retry, review-decision refresh) captures
@@ -258,6 +265,21 @@
     if (name === REVIEW && leaving !== REVIEW) {
       reviewViewGeneration++;
       reviewQueueRefreshDirty = false;
+    }
+    var hasExactRankedTransition = name === JOB &&
+      pendingRankedNavigation !== null &&
+      pendingRankedNavigation.jobId === jobId &&
+      pendingRankedNavigation.generation === rankingContextGeneration;
+    if (name !== JOB && view !== JOB) {
+      rankedJobContext = null;
+      pendingRankedNavigation = null;
+    } else if (name === JOB && !hasExactRankedTransition) {
+      // Hash entry by direct navigation, reload, or browser history has no
+      // captured ranked transition and must never reuse an old explanation.
+      rankedJobContext = null;
+    }
+    if (name === JOB) {
+      pendingRankedNavigation = null;
     }
     if (name === TODAY && leaving !== TODAY) {
       todayViewGeneration++;
@@ -945,6 +967,9 @@
   async function runReviewRequest(fields) {
     var seq = ++reviewRequestSeq;
     reviewDataGeneration++;
+    var generation = ++rankingContextGeneration;
+    rankedJobContext = null;
+    pendingRankedNavigation = null;
     lastReviewFields = fields;
     var status = document.getElementById("review-status");
     var content = document.getElementById("review-content");
@@ -963,7 +988,7 @@
       ) {
         throw new Error("The /report response did not match the expected shape.");
       }
-      renderReviewContent(content, data);
+      renderReviewContent(content, data, generation);
       doneLoading(status);
     } catch (error) {
       if (seq !== reviewRequestSeq || visibleView() !== REVIEW) return;
@@ -978,15 +1003,15 @@
     }
   }
 
-  function renderReviewContent(content, data) {
+  function renderReviewContent(content, data, generation) {
     content.textContent = "";
     var summary = buildReviewSummary(data.review_queue, data.recommendations);
-    var queue = buildReviewQueueSection(data.review_queue);
+    var queue = buildReviewQueueSection(data.review_queue, generation);
     summary.setAttribute("data-review-summary", "true");
     queue.setAttribute("data-review-queue", "true");
     content.appendChild(summary);
     content.appendChild(queue);
-    content.appendChild(buildRecommendationsSection(data.recommendations));
+    content.appendChild(buildRecommendationsSection(data.recommendations, generation));
   }
 
   function buildReviewSummary(review, recommendations) {
@@ -1016,14 +1041,14 @@
     };
   }
 
-  function renderAuthoritativeQueue(data, fields) {
+  function renderAuthoritativeQueue(data, fields, rankingGeneration) {
     var content = document.getElementById("review-content");
     if (!content) return;
     var queue = content.querySelector("[data-review-queue]");
     var summary = content.querySelector("[data-review-summary]");
     if (!queue || !summary) return;
     var review = normalizeReviewQueueResponse(data, fields);
-    var replacement = buildReviewQueueSection(review);
+    var replacement = buildReviewQueueSection(review, rankingGeneration);
     replacement.setAttribute("data-review-queue", "true");
     queue.replaceWith(replacement);
     var recommendationCount = summary.getAttribute("data-recommendation-count") || "0";
@@ -1038,7 +1063,7 @@
     }
   }
 
-  function buildReviewQueueSection(review) {
+  function buildReviewQueueSection(review, generation) {
     var section = el("section", { className: "chunk" });
     section.appendChild(el("h2", { textContent: "Review queue" }));
     var items = Array.isArray(review.items) ? review.items : [];
@@ -1060,6 +1085,17 @@
       var group = isObject(item.group) ? item.group : null;
       if (!group) return;
       var card = buildJobCard(group.representative, item.match_score, null, group);
+      attachCardExplanationAndContext(card, item.explanation, {
+        generation: generation,
+        surface: "review-queue",
+        targetKind: "opportunity",
+        targetIdentity: group["group_id"]
+          ? "group:" + group["group_id"]
+          : "job:" + group.representative.id,
+        memberIds: Array.isArray(group.members)
+          ? group.members.map(function (member) { return member.id; })
+          : [group.representative.id],
+      });
       if (card) {
         // Queue-only controls: the representative job id is exactly what the
         // card's "View details" link targets, so deciding the card reviews
@@ -1073,7 +1109,7 @@
     return section;
   }
 
-  function buildRecommendationsSection(recommendations) {
+  function buildRecommendationsSection(recommendations, generation) {
     var section = el("section", { className: "chunk" });
     section.appendChild(el("h2", { textContent: "Recommendations" }));
     var grouped = recommendations.grouped === true;
@@ -1097,10 +1133,101 @@
       var job = grouped ? entry.group && entry.group.representative : entry.job;
       var group = grouped ? entry.group : null;
       var card = buildJobCard(job, entry.match_score, entry.score, group);
+      attachCardExplanationAndContext(card, entry.explanation, {
+        generation: generation,
+        surface: "recommendations",
+        targetKind: grouped ? "opportunity" : "job",
+        targetIdentity: grouped
+          ? (group && group["group_id"]
+            ? "group:" + group["group_id"]
+            : "job:" + job.id)
+          : "job:" + job.id,
+        memberIds: grouped && group && Array.isArray(group.members)
+          ? group.members.map(function (member) { return member.id; })
+          : [job.id],
+      });
       if (card) resultList.appendChild(card);
     });
     section.appendChild(resultList);
     return section;
+  }
+
+  function explanationFactors(explanation, key) {
+    return isObject(explanation) && Array.isArray(explanation[key])
+      ? explanation[key].filter(isObject)
+      : [];
+  }
+
+  function factorText(factor) {
+    var label = typeof factor.label === "string" ? factor.label : "Criterion evaluated";
+    var value = typeof factor.value === "string" && factor.value.length > 0
+      ? ": " + factor.value
+      : "";
+    return label + value;
+  }
+
+  function appendFactorList(parent, factors, className, limit) {
+    var list = el("ul", { className: className });
+    factors.slice(0, limit).forEach(function (factor) {
+      list.appendChild(el("li", { textContent: factorText(factor) }));
+    });
+    parent.appendChild(list);
+  }
+
+  function appendCardExplanation(card, explanation) {
+    if (!isObject(explanation)) return;
+    var details = el("details", { className: "ranking-explanation-card" });
+    details.appendChild(el("summary", { textContent: "Why this match?" }));
+    details.appendChild(el("p", { className: "explanation-summary", textContent:
+      typeof explanation.summary === "string" ? explanation.summary : "This result matched profile criteria." }));
+    var matches = explanationFactors(explanation, "matches");
+    if (matches.length > 0) {
+      details.appendChild(el("h4", { textContent: "Matches" }));
+      appendFactorList(details, matches, "explanation-factors explanation-matches", 3);
+    }
+    var material = explanationFactors(explanation, "gaps").concat(
+      explanationFactors(explanation, "unknowns"),
+      explanationFactors(explanation, "other_factors").filter(function (factor) {
+        return factor.effect === "negative" || factor.effect === "blocking";
+      })
+    );
+    if (material.length > 0) {
+      details.appendChild(el("h4", { textContent: "Worth noting" }));
+      appendFactorList(details, material, "explanation-factors explanation-gaps", 1);
+    }
+    card.appendChild(details);
+  }
+
+  function attachRankedLinkContext(card, job, explanation, rankingContext) {
+    if (!isObject(explanation) || !isObject(rankingContext)) return;
+    var link = card.querySelector('a[href^="#job/"]');
+    if (!link) return;
+    link.addEventListener("click", function (event) {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey ||
+        event.shiftKey || event.altKey) return;
+      pendingRankedNavigation = { jobId: job.id, generation: rankingContext.generation };
+      rankedJobContext = {
+        generation: rankingContext.generation,
+        surface: rankingContext.surface,
+        targetKind: rankingContext.targetKind,
+        targetIdentity: rankingContext.targetIdentity,
+        jobId: job.id,
+        explanation: explanation,
+        memberIds: Array.isArray(rankingContext.memberIds) ? rankingContext.memberIds.slice() : [],
+      };
+    });
+  }
+
+  function attachCardExplanationAndContext(card, explanation, rankingContext) {
+    if (!card) return;
+    appendCardExplanation(card, explanation);
+    var jobLink = card.querySelector('a[href^="#job/"]');
+    if (!jobLink) return;
+    var jobIdText = jobLink.getAttribute("href").slice("#job/".length);
+    var jobId = parseInt(jobIdText, 10);
+    if (isFiniteNumber(jobId)) {
+      attachRankedLinkContext(card, { id: jobId }, explanation, rankingContext);
+    }
   }
 
   function buildJobCard(job, matchScore, score, group) {
@@ -1199,6 +1326,9 @@
       dataGeneration !== reviewDataGeneration ||
       visibleView() !== REVIEW
     ) return false;
+    var rankingGeneration = ++rankingContextGeneration;
+    rankedJobContext = null;
+    pendingRankedNavigation = null;
     var url =
       "/review-queue?grouped=" +
       (fields.grouped ? "true" : "false") +
@@ -1211,7 +1341,7 @@
         dataGeneration !== reviewDataGeneration ||
         visibleView() !== REVIEW
       ) return false;
-      renderAuthoritativeQueue(data, fields);
+      renderAuthoritativeQueue(data, fields, rankingGeneration);
       doneLoading(document.getElementById("review-status"));
       return true;
     } catch (error) {
@@ -2411,10 +2541,65 @@
       el("h1", { className: "job-title", textContent: displayText(job.title) })
     );
     content.appendChild(buildCoreJobSection(job));
+    content.appendChild(buildJobExplanationSection(job));
     fillDetailSection(content, job, "group", results.group);
     fillDetailSection(content, job, "application", results.application);
     fillDetailSection(content, job, "review", results.review);
     fillDetailSection(content, job, "reminders", results.reminders);
+  }
+
+  function validJobExplanationContext(job) {
+    if (rankedJobContext === null || !isObject(rankedJobContext.explanation)) return false;
+    var explanation = rankedJobContext.explanation;
+    var scope = explanation.scope;
+    var listingCount = explanation.listing_count;
+    var members = rankedJobContext.memberIds;
+    var grouped = rankedJobContext.targetKind === "opportunity";
+    var flat = rankedJobContext.targetKind === "job";
+    return (rankedJobContext.surface === "recommendations" || rankedJobContext.surface === "review-queue") &&
+      rankedJobContext.generation === rankingContextGeneration &&
+      rankedJobContext.jobId === job.id &&
+      typeof rankedJobContext.targetIdentity === "string" && rankedJobContext.targetIdentity.length > 0 &&
+      ((grouped && scope === "opportunity" && Array.isArray(members) &&
+        members.indexOf(job.id) !== -1 && listingCount === members.length) ||
+       (flat && scope === "job" && listingCount === 1));
+  }
+
+  function signedPoints(value) {
+    return isFiniteNumber(value) && value > 0 ? "+" + value : String(countValue(value));
+  }
+
+  function buildJobExplanationSection(job) {
+    var section = el("section", { className: "chunk ranking-explanation-detail" });
+    section.appendChild(el("h2", { textContent: "Why this job?" }));
+    if (!validJobExplanationContext(job)) {
+      section.appendChild(el("p", { className: "empty-note", textContent:
+        "No ranking context is available. Open this job from Recommendations, Review Queue, or a ranked saved search to see why it matched." }));
+      return section;
+    }
+    var explanation = rankedJobContext.explanation;
+    section.appendChild(el("p", { className: "result-summary", textContent: explanation.summary }));
+    var score = isObject(explanation.score) ? explanation.score : {};
+    var fields = el("dl", { className: "job-fields explanation-score" });
+    addField(fields, "Match score", String(countValue(score.match_score)));
+    addField(fields, "Contribution total", signedPoints(score.contribution_total));
+    addField(fields, "Score resolution", displayText(score.resolution));
+    if (explanation.scope === "opportunity") {
+      addField(fields, "Listings in result", String(countValue(explanation.listing_count)));
+    }
+    section.appendChild(fields);
+    [["Matches", "matches"], ["Gaps", "gaps"], ["Unknowns", "unknowns"], ["Other factors", "other_factors"]].forEach(function (entry) {
+      var factors = explanationFactors(explanation, entry[1]);
+      if (factors.length === 0) return;
+      section.appendChild(el("h3", { textContent: entry[0] }));
+      var list = el("ul", { className: "explanation-factors explanation-detail-factors" });
+      factors.forEach(function (factor) {
+        var value = factorText(factor) + " (" + signedPoints(factor.points) + " points)";
+        list.appendChild(el("li", { textContent: value }));
+      });
+      section.appendChild(list);
+    });
+    return section;
   }
 
   function buildCoreJobSection(job) {

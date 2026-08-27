@@ -24,6 +24,7 @@ from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.reminders import ReminderListEntry
 from careeros.database.review import DecisionListItem, ReviewEvent
+from careeros.ranking.explanations import explain_result, explanation_to_dict
 from careeros.ranking.scorer import RankedGroup, RankedJob, component_to_dict
 from careeros.review.service import QueueItem, ReviewedOpportunity
 from careeros.saved_searches.models import SavedSearch
@@ -178,45 +179,44 @@ def ranked_group_dict(ranked: RankedGroup) -> dict[str, Any]:
 def ranked_job_item_dict(ranked: RankedJob) -> dict[str, Any]:
     """Serialize one scored flat result for the HTTP API.
 
-    A narrowly scoped subset of ``ranked_job_dict``: the HTTP API exposes only
-    the job and its two score values. ``reasons`` and ``score_components`` are
-    deliberately omitted because they can echo submitted profile terms or embed
-    private review-feedback text, which the HTTP API never exposes.
+    A narrowly scoped public projection with the job, scores, and structured
+    explanation. Raw reasons and score components remain private.
     """
     return {
         "job": job_dict(ranked.job),
         "match_score": ranked.match_score,
         "score": ranked.score,
+        "explanation": explanation_to_dict(explain_result(ranked.result)),
     }
 
 
 def ranked_group_item_dict(ranked: RankedGroup) -> dict[str, Any]:
     """Serialize one scored canonical group for the HTTP API.
 
-    A narrowly scoped subset of ``ranked_group_dict``: the HTTP API exposes
-    only the canonical group and its two score values. ``reasons`` and
-    ``score_components`` are deliberately omitted because they can echo
-    submitted profile terms or embed private review-feedback text, which the
-    HTTP API never exposes. Review decisions, application status, notes, and
-    reminder messages are likewise never exposed.
+    A narrowly scoped public projection with the canonical group, scores, and
+    structured opportunity explanation. Workflow state and raw diagnostics
+    remain private.
     """
     return {
         "group": group_dict(ranked.group),
         "match_score": ranked.match_score,
         "score": ranked.score,
+        "explanation": explanation_to_dict(
+            explain_result(
+                ranked.result,
+                scope="opportunity",
+                listing_count=len(ranked.group.members),
+            )
+        ),
     }
 
 
 def review_queue_item_dict(item: QueueItem) -> dict[str, Any]:
     """Serialize one ranked review-queue entry for the HTTP API.
 
-    A narrowly scoped subset of the review renderer's queue-item shape: the
-    canonical group, the two score values, and the resolved group decision and
-    application status. ``reasons`` and ``score_components`` are deliberately
-    omitted because they can echo submitted profile terms or embed private
-    review-feedback text, which the HTTP API never exposes. Decision notes,
-    application notes, conflict/owner detail, and reminder messages are
-    likewise never exposed.
+    A narrowly scoped public queue projection with scores, workflow state, and
+    the structured opportunity explanation. Private notes and raw diagnostics
+    remain omitted.
     """
     return {
         "group": group_dict(item.group),
@@ -224,6 +224,13 @@ def review_queue_item_dict(item: QueueItem) -> dict[str, Any]:
         "score": item.ranked.score,
         "review_decision": item.group_decision.decision,
         "application_status": item.application.status,
+        "explanation": explanation_to_dict(
+            explain_result(
+                item.ranked.result,
+                scope="opportunity",
+                listing_count=len(item.group.members),
+            )
+        ),
     }
 
 
@@ -389,14 +396,20 @@ def action_item_dict(item: ActionItem) -> dict[str, Any]:
 def report_review_queue_item_dict(item: ReviewQueueItem) -> dict[str, Any]:
     """Serialize one report review-queue entry for the HTTP API.
 
-    A narrowly scoped subset of the report renderer's queue-item shape: the
-    canonical group and the match score. ``reasons``, ``score_components``,
-    and feedback are deliberately omitted because they can echo profile terms
-    or embed private review-feedback text, which the HTTP API never exposes.
+    A narrowly scoped report projection with the canonical group, match score,
+    and structured opportunity explanation. Raw diagnostics and feedback
+    provenance remain private.
     """
     return {
         "group": group_dict(item.group),
         "match_score": item.match_score,
+        "explanation": explanation_to_dict(
+            explain_result(
+                item.ranked.result,
+                scope="opportunity",
+                listing_count=len(item.group.members),
+            )
+        ),
     }
 
 

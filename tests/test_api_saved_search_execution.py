@@ -62,9 +62,9 @@ _JOB_FIELDS = [
 
 _GROUP_FIELDS = ["group_id", "representative", "members", "sources", "urls"]
 
-_RANKED_JOB_FIELDS = ["job", "match_score", "score"]
+_RANKED_JOB_FIELDS = ["job", "match_score", "score", "explanation"]
 
-_RANKED_GROUP_FIELDS = ["group", "match_score", "score"]
+_RANKED_GROUP_FIELDS = ["group", "match_score", "score", "explanation"]
 
 _ENVELOPE_FIELDS = ["mode", "grouped", "items", "total", "offset", "limit"]
 
@@ -926,7 +926,6 @@ def test_private_state_never_appears_in_any_response(
         assert response.status_code == 200
         for leaked in (
             _SENTINEL_PROFILE_PATH,
-            _SENTINEL_SKILL,
             _SENTINEL_APPLICATION_NOTE,
             _SENTINEL_REVIEW_NOTE,
             _SENTINEL_REMINDER_MESSAGE,

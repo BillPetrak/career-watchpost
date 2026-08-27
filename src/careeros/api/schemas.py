@@ -712,33 +712,70 @@ class RankRequest(BaseModel):
     exclude_decisions: list[str] | None = None
 
 
+class ExplanationFactor(BaseModel):
+    criterion: Literal[
+        "title",
+        "skill",
+        "location",
+        "remote",
+        "employment",
+        "seniority",
+        "required_skill",
+        "preferred_skill",
+        "description",
+        "excluded_term",
+        "hard_exclusion",
+        "feedback",
+    ]
+    label: str
+    value: str | None
+    effect: Literal["positive", "negative", "neutral", "blocking", "unknown"]
+    points: int
+
+
+class ExplanationScore(BaseModel):
+    contribution_total: int
+    match_score: int
+    resolution: Literal["unchanged", "capped", "floored", "excluded"]
+
+
+class RankingExplanation(BaseModel):
+    scope: Literal["job", "opportunity"]
+    listing_count: int
+    summary: str
+    score: ExplanationScore
+    matches: list[ExplanationFactor]
+    gaps: list[ExplanationFactor]
+    unknowns: list[ExplanationFactor]
+    other_factors: list[ExplanationFactor]
+
+
 class RankedJobItem(BaseModel):
     """One scored job in a ranked response.
 
-    Mirrors the shared ``ranked_job_item_dict`` projection. ``reasons`` and
-    ``score_components`` are deliberately omitted: they can echo submitted
-    profile terms or embed private review-feedback text, and the HTTP API never
-    exposes profile contents or workflow state.
+    Mirrors the shared ``ranked_job_item_dict`` projection. The public
+    ``explanation`` is a deliberate structured projection; raw reasons and
+    score components remain private.
     """
 
     job: Job
     match_score: int
     score: int
+    explanation: RankingExplanation
 
 
 class RankedGroupItem(BaseModel):
     """One scored canonical group in a grouped ranked response.
 
-    Mirrors the shared ``ranked_group_item_dict`` projection. ``reasons`` and
-    ``score_components`` are deliberately omitted: they can echo submitted
-    profile terms or embed private review-feedback text, and the HTTP API never
-    exposes profile contents or workflow state. Review decisions, application
-    status, notes, and reminder messages are likewise never exposed.
+    Mirrors the shared ``ranked_group_item_dict`` projection. Its explanation
+    describes the union-scored opportunity; raw diagnostics and workflow state
+    remain private.
     """
 
     group: Group
     match_score: int
     score: int
+    explanation: RankingExplanation
 
 
 class RankedJobsResponse(BaseModel):
@@ -774,12 +811,9 @@ class ReviewQueueItem(BaseModel):
     """One ranked daily-review-queue entry.
 
     Mirrors a narrowly pruned subset of the shared review renderer's queue-item
-    shape: the canonical group, the two score values, the resolved group
-    decision (``None`` when unreviewed), and the group's tracked application
-    status (``None`` when untracked). ``reasons``, ``score_components``,
-    decision notes, application notes, conflict/owner detail, and reminder
-    messages are deliberately omitted: they can echo submitted profile terms or
-    embed private free text, which the HTTP API never exposes.
+    shape: the canonical group, score values, resolved workflow state, and the
+    structured public ranking explanation. Raw diagnostics and private notes
+    remain omitted.
     """
 
     group: Group
@@ -787,6 +821,7 @@ class ReviewQueueItem(BaseModel):
     score: int
     review_decision: str | None
     application_status: str | None
+    explanation: RankingExplanation
 
 
 class ReviewQueueResponse(BaseModel):
@@ -912,12 +947,13 @@ class ReportReminders(BaseModel):
 class ReportReviewQueueItem(BaseModel):
     """One ranked review-queue entry in the Career Snapshot.
 
-    ``reasons``, ``score_components``, and feedback are deliberately omitted:
-    they can echo profile terms or embed private review-feedback text.
+    The structured explanation is public; raw reasons, score components, and
+    feedback provenance remain private.
     """
 
     group: Group
     match_score: int
+    explanation: RankingExplanation
 
 
 class ReportReviewQueue(BaseModel):
@@ -1024,6 +1060,9 @@ __all__: tuple[str, ...] = (
     "RankRequest",
     "RankedGroupItem",
     "RankedJobItem",
+    "RankingExplanation",
+    "ExplanationFactor",
+    "ExplanationScore",
     "RankedJobsResponse",
     "ReminderCreateRequest",
     "ReportActionItem",

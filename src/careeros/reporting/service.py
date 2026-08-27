@@ -298,6 +298,7 @@ def _build_review_queue(
         items=tuple(
             ReviewQueueItem(
                 group=item.group,
+                ranked=item.ranked,
                 match_score=item.ranked.match_score,
                 reasons=item.ranked.reasons,
                 components=item.ranked.result.components,

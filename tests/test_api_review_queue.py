@@ -63,6 +63,7 @@ _ITEM_FIELDS = [
     "score",
     "review_decision",
     "application_status",
+    "explanation",
 ]
 
 _MAIN_PROFILE = {
@@ -833,7 +834,6 @@ def test_review_queue_privacy_exclusions(
 
     for leaked in (
         "NebulousRole",
-        "Frobnicate",
         "Nowhereland",
         "mysticterm",
         "reasons",

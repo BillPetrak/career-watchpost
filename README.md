@@ -542,3 +542,14 @@ project path.
 reminders, reminders due later today, and unstarted canonical shortlist
 opportunities. It captures one server-side `as_of` instant and uses one
 SQLite read transaction; totals precede each independent limit (maximum 20).
+
+## Ranking explanations
+
+Ranked HTTP results include a deterministic `explanation` projection derived
+from the same `MatchResult` that produced `score` and `match_score`. It has
+`scope`, `listing_count`, `summary`, `score`, and structured `matches`, `gaps`,
+`unknowns`, and `other_factors`; factor points reconcile exactly to the raw
+contribution total. It is embedded in ranked jobs, grouped opportunities,
+review queues, and report ranking sections. Search-mode results remain
+unranked. Explanations belong to the exact ranked response item: they are not
+persisted, and the API has no generic job explanation endpoint.

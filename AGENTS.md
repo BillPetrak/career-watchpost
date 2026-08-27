@@ -2066,3 +2066,16 @@ can assert on stable strings:
 lowest-decided-member review resolution, and opportunity-wide application
 exclusion. It never initializes a missing database or runs ranking/report
 computation.
+
+## Ranking explanation API boundary
+
+Ranked web projections embed a deterministic public `explanation` derived from
+the canonical `MatchResult`; no scorer rerun or SQL query is performed. The
+projection contains structured matches, gaps, unknowns, other factors, and a
+score reconciliation (`contribution_total`, `match_score`, and a canonical
+resolution). It never exposes raw reasons, score components, profile paths,
+descriptions, notes, matcher diagnostics, or feedback-source provenance.
+Explanations are invocation-scoped ranked-result data, not generic job data;
+there is no explanation endpoint or persistence. Grouped explanations belong
+to the union-scored opportunity and retain the exact response member count.
+`SCHEMA_VERSION` remains 8.

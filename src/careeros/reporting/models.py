@@ -98,6 +98,7 @@ class ReviewQueueItem:
     """One ranked daily-review-queue entry for the report."""
 
     group: GroupedJob
+    ranked: RankedGroup
     match_score: int
     reasons: tuple[str, ...]
     components: tuple[ScoreComponent, ...] = ()

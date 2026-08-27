@@ -1043,13 +1043,12 @@ def test_privacy_leak_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         assert response.status_code == 200
         assert list(response.json()) == ["items", "total", "offset", "limit"]
         for item in response.json()["items"]:
-            assert list(item) == ["job", "match_score", "score"]
+            assert list(item) == ["job", "match_score", "score", "explanation"]
             assert list(item["job"]) == _JOB_FIELDS
             assert "description" not in item["job"]
 
     leaked = (
         "NebulousRole",
-        "Frobnicate",
         "Nowhereland",
         "mysticterm",
         "reasons",
@@ -1127,7 +1126,7 @@ def test_prior_endpoints_and_ranked_behavior_unchanged(
     assert flat_ranked.status_code == 200
     assert flat_ranked.json()["total"] == 4
     for item in flat_ranked.json()["items"]:
-        assert list(item) == ["job", "match_score", "score"]
+        assert list(item) == ["job", "match_score", "score", "explanation"]
 
 
 def test_grouped_prior_behavior_unchanged(

@@ -355,7 +355,7 @@ def test_flat_baseline_byte_identical_without_review_fields(
     ]
     assert [item["score"] for item in payload["items"]] == [53, 53, 25, 10, 10, 8]  # type: ignore[index]
     for item in payload["items"]:
-        assert list(item) == ["job", "match_score", "score"]
+        assert list(item) == ["job", "match_score", "score", "explanation"]
         assert list(item["job"]) == _JOB_FIELDS
         assert "description" not in item["job"]
 
@@ -389,7 +389,7 @@ def test_grouped_baseline_byte_identical_without_review_fields(
         None,
     ]
     for item in payload["items"]:
-        assert list(item) == ["group", "match_score", "score"]
+        assert list(item) == ["group", "match_score", "score", "explanation"]
         group = item["group"]
         assert list(group) == _GROUP_FIELDS
         assert list(group["representative"]) == _JOB_FIELDS
@@ -1651,11 +1651,11 @@ def test_privacy_sentinel_leak_scan(
         assert list(response.json()) == ["items", "total", "offset", "limit"]
         for item in response.json()["items"]:
             if "job" in item:
-                assert list(item) == ["job", "match_score", "score"]
+                assert list(item) == ["job", "match_score", "score", "explanation"]
                 assert list(item["job"]) == _JOB_FIELDS
                 assert "description" not in item["job"]
             else:
-                assert list(item) == ["group", "match_score", "score"]
+                assert list(item) == ["group", "match_score", "score", "explanation"]
                 assert list(item["group"]) == _GROUP_FIELDS
                 assert list(item["group"]["representative"]) == _JOB_FIELDS
                 assert "description" not in item["group"]["representative"]
@@ -1664,7 +1664,6 @@ def test_privacy_sentinel_leak_scan(
 
     leaked = (
         "NebulousRole",
-        "Frobnicate",
         "Nowhereland",
         "mysticterm",
         "secret-cv-note",
@@ -1783,7 +1782,7 @@ def test_existing_flat_and_grouped_and_application_filter_behavior_unchanged(
     assert excluded.status_code == 200
     assert excluded.json()["total"] == 5
     for item in flat_plain.json()["items"]:
-        assert list(item) == ["job", "match_score", "score"]
+        assert list(item) == ["job", "match_score", "score", "explanation"]
 
 
 # --------------------------------------------------------------------------- #

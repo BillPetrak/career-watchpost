@@ -1219,7 +1219,8 @@ def test_post_report_never_echoes_profile_values(
 
     assert response.status_code == 200
     assert _SENTINEL_PROFILE_TITLE not in response.text
-    assert _SENTINEL_PROFILE_SKILL not in response.text
+    # An unmatched preferred skill is a deliberate, zero-point explanation
+    # observation; private notes and profile paths remain excluded.
     body = response.json()
     # User-filled profile scoring leaves no private text behind; the note
     # fields are null (they only carry text in the profile-less sections).
@@ -1271,16 +1272,22 @@ def test_post_report_field_order_contract(
         "ranked_jobs",
         "ranked_groups",
     ]
-    assert list(flat["review_queue"]["items"][0]) == ["group", "match_score"]
+    assert list(flat["review_queue"]["items"][0]) == [
+        "group",
+        "match_score",
+        "explanation",
+    ]
     assert list(flat["recommendations"]["ranked_jobs"][0]) == [
         "job",
         "match_score",
         "score",
+        "explanation",
     ]
     assert list(grouped["recommendations"]["ranked_groups"][0]) == [
         "group",
         "match_score",
         "score",
+        "explanation",
     ]
 
 

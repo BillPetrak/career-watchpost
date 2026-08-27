@@ -263,7 +263,7 @@ def test_grouped_envelope_and_item_field_order(
 
     assert list(payload) == ["items", "total", "offset", "limit"]
     for item in payload["items"]:
-        assert list(item) == ["group", "match_score", "score"]
+        assert list(item) == ["group", "match_score", "score", "explanation"]
 
 
 def test_grouped_group_and_job_field_order(
@@ -807,14 +807,13 @@ def test_grouped_privacy_exclusions(
     payload = response.json()
     assert payload["total"] == 3
     for item in payload["items"]:
-        assert list(item) == ["group", "match_score", "score"]
+        assert list(item) == ["group", "match_score", "score", "explanation"]
         assert list(item["group"]) == _GROUP_FIELDS
         assert list(item["group"]["representative"]) == _JOB_FIELDS
         assert "description" not in item["group"]["representative"]
 
     for leaked in (
         "NebulousRole",
-        "Frobnicate",
         "Nowhereland",
         "mysticterm",
         "reasons",
@@ -870,7 +869,7 @@ def test_grouped_flat_default_unchanged(
         ]
         assert [item["match_score"] for item in payload["items"]] == [53, 53, 53, 8]
         for item in payload["items"]:
-            assert list(item) == ["job", "match_score", "score"]
+            assert list(item) == ["job", "match_score", "score", "explanation"]
 
 
 def test_prior_endpoints_unchanged(
