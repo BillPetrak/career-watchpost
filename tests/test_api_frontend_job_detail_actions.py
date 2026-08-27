@@ -441,9 +441,9 @@ def test_repeated_review_mutation_failures_replace_not_append() -> None:
     # apply, review clear, application apply, reminder complete, reminder
     # reopen, reminder delete, and the Review Queue card decision); the
     # reminder create failure uses its own non-replay panel.
-    # Reviewed has its own decision mutation catch path in addition to the
-    # existing detail, reminder, application, and queue paths.
-    assert js.count("replaceSectionError(") == 9
+    # Reviewed and Applications each have their own mutation catch path in
+    # addition to the existing detail, reminder, application, and queue paths.
+    assert js.count("replaceSectionError(") == 10
     for name in ("applyReviewDecision", "clearReviewDecision"):
         start = js.index(f"async function {name}")
         end = js.index("async function", start + len(name) + 30)

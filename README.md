@@ -50,7 +50,7 @@ Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
 
-A local web dashboard (Home, Jobs, Review, Reviewed, Reminders, and a per-job
+A local web dashboard (Home, Jobs, Review, Reviewed, Applications, Reminders, and a per-job
 detail view) is served by the optional
 FastAPI slice at <http://127.0.0.1:8000/ui>:
 
@@ -84,6 +84,14 @@ Grouped actions target the server-returned concrete `decision_job_id`, not
 necessarily the displayed representative. Reviewed mutations refresh only
 `GET /reviewed-opportunities`; Shortlist remains evaluation intent and never
 creates or changes an application status.
+The Applications workspace is flat and concrete-job-owned: `GET
+/application-pipeline` returns server-authoritative status counts and a paginated
+page ordered by application `updated_at` then id. `interested`, `applied`,
+`interview`, and `offer` are active; `rejected` and `withdrawn` are completed.
+It reuses `PUT /applications/{id}` for status changes and refreshes only the
+pipeline read. Application state never rewrites Review decisions, reminders,
+or duplicate-group members; duplicate listings may therefore have independent
+application records and histories.
 Overlapping successful decisions are coalesced into one queue refresh followed
 by one dirty rerun when needed. The Job Detail application/review reads use
 the job-scoped list endpoints so the normal absent state ("Not tracked." /

@@ -127,7 +127,7 @@ def _css() -> str:
 
 
 def _render_application_slice(js: str) -> str:
-    start = js.index("function renderApplication")
+    start = js.index("function renderApplication(body, job, settled, retry)")
     end = js.index("function buildApplicationStatusActions", start)
     return js[start:end]
 
@@ -329,7 +329,8 @@ def test_job_detail_origin_is_in_memory_only() -> None:
     assert "if (leaving === JOBS || leaving === REVIEW || leaving === REVIEWED)" in js
     assert "jobDetailOrigin = leaving;" in js
     assert 'href: "#" + jobDetailOrigin' in js
-    assert 'jobDetailOrigin === REVIEWED ? "Back to reviewed" : "Back to jobs"' in js
+    assert 'jobDetailOrigin === REVIEWED ? "Back to reviewed"' in js
+    assert 'jobDetailOrigin === APPLICATIONS ? "Back to applications"' in js
     combined = "\n".join((_html(), js, _css())).lower()
     for forbidden in ("localstorage", "sessionstorage", "document.cookie"):
         assert forbidden not in combined, forbidden
@@ -379,7 +380,7 @@ def test_job_details_link_suppresses_unusable_ids() -> None:
 def test_open_original_action_retained_and_safe() -> None:
     js = _js()
     # Card actions and the core detail section both open the original listing.
-    assert js.count('safeExternalLink(job.url, "Open original")') == 2
+    assert js.count('safeExternalLink(job.url, "Open original")') == 3
     assert 'target: "_blank"' in js
     assert 'rel: "noopener noreferrer"' in js
     assert 'parsed.protocol !== "http:" && parsed.protocol !== "https:"' in js

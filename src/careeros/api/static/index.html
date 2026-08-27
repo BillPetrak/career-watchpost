@@ -17,6 +17,7 @@
       <a href="#jobs" id="nav-jobs">Jobs</a>
       <a href="#review" id="nav-review">Review</a>
       <a href="#reviewed" id="nav-reviewed">Reviewed</a>
+      <a href="#applications" id="nav-applications">Applications</a>
       <a href="#reminders" id="nav-reminders">Reminders</a>
     </nav>
   </header>
@@ -105,6 +106,15 @@
       </p>
       <div id="reviewed-status" class="status" role="status" aria-live="polite"></div>
       <div id="reviewed-content" class="view-content"></div>
+    </section>
+
+    <section id="view-applications" class="view" data-view="applications" hidden>
+      <h1>Applications</h1>
+      <p class="view-intro">
+        Track concrete applications independently from Review decisions. Changes are saved on the server.
+      </p>
+      <div id="applications-status" class="status" role="status" aria-live="polite" tabindex="-1"></div>
+      <div id="applications-content" class="view-content"></div>
     </section>
 
     <section id="view-reminders" class="view" data-view="reminders" hidden>

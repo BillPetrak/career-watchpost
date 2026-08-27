@@ -24,15 +24,25 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from careeros.applications.models import validate_status
+from careeros.applications.models import (
+    ACTIVE_APPLICATION_STATUSES,
+    APPLICATION_PIPELINE_VIEWS,
+    APPLICATION_STATUSES,
+    COMPLETED_APPLICATION_STATUSES,
+    validate_status,
+)
 from careeros.database.applications import (
     ApplicationEvent,
     ApplicationListItem,
+    ApplicationPipelineData,
     SetApplicationResult,
     StoredApplication,
     append_event,
     insert_application,
     update_application_status,
+)
+from careeros.database.applications import (
+    application_pipeline as _application_pipeline,
 )
 from careeros.database.applications import (
     get_application as _get_application,
@@ -59,6 +69,41 @@ class ApplicationError(Exception):
 
 class UnknownJobError(ApplicationError):
     """Raised when a status is set for a job id that does not exist."""
+
+
+def get_application_pipeline(
+    connection: sqlite3.Connection,
+    *,
+    view: str = "active",
+    offset: int = 0,
+    limit: int = 20,
+) -> ApplicationPipelineData:
+    """Return one flat application pipeline page and zero-filled counts."""
+    if view not in APPLICATION_PIPELINE_VIEWS:
+        raise ValueError(f"Invalid application pipeline view {view!r}.")
+    if offset < 0 or limit < 1:
+        raise ValueError("offset must be non-negative and limit must be positive.")
+    statuses: Sequence[str] | None
+    if view == "active":
+        statuses = ACTIVE_APPLICATION_STATUSES
+    elif view == "completed":
+        statuses = COMPLETED_APPLICATION_STATUSES
+    elif view == "all":
+        statuses = None
+    else:
+        statuses = (view,)
+    result = _application_pipeline(
+        connection, statuses=statuses, limit=limit, offset=offset
+    )
+    counts = {
+        status: result.status_counts.get(status, 0) for status in APPLICATION_STATUSES
+    }
+    counts["active"] = sum(counts[status] for status in ACTIVE_APPLICATION_STATUSES)
+    counts["completed"] = sum(
+        counts[status] for status in COMPLETED_APPLICATION_STATUSES
+    )
+    counts["all"] = counts["active"] + counts["completed"]
+    return ApplicationPipelineData(result.items, counts, result.total)
 
 
 @dataclass(frozen=True)

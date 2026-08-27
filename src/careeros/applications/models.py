@@ -15,6 +15,20 @@ APPLICATION_STATUSES: tuple[str, ...] = (
     "withdrawn",
 )
 
+ACTIVE_APPLICATION_STATUSES: tuple[str, ...] = (
+    "interested",
+    "applied",
+    "interview",
+    "offer",
+)
+COMPLETED_APPLICATION_STATUSES: tuple[str, ...] = ("rejected", "withdrawn")
+APPLICATION_PIPELINE_VIEWS: tuple[str, ...] = (
+    "active",
+    "completed",
+    "all",
+    *ACTIVE_APPLICATION_STATUSES,
+)
+
 
 def validate_status(status: str) -> str:
     """Return the status unchanged when it is a known application status.

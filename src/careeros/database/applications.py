@@ -67,6 +67,15 @@ class SetApplicationResult:
     changed: bool
 
 
+@dataclass(frozen=True)
+class ApplicationPipelineData:
+    """One consistent, flat application-pipeline read snapshot."""
+
+    items: list[ApplicationListItem]
+    status_counts: dict[str, int]
+    total: int
+
+
 def _application_from_row(row: sqlite3.Row) -> StoredApplication:
     """Build a StoredApplication from a SQLite row."""
     return StoredApplication(
@@ -265,6 +274,61 @@ def list_applications(
         (*parameters, limit),
     ).fetchall()
     return [_list_item_from_row(row) for row in rows]
+
+
+def application_pipeline(
+    connection: sqlite3.Connection,
+    *,
+    statuses: Sequence[str] | None,
+    limit: int,
+    offset: int,
+) -> ApplicationPipelineData:
+    """Read counts, total, and one ordered page in a single snapshot.
+
+    This deliberately omits event notes and uses concrete job ownership only.
+    """
+    conditions = ""
+    parameters: tuple[object, ...] = ()
+    if statuses:
+        placeholders = ", ".join("?" * len(statuses))
+        conditions = f" WHERE current_status IN ({placeholders})"
+        parameters = tuple(statuses)
+    connection.execute("BEGIN")
+    try:
+        count_rows = connection.execute(
+            "SELECT current_status, COUNT(*) AS count FROM applications "
+            "GROUP BY current_status"
+        ).fetchall()
+        status_counts = {
+            str(row["current_status"]): int(row["count"]) for row in count_rows
+        }
+        total = int(
+            connection.execute(
+                f"SELECT COUNT(*) AS count FROM applications{conditions}", parameters
+            ).fetchone()["count"]
+        )
+        rows = connection.execute(
+            f"""
+            SELECT a.id AS app_id, a.job_id AS job_id,
+                   a.current_status AS current_status,
+                   a.created_at AS app_created_at,
+                   a.updated_at AS app_updated_at,
+                   {", ".join(f"j.{column}" for column in _JOB_COLUMNS)},
+                   NULL AS latest_note
+            FROM applications a JOIN jobs j ON j.id = a.job_id
+            {conditions.replace("current_status", "a.current_status")}
+            ORDER BY a.updated_at DESC, a.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*parameters, limit, offset),
+        ).fetchall()
+    finally:
+        connection.rollback()
+    return ApplicationPipelineData(
+        items=[_list_item_from_row(row) for row in rows],
+        status_counts=status_counts,
+        total=total,
+    )
 
 
 def list_application_events(

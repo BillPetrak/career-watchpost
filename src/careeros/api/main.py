@@ -1,15 +1,17 @@
 """FastAPI application for the CareerOS API slice.
 
-The slice exposes twenty read-only GET endpoints backed by the shared database
+The slice exposes twenty-two read-only GET endpoints backed by the shared database
 and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /jobs/{job_id}/group``,
-``GET /sources/stats``, ``GET /collection-runs``, ``GET /applications``,
+``GET /sources/stats``, ``GET /collection-runs``, ``GET /application-pipeline``,
+``GET /applications``,
 ``GET /applications/{job_id}``, ``GET /applications/{job_id}/history``,
 ``GET /reminders``,
 ``GET /reminders/{reminder_id}``, ``GET /groups``, ``GET /groups/summary``,
 ``GET /groups/{group_id}``, ``GET /review-decisions``,
 ``GET /review-decisions/{job_id}``,
-``GET /review-decisions/{job_id}/history``, ``GET /saved-searches``,
+``GET /review-decisions/{job_id}/history``, ``GET /reviewed-opportunities``,
+``GET /saved-searches``,
 ``GET /saved-searches/{name}``, and ``GET /report``) plus four
 computation-only ``POST``
 endpoints: ``POST /ranked-jobs``, ``POST /review-queue``, and
@@ -198,6 +200,8 @@ from careeros.api.schemas import (
     ApplicationHistoryResponse,
     ApplicationItem,
     ApplicationListResponse,
+    ApplicationPipelineCounts,
+    ApplicationPipelineResponse,
     ApplicationStatusRequest,
     CandidateProfileRequest,
     ClearReviewDecisionResponse,
@@ -256,6 +260,7 @@ from careeros.applications.service import (
     application_statuses_for_jobs,
     apply_filter_to_flat,
     apply_filter_to_groups,
+    get_application_pipeline,
     set_application_status,
 )
 from careeros.applications.service import (
@@ -1091,6 +1096,54 @@ def create_app() -> FastAPI:
                 for run in runs[offset : offset + limit]
             ],
             total=len(runs),
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/application-pipeline", response_model=ApplicationPipelineResponse)
+    def application_pipeline_endpoint(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        view: Literal[
+            "active", "completed", "all", "interested", "applied", "interview", "offer"
+        ] = "active",
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+    ) -> ApplicationPipelineResponse:
+        """Return the flat, workflow-recency-ordered application pipeline."""
+        if connection is None:
+            counts = {
+                name: 0
+                for name in (
+                    "interested",
+                    "applied",
+                    "interview",
+                    "offer",
+                    "rejected",
+                    "withdrawn",
+                    "active",
+                    "completed",
+                    "all",
+                )
+            }
+            return ApplicationPipelineResponse(
+                items=[],
+                counts=ApplicationPipelineCounts(**counts),
+                view=view,
+                total=0,
+                offset=offset,
+                limit=limit,
+            )
+        result = get_application_pipeline(
+            connection, view=view, offset=offset, limit=limit
+        )
+        return ApplicationPipelineResponse(
+            items=[
+                ApplicationItem.model_validate(application_item_dict(item))
+                for item in result.items
+            ],
+            counts=ApplicationPipelineCounts(**result.status_counts),
+            view=view,
+            total=result.total,
             offset=offset,
             limit=limit,
         )

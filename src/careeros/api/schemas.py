@@ -140,6 +140,33 @@ class ApplicationListResponse(BaseModel):
     limit: int
 
 
+class ApplicationPipelineCounts(BaseModel):
+    """Zero-filled current-status and derived pipeline counts."""
+
+    interested: int
+    applied: int
+    interview: int
+    offer: int
+    rejected: int
+    withdrawn: int
+    active: int
+    completed: int
+    all: int
+
+
+class ApplicationPipelineResponse(BaseModel):
+    """A server-authoritative flat application pipeline page."""
+
+    items: list[ApplicationItem]
+    counts: ApplicationPipelineCounts
+    view: Literal[
+        "active", "completed", "all", "interested", "applied", "interview", "offer"
+    ]
+    total: int
+    offset: int
+    limit: int
+
+
 class ApplicationHistoryEvent(BaseModel):
     """One append-only application status transition.
 
@@ -936,6 +963,8 @@ __all__: tuple[str, ...] = (
     "ApplicationHistoryResponse",
     "ApplicationItem",
     "ApplicationListResponse",
+    "ApplicationPipelineCounts",
+    "ApplicationPipelineResponse",
     "ApplicationStatusRequest",
     "CandidateProfileRequest",
     "ClearReviewDecisionResponse",

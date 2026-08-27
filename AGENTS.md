@@ -86,6 +86,13 @@ uv run careeros diagnose      # verify environment
 | `uv run python systemd/uninstall.py` | Remove the installed systemd user units |
 | `loginctl enable-linger "$USER"` | Manual only: run the timer without a login session |
 
+The web Applications workspace uses `GET /application-pipeline` (default
+`view=active`, server pagination) and reuses `PUT /applications/{job_id}`.
+Pipeline records remain flat and owned by concrete `jobs.id`; active statuses
+are interested/applied/interview/offer and terminal statuses are
+rejected/withdrawn. Application mutations refresh only this narrow read model
+and do not change Review decisions, reminders, or duplicate-group members.
+
 Run order: **lint → mypy → test** (all independent; can run in parallel).
 
 `collect all` runs each registered source sequentially, once per invocation, in

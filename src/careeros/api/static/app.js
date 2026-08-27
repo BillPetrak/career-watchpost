@@ -35,6 +35,7 @@
   var JOBS = "jobs";
   var REVIEW = "review";
   var REVIEWED = "reviewed";
+  var APPLICATIONS = "applications";
   var REMINDERS = "reminders";
   var JOB = "job";
   var initialized = false;
@@ -105,6 +106,21 @@
   var reviewedCardInFlight = {};
   var reviewedState = { decision: "shortlist", grouped: true, offset: 0, limit: 20 };
 
+  // Applications is deliberately independent from every other workspace.
+  // Records are concrete-job owned and this view never invokes grouping,
+  // ranking, review, reminder, or report services.
+  var applicationsViewGeneration = 0;
+  var applicationsRequestSeq = 0;
+  var applicationsDataGeneration = 0;
+  var applicationsRefreshActive = false;
+  var applicationsRefreshOwner = null;
+  var applicationsRefreshDirty = false;
+  var applicationsOperationSeq = 0;
+  var applicationsCardInFlight = {};
+  var applicationsState = { view: "active", offset: 0, limit: 20 };
+  var applicationsOriginState = null;
+  var applicationsFocusTarget = null;
+
   // Serializes the Application status actions: while a mutation (PUT) and its
   // immediate refetch are in flight, no second mutation may start for the same
   // Application section. Buttons are disabled for the whole operation as well,
@@ -130,6 +146,7 @@
     if (raw === JOBS) return JOBS;
     if (raw === REVIEW) return REVIEW;
     if (raw === REVIEWED) return REVIEWED;
+    if (raw === APPLICATIONS) return APPLICATIONS;
     if (raw === REMINDERS) return REMINDERS;
     if (raw === HOME) return HOME;
     return null; // unknown / absent / non-view (e.g. #main)
@@ -204,9 +221,19 @@
       reviewedViewGeneration++;
       reviewedRefreshDirty = false;
     }
+    if (leaving === APPLICATIONS && name !== APPLICATIONS) {
+      applicationsRequestSeq++;
+      applicationsViewGeneration++;
+      applicationsRefreshDirty = false;
+      applicationsFocusTarget = null;
+    }
     if (name === REVIEWED && leaving !== REVIEWED) {
       reviewedViewGeneration++;
       reviewedRefreshDirty = false;
+    }
+    if (name === APPLICATIONS && leaving !== APPLICATIONS) {
+      applicationsViewGeneration++;
+      applicationsRefreshDirty = false;
     }
     if (name === REVIEW && leaving !== REVIEW) {
       reviewViewGeneration++;
@@ -221,6 +248,8 @@
       resetReviewResults();
     } else if (view === REVIEWED) {
       await renderReviewedView();
+    } else if (view === APPLICATIONS) {
+      await renderApplicationsView();
     } else if (view === REMINDERS) {
       if (leaving === REVIEW) resetReviewResults();
       await renderRemindersView();
@@ -234,6 +263,13 @@
       if (leaving === REVIEW) resetReviewResults();
       if (leaving === JOBS || leaving === REVIEW || leaving === REVIEWED) {
         jobDetailOrigin = leaving;
+      } else if (leaving === APPLICATIONS) {
+        jobDetailOrigin = leaving;
+        applicationsOriginState = {
+          view: applicationsState.view,
+          offset: applicationsState.offset,
+          limit: applicationsState.limit,
+        };
       }
       await renderJobDetail(jobId);
     }
@@ -1463,6 +1499,235 @@
   function clearReviewedDecision(card, jobId) { submitReviewedMutation(card, jobId, null, true); }
 
   // ---------------------------------------------------------------------------
+  // Applications workspace (#applications)
+  //
+  // This is a flat, concrete-job-owned read model. The server supplies counts,
+  // filtering, ordering, and pagination; the browser never groups or sorts
+  // application records and never performs optimistic updates.
+  // ---------------------------------------------------------------------------
+
+  var APPLICATION_VIEWS = [
+    { value: "active", label: "All active" },
+    { value: "interested", label: "Interested" },
+    { value: "applied", label: "Applied" },
+    { value: "interview", label: "Interview" },
+    { value: "offer", label: "Offer" },
+    { value: "completed", label: "Completed" },
+    { value: "all", label: "All" },
+  ];
+
+  function applicationsUrl(state) {
+    return "/application-pipeline?view=" + encodeURIComponent(state.view) +
+      "&offset=" + state.offset + "&limit=" + state.limit;
+  }
+
+  function applicationCounts(data) {
+    var counts = isObject(data && data.counts) ? data.counts : {};
+    return {
+      interested: countValue(counts.interested), applied: countValue(counts.applied),
+      interview: countValue(counts.interview), offer: countValue(counts.offer),
+      rejected: countValue(counts.rejected), withdrawn: countValue(counts.withdrawn),
+      active: countValue(counts.active), completed: countValue(counts.completed),
+      all: countValue(counts.all),
+    };
+  }
+
+  function applicationItemJob(item) {
+    if (!isObject(item)) return null;
+    return isObject(item.job) ? item.job : item;
+  }
+
+  function applicationItemStatus(item) {
+    return isObject(item) && typeof item.current_status === "string" ? item.current_status : "";
+  }
+
+  function buildApplicationPipelineCard(item) {
+    if (!isObject(item) || !isFiniteNumber(item.job_id) || item.job_id < 1) return null;
+    var job = applicationItemJob(item);
+    if (!job) return null;
+    var card = el("li", { className: "job-card application-card" });
+    card.setAttribute("data-job-id", String(item.job_id));
+    var status = applicationItemStatus(item);
+    card.appendChild(el("p", { className: "application-status", textContent: applicationStatusLabel(status) }));
+    card.appendChild(el("h2", { className: "job-title", textContent: displayText(job.title) }));
+    var fields = el("dl", { className: "job-fields" });
+    addField(fields, "Company", job.company);
+    addField(fields, "Location", job.location);
+    addField(fields, "Source", job.source);
+    addField(fields, "Last updated", displayDate(item.updated_at));
+    addField(fields, "First tracked", displayDate(item.created_at));
+    addField(fields, "Application owner", "job " + item.job_id);
+    card.appendChild(fields);
+    var actions = el("div", { className: "job-actions" });
+    var details = jobDetailsLink({ id: item.job_id });
+    if (details) {
+      details.textContent = "Open Job Detail";
+      actions.appendChild(details);
+    }
+    var original = safeExternalLink(job.url, "Open original");
+    if (original) actions.appendChild(original);
+    card.appendChild(actions);
+    var statusActions = el("div", { className: "status-actions" });
+    statusActions.setAttribute("role", "group");
+    statusActions.setAttribute("aria-label", "Application status for job " + item.job_id);
+    APPLICATION_STATUSES.forEach(function (entry) {
+      var button = el("button", { className: "status-button", type: "button", textContent: entry.label });
+      button.setAttribute("aria-pressed", String(status === entry.value));
+      if (status === entry.value) button.classList.add("current");
+      button.addEventListener("click", function () {
+        submitPipelineApplication(card, statusActions, item.job_id, entry.value);
+      });
+      statusActions.appendChild(button);
+    });
+    card.appendChild(statusActions);
+    return card;
+  }
+
+  function renderApplicationsView(options) {
+    options = options || {};
+    var refreshing = options.refresh === true;
+    if (applicationsOriginState && !refreshing) {
+      applicationsState.view = applicationsOriginState.view;
+      applicationsState.offset = applicationsOriginState.offset;
+      applicationsState.limit = applicationsOriginState.limit;
+      applicationsOriginState = null;
+    }
+    applicationsDataGeneration++;
+    var generation = applicationsViewGeneration;
+    var seq = ++applicationsRequestSeq;
+    var state = { view: applicationsState.view, offset: applicationsState.offset, limit: applicationsState.limit };
+    var status = document.getElementById("applications-status");
+    var content = document.getElementById("applications-content");
+    if (!status || !content) return Promise.resolve();
+    setLoading(status, "Loading applications…");
+    return fetchJson(applicationsUrl(state)).then(function (data) {
+      if (seq !== applicationsRequestSeq || generation !== applicationsViewGeneration || visibleView() !== APPLICATIONS) return;
+      if (!isObject(data) || !Array.isArray(data.items) || !isObject(data.counts) || !isFiniteNumber(data.total) ||
+          data.view !== state.view || data.offset !== state.offset || data.limit !== state.limit) {
+        throw new Error("The /application-pipeline response did not match the expected shape.");
+      }
+      // A mutation can remove the final item on a later page. Correct the
+      // requested offset from the authoritative total and issue one bounded
+      // read rather than stranding the user on an empty page.
+      if (data.items.length === 0 && data.total > 0 && state.offset >= data.total) {
+        applicationsState.offset = Math.max(0, Math.floor((data.total - 1) / state.limit) * state.limit);
+        if (applicationsState.offset !== state.offset) {
+          renderApplicationsView({ refresh: refreshing });
+          return;
+        }
+      }
+      renderApplicationsContent(content, data, state);
+      doneLoading(status);
+      if (refreshing) status.textContent = "Application status saved. Applications refreshed.";
+      restoreApplicationsFocus(status, content);
+    }).catch(function (error) {
+      if (seq !== applicationsRequestSeq || generation !== applicationsViewGeneration || visibleView() !== APPLICATIONS) return;
+      if (!refreshing) clearText(content);
+      status.parentNode.removeAttribute("aria-busy");
+      renderError(status, refreshing ? "Application status saved, but Applications could not be refreshed. " + error.message : error.message,
+        function () { renderApplicationsView({ refresh: refreshing }); });
+    });
+  }
+
+  function restoreApplicationsFocus(status, content) {
+    var target = applicationsFocusTarget;
+    applicationsFocusTarget = null;
+    if (!target) return;
+    var card = content.querySelector('[data-job-id="' + String(target.jobId) + '"]');
+    if (card) {
+      var button = card.querySelector('.status-button[aria-pressed="true"]');
+      if (button) { button.focus(); return; }
+      card.focus();
+      return;
+    }
+    var firstButton = content.querySelector(".application-card .status-button");
+    if (firstButton) { firstButton.focus(); return; }
+    status.textContent = "Applications updated.";
+    status.focus();
+  }
+
+  function renderApplicationsContent(content, data, state) {
+    clearText(content);
+    var counts = applicationCounts(data);
+    var toolbar = el("div", { className: "applications-toolbar" });
+    toolbar.setAttribute("role", "group");
+    toolbar.setAttribute("aria-label", "Application filters");
+    APPLICATION_VIEWS.forEach(function (entry) {
+      var value = counts[entry.value];
+      var tab = el("button", { className: "application-filter", type: "button", textContent: entry.label + " (" + value + ")" });
+      tab.setAttribute("aria-pressed", String(state.view === entry.value));
+      tab.disabled = state.view === entry.value;
+      tab.addEventListener("click", function () { applicationsState.view = entry.value; applicationsState.offset = 0; renderApplicationsView(); });
+      toolbar.appendChild(tab);
+    });
+    content.appendChild(toolbar);
+    var total = countValue(data.total);
+    if (data.items.length === 0) {
+      content.appendChild(el("p", { className: "empty-note", textContent: total === 0 ? "No applications in this view." : "No applications on this page." }));
+    } else {
+      var start = state.offset + 1;
+      var end = state.offset + data.items.length;
+      content.appendChild(el("p", { className: "result-summary", textContent: "Showing " + start + "–" + end + " of " + total + " applications." }));
+      var list = el("ul", { className: "job-list", id: "applications-list" });
+      data.items.forEach(function (item) { var card = buildApplicationPipelineCard(item); if (card) list.appendChild(card); });
+      content.appendChild(list);
+    }
+    var pager = el("div", { className: "applications-pager" });
+    var previous = el("button", { type: "button", textContent: "Previous" });
+    previous.disabled = state.offset <= 0;
+    previous.addEventListener("click", function () { applicationsState.offset = Math.max(0, state.offset - state.limit); renderApplicationsView(); });
+    var next = el("button", { type: "button", textContent: "Next" });
+    next.disabled = state.offset + state.limit >= total;
+    next.addEventListener("click", function () { applicationsState.offset = state.offset + state.limit; renderApplicationsView(); });
+    pager.appendChild(previous); pager.appendChild(next); content.appendChild(pager);
+  }
+
+  function setPipelineActionsDisabled(group, disabled) {
+    group.querySelectorAll("button").forEach(function (button) { button.disabled = disabled; });
+    if (disabled) group.setAttribute("aria-busy", "true"); else group.removeAttribute("aria-busy");
+  }
+
+  function requestApplicationsRefresh() {
+    if (visibleView() !== APPLICATIONS) return;
+    applicationsRefreshDirty = true;
+    var generation = applicationsViewGeneration;
+    if (applicationsRefreshActive && applicationsRefreshOwner && applicationsRefreshOwner.generation === generation) return;
+    var owner = { generation: generation, dataGeneration: applicationsDataGeneration };
+    applicationsRefreshActive = true; applicationsRefreshOwner = owner;
+    (async function () {
+      try {
+        while (applicationsRefreshDirty && applicationsRefreshOwner === owner && owner.generation === applicationsViewGeneration && visibleView() === APPLICATIONS) {
+          applicationsRefreshDirty = false;
+          await renderApplicationsView({ refresh: true });
+          owner.dataGeneration = applicationsDataGeneration;
+        }
+      } finally {
+        if (applicationsRefreshOwner === owner) { applicationsRefreshOwner = null; applicationsRefreshActive = false; }
+      }
+    })();
+  }
+
+  async function submitPipelineApplication(card, group, jobId, status) {
+    if (applicationsCardInFlight[jobId] || visibleView() !== APPLICATIONS) return;
+    var operation = { id: ++applicationsOperationSeq, generation: applicationsViewGeneration };
+    applicationsCardInFlight[jobId] = operation;
+    applicationsFocusTarget = { jobId: jobId, status: status };
+    setPipelineActionsDisabled(group, true);
+    try {
+      await putJson("/applications/" + jobId, { status: status });
+      requestApplicationsRefresh();
+    } catch (error) {
+      if (operation.generation !== applicationsViewGeneration || visibleView() !== APPLICATIONS) return;
+      setPipelineActionsDisabled(group, false);
+      replaceSectionError(card, "The application status could not be saved.", error, function () {
+        submitPipelineApplication(card, group, jobId, status);
+      });
+    } finally {
+      if (applicationsCardInFlight[jobId] === operation) delete applicationsCardInFlight[jobId];
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Reminders overview view (#reminders)
   //
   // Read-only presentation of the OPEN reminders, split into three sections by
@@ -1831,11 +2096,13 @@
   }
 
   function backLink() {
+    var label = jobDetailOrigin === REVIEW ? "Back to review" :
+      jobDetailOrigin === REVIEWED ? "Back to reviewed" :
+      jobDetailOrigin === APPLICATIONS ? "Back to applications" : "Back to jobs";
     return el("a", {
       className: "job-back",
       href: "#" + jobDetailOrigin,
-      textContent: jobDetailOrigin === REVIEW ? "Back to review" :
-        jobDetailOrigin === REVIEWED ? "Back to reviewed" : "Back to jobs",
+      textContent: label,
     });
   }
 
