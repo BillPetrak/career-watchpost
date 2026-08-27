@@ -27,6 +27,7 @@ from careeros.database.review import DecisionListItem, ReviewEvent
 from careeros.ranking.scorer import RankedGroup, RankedJob, component_to_dict
 from careeros.review.service import QueueItem, ReviewedOpportunity
 from careeros.saved_searches.models import SavedSearch
+from careeros.today.models import TodayReminder, TodayShortlist
 
 if TYPE_CHECKING:
     from careeros.reporting.models import (
@@ -254,6 +255,32 @@ def reviewed_opportunity_item_dict(item: ReviewedOpportunity) -> dict[str, Any]:
     }
 
 
+def today_reminder_dict(item: TodayReminder) -> dict[str, Any]:
+    """Serialize a public Today reminder, including same-job app context."""
+    return {
+        "reminder_id": item.reminder.id,
+        "job_id": item.reminder.job_id,
+        "kind": item.reminder.kind,
+        "due_at": item.reminder.due_at,
+        "completed_at": item.reminder.completed_at,
+        "created_at": item.reminder.created_at,
+        "updated_at": item.reminder.updated_at,
+        "active_application_status": item.active_application_status,
+        "job": job_dict(item.job),
+    }
+
+
+def today_shortlist_dict(item: TodayShortlist) -> dict[str, Any]:
+    """Serialize a canonical unstarted shortlist opportunity."""
+    return {
+        "group": group_dict(item.group),
+        "review_decision": "shortlist",
+        "decision_job_id": item.decision_job_id,
+        "decision_updated_at": item.decision_updated_at,
+        "conflict": item.conflict,
+    }
+
+
 def review_decision_event_dict(event: ReviewEvent) -> dict[str, Any]:
     """Serialize one append-only review-decision transition.
 
@@ -391,6 +418,8 @@ __all__: tuple[str, ...] = (
     "review_decision_event_dict",
     "review_decision_item_dict",
     "reviewed_opportunity_item_dict",
+    "today_reminder_dict",
+    "today_shortlist_dict",
     "review_queue_item_dict",
     "saved_search_item_dict",
     "source_stats_dict",

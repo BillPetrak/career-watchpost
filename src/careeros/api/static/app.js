@@ -32,6 +32,7 @@
   // stored by this frontend.
 
   var HOME = "home";
+  var TODAY = "today";
   var JOBS = "jobs";
   var REVIEW = "review";
   var REVIEWED = "reviewed";
@@ -134,6 +135,19 @@
   // against programmatic/edge re-entry and rapid-click duplicates.
   var reminderOperationActive = false;
 
+  // Today is an independent, server-classified attention view.  These
+  // generation/owner tokens keep overlapping refreshes and stale navigation
+  // continuations from replacing a newer render.
+  var todayViewGeneration = 0;
+  var todayRequestSeq = 0;
+  var todayDataGeneration = 0;
+  var todayRefreshActive = false;
+  var todayRefreshOwner = null;
+  var todayRefreshDirty = false;
+  var todayOperationSeq = 0;
+  var todayReminderInFlight = {};
+  var todayFocusTarget = null;
+
   // ---------------------------------------------------------------------------
   // Navigation (semantic hash links: #home, #jobs, #review; unknown hashes ->
   // home). Non-view hashes such as the #main skip-link anchor never change the
@@ -143,6 +157,7 @@
 
   function parsedHash() {
     var raw = window.location.hash.replace(/^#\/?/, "").trim().toLowerCase();
+    if (raw === TODAY) return TODAY;
     if (raw === JOBS) return JOBS;
     if (raw === REVIEW) return REVIEW;
     if (raw === REVIEWED) return REVIEWED;
@@ -207,6 +222,11 @@
     if (leaving === REMINDERS && name !== REMINDERS) {
       remindersRequestSeq++;
     }
+    if (leaving === TODAY && name !== TODAY) {
+      todayRequestSeq++;
+      todayViewGeneration++;
+      todayRefreshDirty = false;
+    }
     if (leaving === REVIEW && name !== REVIEW) {
       // Invalidate any in-flight Review continuation (the form's POST /report
       // refresh or a queue-card mutation) the moment the user leaves the
@@ -239,10 +259,16 @@
       reviewViewGeneration++;
       reviewQueueRefreshDirty = false;
     }
+    if (name === TODAY && leaving !== TODAY) {
+      todayViewGeneration++;
+      todayRefreshDirty = false;
+    }
     showView(name);
     // Only re-render when a real view route is set; otherwise (e.g. the #main
     // skip-link anchor) keep the currently visible, already-rendered view.
-    if (view === REVIEW) {
+    if (view === TODAY) {
+      await renderTodayView();
+    } else if (view === REVIEW) {
       // The Review view renders its static form and never auto-submits; clear
       // any prior results so nothing stale is shown when the view is entered.
       resetReviewResults();
@@ -270,6 +296,8 @@
           offset: applicationsState.offset,
           limit: applicationsState.limit,
         };
+      } else if (leaving === TODAY) {
+        jobDetailOrigin = TODAY;
       }
       await renderJobDetail(jobId);
     }
@@ -2042,6 +2070,195 @@
 
   // ---------------------------------------------------------------------------
   // Job Detail view (#job/<id>)
+  // ---------------------------------------------------------------------------
+  // Today workspace (#today)
+  //
+  // GET /today is the sole authority for UTC classification, totals, ordering,
+  // duplicate context, and application state. The browser only renders the
+  // three already-classified collections and formats due_at for display.
+  // ---------------------------------------------------------------------------
+
+  function todayJob(item) {
+    return isObject(item) && isObject(item.job) ? item.job : null;
+  }
+
+  function todayViewJobLink(job, label) {
+    if (!isObject(job) || !isFiniteNumber(job.id) || job.id < 1) return null;
+    return el("a", { className: "job-link", href: "#job/" + job.id, textContent: label || "View job" });
+  }
+
+  function buildTodayReminderCard(reminder) {
+    var card = el("li", { className: "job-card today-reminder-card" });
+    if (isFiniteNumber(reminder.reminder_id)) card.setAttribute("data-reminder-id", String(reminder.reminder_id));
+    var job = todayJob(reminder);
+    card.appendChild(el("h3", { className: "job-title", textContent: displayText(job && job.title) }));
+    card.appendChild(el("p", { className: "reminder-kind", textContent: reminderKindLabel(reminder.kind) }));
+    card.appendChild(el("p", { className: "reminder-due", textContent: "Due: " + displayLocalDateTime(reminder.due_at) }));
+    if (job && job.company) card.appendChild(el("p", { className: "reminder-company", textContent: displayText(job.company) }));
+    if (typeof reminder.active_application_status === "string" && reminder.active_application_status) {
+      card.appendChild(el("p", { className: "application-status", textContent: "Application: " + applicationStatusLabel(reminder.active_application_status) }));
+    }
+    var actions = el("div", { className: "job-actions" });
+    var complete = el("button", { className: "reminder-button", type: "button", textContent: "Complete", label: "Complete reminder" });
+    complete.addEventListener("click", function () { completeTodayReminder(card, reminder); });
+    actions.appendChild(complete);
+    var link = todayViewJobLink(job, "View job");
+    if (link) actions.appendChild(link);
+    card.appendChild(actions);
+    return card;
+  }
+
+  function buildTodayShortlistCard(item) {
+    var card = el("li", { className: "job-card today-shortlist-card" });
+    var group = isObject(item.group) ? item.group : null;
+    var members = group && Array.isArray(group.members) ? group.members : [];
+    var job = group && isObject(group.representative) ? group.representative :
+      (members.length ? (isObject(members[0]) ? members[0] : null) : todayJob(item));
+    card.appendChild(el("h3", { className: "job-title", textContent: displayText(job && job.title) }));
+    if (job && job.company) card.appendChild(el("p", { className: "job-company", textContent: displayText(job.company) }));
+    if (members.length > 1) card.appendChild(el("p", { className: "group-context", textContent: members.length + " source listings" }));
+    if (item.conflict === true) card.appendChild(el("p", { className: "reviewed-conflict", textContent: "Conflicting decisions exist across these listings." }));
+    var actions = el("div", { className: "job-actions" });
+    var link = todayViewJobLink(job, "View job");
+    if (link) actions.appendChild(link);
+    actions.appendChild(el("a", { className: "job-link", href: "#reviewed", textContent: "Reviewed" }));
+    card.appendChild(actions);
+    return card;
+  }
+
+  function buildTodaySection(title, bucket, cardBuilder) {
+    var section = el("section", { className: "chunk" });
+    section.appendChild(el("h2", { textContent: title }));
+    section.appendChild(el("p", { className: "result-summary", textContent: "" }));
+    var list = el("ul", { className: "job-list" });
+    var items = Array.isArray(bucket.items) ? bucket.items : [];
+    items.forEach(function (item) {
+      if (isObject(item)) {
+        var card = cardBuilder(item);
+        if (card) list.appendChild(card);
+      }
+    });
+    var total = countValue(bucket.total);
+    section.querySelector(".result-summary").textContent = String(total) + " needing attention.";
+    if (total === 0) section.appendChild(el("p", { className: "empty-note", textContent: "Nothing here today." }));
+    else section.appendChild(list);
+    return section;
+  }
+
+  function renderTodayContent(content, data) {
+    clearText(content);
+    var links = el("p", { className: "today-workspace-links" });
+    links.appendChild(el("span", { textContent: "Workspaces: " }));
+    [[REMINDERS, "Reminders"], [APPLICATIONS, "Applications"], [REVIEWED, "Reviewed"]].forEach(function (entry, index) {
+      if (index > 0) links.appendChild(document.createTextNode(" · "));
+      links.appendChild(el("a", { href: "#" + entry[0], textContent: entry[1] }));
+    });
+    content.appendChild(links);
+    var reminders = isObject(data.reminders) ? data.reminders : {};
+    var shortlist = isObject(data.shortlist) ? data.shortlist : {};
+    var overdue = isObject(reminders.overdue) ? reminders.overdue : { total: 0, items: [] };
+    var due = isObject(reminders.due_today) ? reminders.due_today : { total: 0, items: [] };
+    var unstarted = isObject(shortlist.unstarted) ? shortlist.unstarted : { total: 0, items: [] };
+    var total = countValue(overdue.total) + countValue(due.total) + countValue(unstarted.total);
+    if (total === 0) {
+      content.appendChild(el("p", { className: "empty-note", textContent: "Nothing needs attention today." }));
+      content.appendChild(el("p", { className: "today-boundary-note", textContent: "Reminder sections are classified by the server using UTC; due times are displayed in your browser's local time." }));
+      return;
+    }
+    content.appendChild(buildTodaySection("Overdue reminders", overdue, buildTodayReminderCard));
+    content.appendChild(buildTodaySection("Due later today", due, buildTodayReminderCard));
+    content.appendChild(buildTodaySection("Shortlisted, not started", unstarted, buildTodayShortlistCard));
+    content.appendChild(el("p", { className: "today-boundary-note", textContent: "Reminder sections are classified by the server using UTC; due times are displayed in your browser's local time." }));
+  }
+
+  async function renderTodayView(options) {
+    options = options || {};
+    var generation = todayViewGeneration;
+    var seq = ++todayRequestSeq;
+    todayDataGeneration++;
+    var status = document.getElementById("today-status");
+    var content = document.getElementById("today-content");
+    if (!status || !content) return;
+    setLoading(status, "Loading today…");
+    if (!options.refresh) clearText(content);
+    try {
+      var data = await fetchJson("/today?limit=10");
+      if (seq !== todayRequestSeq || generation !== todayViewGeneration || visibleView() !== TODAY) return;
+      if (!isObject(data) || !isObject(data.reminders) || !isObject(data.shortlist)) throw new Error("The /today response did not match the expected shape.");
+      renderTodayContent(content, data);
+      doneLoading(status);
+      if (options.saved) status.textContent = "Reminder saved. Today refreshed.";
+      restoreTodayFocus(status, content);
+    } catch (error) {
+      if (seq !== todayRequestSeq || generation !== todayViewGeneration || visibleView() !== TODAY) return;
+      if (options.saved) {
+        status.parentNode.removeAttribute("aria-busy");
+        renderError(status, "Reminder saved, but Today could not be refreshed. " + error.message, function () { renderTodayView({ refresh: true }); });
+      } else {
+        clearText(content);
+        renderError(status, error.message, function () { renderTodayView(); });
+      }
+    }
+  }
+
+  function restoreTodayFocus(status, content) {
+    var target = todayFocusTarget;
+    todayFocusTarget = null;
+    if (!target) return;
+    var card = content.querySelector('[data-reminder-id="' + String(target.reminderId) + '"]');
+    if (card) {
+      var button = card.querySelector("button");
+      if (button) { button.focus(); return; }
+    }
+    var next = content.querySelector(".today-reminder-card button, .today-shortlist-card a");
+    if (next) { next.focus(); return; }
+    status.textContent = "Today updated.";
+    status.focus();
+  }
+
+  function requestTodayRefresh(saved) {
+    if (visibleView() !== TODAY) return;
+    todayRefreshDirty = true;
+    var generation = todayViewGeneration;
+    if (todayRefreshActive && todayRefreshOwner && todayRefreshOwner.generation === generation) return;
+    var owner = { generation: generation, dataGeneration: todayDataGeneration };
+    todayRefreshActive = true; todayRefreshOwner = owner;
+    (async function () {
+      try {
+        while (todayRefreshDirty && todayRefreshOwner === owner && owner.generation === todayViewGeneration && visibleView() === TODAY) {
+          todayRefreshDirty = false;
+          await renderTodayView({ refresh: true, saved: saved === true });
+          owner.dataGeneration = todayDataGeneration;
+        }
+      } finally {
+        if (todayRefreshOwner === owner) { todayRefreshOwner = null; todayRefreshActive = false; }
+      }
+    })();
+  }
+
+  async function completeTodayReminder(card, reminder) {
+    if (!isObject(reminder) || !isFiniteNumber(reminder.reminder_id) || todayReminderInFlight[reminder.reminder_id] || visibleView() !== TODAY) return;
+    var operation = { id: ++todayOperationSeq, generation: todayViewGeneration };
+    todayReminderInFlight[reminder.reminder_id] = operation;
+    todayFocusTarget = { reminderId: reminder.reminder_id };
+    card.setAttribute("aria-busy", "true");
+    card.querySelectorAll("button").forEach(function (button) { button.disabled = true; });
+    try {
+      await putJson("/reminders/" + reminder.reminder_id + "/complete", {});
+      if (operation.generation === todayViewGeneration && visibleView() === TODAY) requestTodayRefresh(true);
+    } catch (error) {
+      if (operation.generation !== todayViewGeneration || visibleView() !== TODAY) return;
+      card.removeAttribute("aria-busy");
+      card.querySelectorAll("button").forEach(function (button) { button.disabled = false; });
+      if (error && error.status === 404) { requestTodayRefresh(false); return; }
+      replaceSectionError(card, "The reminder could not be completed.", error, function () { completeTodayReminder(card, reminder); });
+    } finally {
+      if (todayReminderInFlight[reminder.reminder_id] === operation) delete todayReminderInFlight[reminder.reminder_id];
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Job Detail view (#job/<id>)
   //
   // Loads one stored job's detail through exactly five read GET endpoints
   // (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications?job_id={id},
@@ -2096,6 +2313,9 @@
   }
 
   function backLink() {
+    if (jobDetailOrigin === TODAY) {
+      return el("a", { className: "job-back", href: "#today", textContent: "Back to Today" });
+    }
     var label = jobDetailOrigin === REVIEW ? "Back to review" :
       jobDetailOrigin === REVIEWED ? "Back to reviewed" :
       jobDetailOrigin === APPLICATIONS ? "Back to applications" : "Back to jobs";

@@ -253,6 +253,12 @@ from careeros.api.schemas import (
     SavedSearchUpdateRequest,
     SourceStats,
     SourceStatsListResponse,
+    TodayReminderItem,
+    TodayReminders,
+    TodayReminderSection,
+    TodayResponse,
+    TodayShortlist,
+    TodayShortlistSection,
 )
 from careeros.applications.models import APPLICATION_STATUSES, validate_status
 from careeros.applications.service import (
@@ -302,6 +308,8 @@ from careeros.presenters import (
     saved_search_item_dict,
     source_stats_dict,
     source_status_item_dict,
+    today_reminder_dict,
+    today_shortlist_dict,
 )
 from careeros.ranking.scorer import CandidateProfile, RankedGroup, RankedJob
 from careeros.reminders.models import (
@@ -367,6 +375,7 @@ from careeros.saved_searches.service import (
     update_search,
 )
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
+from careeros.today.service import build_today
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
@@ -1146,6 +1155,47 @@ def create_app() -> FastAPI:
             total=result.total,
             offset=offset,
             limit=limit,
+        )
+
+    @app.get("/today", response_model=TodayResponse)
+    def today_endpoint(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        limit: Annotated[int, Query(ge=1, le=20)] = 10,
+    ) -> TodayResponse:
+        """Return one bounded, coherent UTC Action Center snapshot."""
+        snapshot = build_today(connection, limit=limit)
+        return TodayResponse(
+            as_of=snapshot.as_of,
+            timezone="UTC",
+            today_ends_at=snapshot.today_ends_at,
+            limit=limit,
+            reminders=TodayReminders(
+                overdue=TodayReminderSection(
+                    total=snapshot.overdue.total,
+                    items=[
+                        TodayReminderItem.model_validate(today_reminder_dict(item))
+                        for item in snapshot.overdue.items
+                    ],
+                ),
+                due_today=TodayReminderSection(
+                    total=snapshot.due_today.total,
+                    items=[
+                        TodayReminderItem.model_validate(today_reminder_dict(item))
+                        for item in snapshot.due_today.items
+                    ],
+                ),
+            ),
+            shortlist=TodayShortlist(
+                unstarted=TodayShortlistSection(
+                    total=snapshot.unstarted.total,
+                    items=[
+                        ReviewedOpportunityItem.model_validate(
+                            today_shortlist_dict(item)
+                        )
+                        for item in snapshot.unstarted.items
+                    ],
+                )
+            ),
         )
 
     @app.get("/applications", response_model=ApplicationListResponse)

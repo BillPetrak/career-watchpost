@@ -535,3 +535,10 @@ without a login session, enable lingering manually with
 `loginctl enable-linger "$USER"`; it is never enabled automatically. Re-run the
 installer after moving the repository, since the units embed the absolute
 project path.
+
+## Today / Action Center
+
+`GET /today?limit=10` provides a bounded, read-only UTC snapshot of overdue
+reminders, reminders due later today, and unstarted canonical shortlist
+opportunities. It captures one server-side `as_of` instant and uses one
+SQLite read transaction; totals precede each independent limit (maximum 20).

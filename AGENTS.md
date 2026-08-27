@@ -2058,3 +2058,11 @@ can assert on stable strings:
 - Collector unit tests pass without network (test `normalize_job()` only, not `fetch_jobs()`)
 - Grouping tests use the pure matcher (`assign_groups`) and a seeded `tmp_path` DB (no network)
 - No integration/e2e tests yet
+
+## Today read model
+
+`GET /today` is a bounded read-only Action Center snapshot. It uses one UTC
+`as_of` and one SQLite read transaction, half-open reminder buckets, canonical
+lowest-decided-member review resolution, and opportunity-wide application
+exclusion. It never initializes a missing database or runs ranking/report
+computation.

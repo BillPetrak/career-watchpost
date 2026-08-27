@@ -13,6 +13,7 @@
   <header class="site-header">
     <p class="brand">CareerOS</p>
     <nav class="nav" aria-label="Primary">
+      <a href="#today" id="nav-today">Today</a>
       <a href="#home" id="nav-home">Home</a>
       <a href="#jobs" id="nav-jobs">Jobs</a>
       <a href="#review" id="nav-review">Review</a>
@@ -23,6 +24,12 @@
   </header>
 
   <main id="main">
+    <section id="view-today" class="view" data-view="today" hidden>
+      <h1>Today</h1>
+      <div id="today-status" class="status" role="status" aria-live="polite" tabindex="-1"></div>
+      <div id="today-content" class="view-content"></div>
+    </section>
+
     <section id="view-home" class="view" data-view="home" hidden>
       <h1>Overview</h1>
       <div id="home-status" class="status" role="status" aria-live="polite"></div>

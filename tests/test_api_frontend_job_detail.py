@@ -535,10 +535,11 @@ def test_group_failure_is_section_error_not_absence() -> None:
     # 404 there is the whole-page "Job not found" state. Application/review
     # absent state is now an empty 200 list, so the two sections never
     # special-case a 404. The only other 404 special-cases in the file are the
-    # reminder-DELETE and reminder-edit-PATCH mutation reconciles (a 404 from
-    # those mutations is treated as "the reminder is gone", which is the desired
-    # state); every other rejection is a plain section error.
-    assert js.count("status === 404") == 3
+    # reminder-DELETE, reminder-edit-PATCH, and Today reminder-completion
+    # mutation reconciles (a 404 from those mutations is treated as "the
+    # reminder is gone", which is the desired state); every other rejection is
+    # a plain section error.
+    assert js.count("status === 404") == 4
     assert "status === 404" not in _render_application_slice(js)
     assert "status === 404" not in _render_review_slice(js)
 

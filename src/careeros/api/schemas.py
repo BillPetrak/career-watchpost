@@ -222,6 +222,44 @@ class ReminderListResponse(BaseModel):
     limit: int
 
 
+class TodayReminderItem(ReminderItem):
+    """A Today reminder with optional same-concrete-job application context."""
+
+    active_application_status: (
+        Literal["interested", "applied", "interview", "offer"] | None
+    ) = None
+
+
+class TodayReminderSection(BaseModel):
+    total: int
+    items: list[TodayReminderItem]
+
+
+class TodayShortlistSection(BaseModel):
+    total: int
+    items: list[ReviewedOpportunityItem]
+
+
+class TodayReminders(BaseModel):
+    overdue: TodayReminderSection
+    due_today: TodayReminderSection
+
+
+class TodayShortlist(BaseModel):
+    unstarted: TodayShortlistSection
+
+
+class TodayResponse(BaseModel):
+    """One bounded, coherent Action Center snapshot."""
+
+    as_of: str
+    timezone: Literal["UTC"]
+    today_ends_at: str
+    limit: int
+    reminders: TodayReminders
+    shortlist: TodayShortlist
+
+
 class ReminderCreateRequest(BaseModel):
     """Request body for ``POST /reminders``.
 
@@ -1003,6 +1041,12 @@ __all__: tuple[str, ...] = (
     "ReportSourceStatus",
     "ReminderItem",
     "ReminderListResponse",
+    "TodayReminderItem",
+    "TodayReminderSection",
+    "TodayResponse",
+    "TodayReminders",
+    "TodayShortlist",
+    "TodayShortlistSection",
     "ReminderUpdateRequest",
     "ReviewDecisionEvent",
     "ReviewDecisionHistoryResponse",
