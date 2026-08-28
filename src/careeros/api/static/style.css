@@ -149,6 +149,11 @@ main {
 .saved-search-page-controls { display: flex; gap: 10px; align-items: center; margin: 10px 0; }
 .saved-search-page-controls span { margin-right: auto; color: var(--color-muted); }
 .saved-search-profile { margin-top: 16px; }
+.profile-summary { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); color: var(--color-muted); }
+.profile-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.profile-actions button { padding: 7px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); color: var(--color-text); font: inherit; cursor: pointer; }
+.stale-note { color: var(--color-warn); font-weight: 600; }
+@media (max-width: 600px) { .site-header { align-items: flex-start; } .nav { flex-wrap: wrap; } main { padding: 18px 12px 36px; } .profile-controls { align-items: stretch; flex-direction: column; } .profile-actions button { width: 100%; } }
 
 /* Deterministic ranking explanation disclosures. */
 .ranking-explanation-card {

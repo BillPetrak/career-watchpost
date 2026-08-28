@@ -29,7 +29,7 @@ def test_saved_search_route_and_primary_navigation() -> None:
 def test_entry_and_selection_are_metadata_only() -> None:
     js = _asset("app.js")
     assert 'fetchJson("/saved-searches?offset="' in js
-    assert 'postReportJson("/saved-searches/' in js
+    assert '"/saved-searches/" + encodeURIComponent(definition.name)' in js
     # Selection renders configuration and clears snapshots; only Run invokes POST.
     selection = js[
         js.index("function selectSavedSearch") : js.index(
@@ -41,14 +41,9 @@ def test_entry_and_selection_are_metadata_only() -> None:
 
 def test_exact_snapshot_request_and_profile_boundary() -> None:
     js = _asset("app.js")
-    assert (
-        '"/saved-searches/" + encodeURIComponent(definition.name) + '
-        '"/execute?snapshot=true"' in js
-    )
-    assert (
-        'var body = definition.mode === "rank" ? buildProfilePayload(profile) : {}'
-        in js
-    )
+    assert '"/saved-searches/" + encodeURIComponent(definition.name)' in js
+    assert '"/execute?snapshot=true"' in js
+    assert "var body = captured.profile ? profilePayload(captured.profile) : {};" in js
     region = js[
         js.index("async function runSavedSearch") : js.index(
             "async function renderSavedSearchesView"
@@ -76,7 +71,8 @@ def test_search_is_unranked_and_rank_reuses_m1_renderers() -> None:
 
 def test_snapshot_response_is_authoritative_and_bounded_in_memory() -> None:
     js = _asset("app.js")
-    assert "Object.freeze({ saved_search: used" in js
+    assert "savedSearchState.snapshot = Object.freeze({" in js
+    assert "saved_search: used" in js
     assert "Object.freeze(data.items.slice())" in js
     assert 'textContent: "Definition used for this run"' in js
     assert "savedSearchFields(definition)" in js
@@ -99,19 +95,14 @@ def test_local_pagination_has_no_fetch_or_sorting() -> None:
     assert "rerank" not in region.lower()
 
 
-def test_independent_profile_is_memory_only_and_edit_invalidates_context() -> None:
+def test_rank_profile_reuses_memory_only_matching_preferences() -> None:
     html, js = _asset("index.html"), _asset("app.js")
-    assert "saved-search-profile-form" not in html  # created only after rank selection
-    assert 'textContent: "Profile for this run"' in js
-    assert "savedSearchState.profile = readSavedProfile(form)" in js
-    assert "savedSearchState.snapshot = null" in js
-    assert "rankingContextGeneration++" in js
-    input_handler = js[
-        js.index('form.addEventListener("input"') : js.index("detail.appendChild(form)")
-    ]
-    assert 'detail.querySelector(".saved-search-results")' in input_handler
-    assert "previousResults.remove()" in input_handler
-    assert "renderSavedSearchWorkspace()" not in input_handler
+    assert "saved-search-profile-form" not in html + js
+    assert "renderProfileSummary(profileSummary, matchingActiveProfile)" in js
+    assert 'href: "#matching"' in js
+    assert "freezeProfile(retryRun && retryRun.profile" in js
+    assert "matchingActiveProfileGeneration" in js
+    assert "snapshot.profileGeneration !== matchingActiveProfileGeneration" in js
     assert (
         "localStorage" not in js
         and "sessionStorage" not in js
@@ -147,7 +138,7 @@ def test_retry_reuses_definition_version_and_validates_returned_definition() -> 
     assert "data.total !== data.items.length" in region
     assert "Refresh its metadata before running it again" in region
     assert "loadSavedSearchMetadata" in region
-    assert "runSavedSearch(definition, profile)" in region
+    assert "runSavedSearch(definition, captured)" in region
 
 
 def test_job_detail_context_supports_saved_search_and_back_link() -> None:
@@ -212,9 +203,7 @@ def test_saved_search_request_uses_encoded_name_and_safe_definition_allowlist() 
     js = _asset("app.js")
     assert "encodeURIComponent(definition.name)" in js
     metadata = js[
-        js.index("function savedSearchFields") : js.index(
-            "function savedSearchProfileForm"
-        )
+        js.index("function savedSearchFields") : js.index("function renderSavedResult")
     ]
     for field in (
         "id",

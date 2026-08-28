@@ -141,14 +141,11 @@ def test_review_routing_preserves_unknown_hash_fallback() -> None:
 
 def test_review_never_auto_submits_on_navigation_or_load() -> None:
     js = _js()
-    # The only POST invocation is inside the submit pipeline: exactly one call
-    # of the POST helper exists in the whole file, so navigating to #review
-    # (which only resets prior results) can never issue the request.
-    # Initial report plus the queue-only post-decision refresh, and one
-    # separate explicit Saved Search execution call site.
-    assert js.count("await postReportJson(") == 3
-    # Entering the view shortly after navigation runs presentation reset only.
-    assert js.count("resetReviewResults();") >= 1
+    # Preview, Review, queue refresh, and Saved Search are the four explicit
+    # ranking call sites. Navigation itself contains none of them.
+    assert js.count("await postReportJson(") == 4
+    navigate = js[js.index("async function navigate") : js.index("// DOM helpers")]
+    assert "postReportJson(" not in navigate
     # Submission begins exclusively through the form's submit listeners wired
     # at DOMContentLoaded -- never from navigate() or a timer.
     assert 'addEventListener("submit", reviewFormSubmitted)' in js
@@ -172,22 +169,16 @@ def test_main_anchor_does_not_reset_review_view() -> None:
 
 def test_review_form_has_exactly_the_approved_inputs() -> None:
     html = _html()
-    for input_id, field_name in _APPROVED_LIST_FIELDS:
-        tag = _textarea_tag(html, input_id)
-        assert tag.startswith("<textarea")
-        assert f'name="{field_name}"' in tag
-    remote_values, remote_selected = _select_options(html, "review-remote")
-    assert remote_values == ["", "remote", "onsite_or_unspecified"]
-    assert remote_selected == ""
-    assert 'name="remote_preference"' in re.search(
-        r'<select\b[^>]*id="review-remote"[^>]*>', html
-    ).group(0)
-    assert re.search(r'<input\b[^>]*id="review-remote"', html) is None
+    assert 'id="review-profile-summary"' in html
+    assert '<a href="#matching">Edit matching preferences</a>' in html
+    for input_id, _field_name in _APPROVED_LIST_FIELDS:
+        assert f'id="{input_id}"' not in html
+    assert 'id="review-remote"' not in html
     assert 'name="grouped"' in _input_tag(html, "review-grouped")
     limit_select = re.search(r'<select\b[^>]*id="review-limit"[^>]*>', html)
     assert limit_select is not None
     assert 'name="limit"' in limit_select.group(0)
-    # No other candidate-profile fields are exposed in this slice's form.
+    # Candidate-profile ownership is exclusively in Matching Preferences.
     for forbidden in (
         "required_skills",
         "excluded_terms",
@@ -210,28 +201,13 @@ def test_review_form_defaults_grouped_true_limit_ten() -> None:
     assert selected == "10"
 
 
-def test_review_remote_preference_is_a_select_with_canonical_options() -> None:
+def test_review_uses_complete_active_profile_without_narrowing_vocabulary() -> None:
     html = _html()
-    # The field is a select, never a free-text input: no input element uses the
-    # review-remote id, and no text input is named remote_preference.
-    assert re.search(r'<input\b[^>]*id="review-remote"', html) is None
-    assert (
-        re.search(r'<input\b[^>]*type="text"[^>]*name="remote_preference"[^>]*>', html)
-        is None
-    )
-    # Every canonical backend value is represented verbatim, with the empty
-    # "No preference" option first and selected by default.
-    values, selected = _select_options(html, "review-remote")
-    assert values == ["", "remote", "onsite_or_unspecified"]
-    assert selected == ""
-    assert ">No preference</option>" in html
-    assert 'value="remote">Remote only</option>' in html
-    assert 'value="onsite_or_unspecified">Onsite or unspecified</option>' in html
-    # No client-side translation or free-form fallback may invent a value: the
-    # submitted remote_preference comes straight from the select.
     js = _js()
-    assert 'document.getElementById("review-remote").value' in js
-    assert "profile.remote_preference = fields.remotePreference" in js
+    assert 'id="review-remote"' not in html
+    assert "profile: cloneProfile(matchingActiveProfile)" in js
+    assert 'remote.name = "remote_preference"' in js
+    assert "remote.maxLength = MAX_REMOTE_LENGTH" in js
     for sentinel in ("toRemoteValue", "remotePreferenceMap", "remoteStatusMap"):
         assert sentinel not in js, sentinel
 
@@ -240,9 +216,7 @@ def test_review_form_controls_have_labels() -> None:
     html = _html()
     assert 'for="review-grouped"' in html
     assert 'for="review-limit"' in html
-    for input_id, _ in _APPROVED_LIST_FIELDS:
-        assert f'for="{input_id}"' in html
-    assert 'for="review-remote"' in html
+    assert 'href="#matching"' in html
     # Form and result regions are keyboard/assistive-tech friendly.
     assert 'role="alert"' in html
     assert 'role="status"' in html
@@ -258,7 +232,7 @@ def test_grouped_toggle_builds_correct_query() -> None:
     # The checkbox decides the grouped query value: true when paired, false
     # otherwise, serialized as the lowercase strings FastAPI accepts.
     assert '"/report?grouped="' in js
-    assert 'fields.grouped ? "true" : "false"' in js
+    assert 'captured.grouped ? "true" : "false"' in js
     assert '"&limit="' in js
 
 
@@ -268,7 +242,7 @@ def test_limit_choices_build_correct_query() -> None:
     values, _ = _select_options(html, "review-limit")
     assert values == ["10", "25", "50"]
     # The chosen select value is sent verbatim; the view never re-derives it.
-    assert '&limit=" + fields.limit' in js
+    assert "encodeURIComponent(captured.limit)" in js
 
 
 def test_post_report_method_path_headers_and_body() -> None:
@@ -285,17 +259,20 @@ def test_post_report_method_path_headers_and_body() -> None:
 
 def test_only_populated_profile_fields_are_sent() -> None:
     js = _js()
-    # Every approved field is added only when it parsed to a non-empty value.
-    assert "if (fields.desiredTitles.length > 0)" in js
-    assert "profile.desired_titles = fields.desiredTitles" in js
-    assert "if (fields.skills.length > 0)" in js
-    assert "profile.skills = fields.skills" in js
-    assert "if (fields.preferredLocations.length > 0)" in js
-    assert "profile.preferred_locations = fields.preferredLocations" in js
-    assert "if (fields.remotePreference.length > 0)" in js
-    assert "profile.remote_preference = fields.remotePreference" in js
-    # payload is exactly {"profile": profile}; no other top-level key exists.
-    assert "return { profile: profile };" in js
+    for field in (
+        "desired_titles",
+        "required_skills",
+        "skills",
+        "preferred_locations",
+        "preferred_employment_types",
+        "preferred_seniority",
+        "excluded_terms",
+        "hard_excluded_terms",
+    ):
+        assert f'"{field}"' in js
+    assert "if (profile[key].length)" in js
+    assert "body.remote_preference = profile.remotePreference.trim()" in js
+    assert "return { profile: body };" in js
     assert "profile_path" not in js
 
 
@@ -311,14 +288,10 @@ def test_list_parsing_splits_commas_and_newlines_keeps_order() -> None:
     assert ".split(/[,\\n]+/)" in js
     assert "entry.trim()" in js
     assert ".length > 0" in js
-    # All three list inputs run through the same parser in field order.
-    assert 'parseListValue(document.getElementById("review-titles").value)' in js
-    assert 'parseListValue(document.getElementById("review-skills").value)' in js
-    assert (
-        "parseListValue(\n"
-        '        document.getElementById("review-locations").value\n'
-        "      )"
-    ) in js
+    assert "profileFieldSpec().find" in js
+    assert "matchingDraftProfile[spec[0]] = parseListValue(node.value)" in js
+    assert ".sort(" not in js
+    assert "new Set(" not in js
 
 
 def test_client_validation_enforces_server_limits() -> None:
@@ -326,9 +299,9 @@ def test_client_validation_enforces_server_limits() -> None:
     assert "var MAX_LIST_ENTRIES = 100;" in js
     assert "var MAX_ENTRY_LENGTH = 100;" in js
     assert "var MAX_REMOTE_LENGTH = 50;" in js
-    assert "entries.length > MAX_LIST_ENTRIES" in js
-    assert "entries[entryIndex].length > MAX_ENTRY_LENGTH" in js
-    assert "fields.remotePreference.length > MAX_REMOTE_LENGTH" in js
+    assert "values.length > MAX_LIST_ENTRIES" in js
+    assert "values[j].length > MAX_ENTRY_LENGTH" in js
+    assert "profile.remotePreference.length > MAX_REMOTE_LENGTH" in js
     assert '" has more than " + MAX_LIST_ENTRIES + " entries."' in js
     assert '" entries must be " + MAX_ENTRY_LENGTH + " characters or fewer."' in js
     assert (
@@ -350,8 +323,9 @@ def test_invalid_input_blocks_the_fetch() -> None:
 
 def test_remote_preference_trimmed_and_omitted_when_empty() -> None:
     js = _js()
-    assert 'document.getElementById("review-remote").value.trim()' in js
-    assert "fields.remotePreference.length > 0" in js
+    assert 'node.id === "matching-remote"' in js
+    assert "node.value.trim()" in js
+    assert "if (profile.remotePreference.length)" in js
 
 
 # --------------------------------------------------------------------------- #

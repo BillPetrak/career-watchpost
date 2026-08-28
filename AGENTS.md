@@ -1752,23 +1752,21 @@ static files. `uv build --wheel` then
 
 Architecture boundary: the frontend is **HTTP-only and computation-free**. It
 calls the documented endpoints — `GET /report` (Home view), `GET /jobs` (Jobs
-view, including the `query` keyword parameter), and — in the Review view —
-the computation-only `POST /report` (an inline candidate-profile form that is
-submitted only after the user explicitly submits it; the view opens in an
-explanatory empty state and never auto-submits on navigation or load). The
-Review form exposes exactly four approved profile fields (`desired_titles`,
-`skills`, `preferred_locations`, `remote_preference`) plus a "Collapse
-duplicates" checkbox (`grouped`, default checked) and an items-limit select
-(10/25/50, default 10); list entries accept comma- and/or newline-separated
-values that are trimmed, de-duplicated of empty tokens, order-preserved, and
-checked client-side against the server limits (`<=100` entries, `<=100`
-chars/entry, `<=50` chars for `remote_preference`) before any request is
-issued. Results render the three server regions (summary counts from the
-response `candidate_count` fields, the review queue, and the recommendations)
-in the exact server-returned order with `textContent`/`createElement` (never
-unsafe `innerHTML` with API values). It manages only local presentation,
-navigation (`#home`/`#jobs`/`#review` hash routing; unknown hashes default to
-`#home`), loading/error/empty/retry state, and formatting of already-returned
+view, including the `query` keyword parameter), and the computation-only
+ranking endpoints (`POST /ranked-jobs`, `POST /review-queue`, and
+`POST /saved-searches/{name}/execute?snapshot=true`) only after an explicit
+user action. Matching Preferences exposes all nine CandidateProfile fields;
+its draft and active profile live only in browser memory. List entries accept
+comma- and/or newline-separated values that are trimmed and empty tokens
+removed, while preserving order and duplicates; client checks mirror the
+server limits (`<=100` entries, `<=100` chars/entry, `<=50` chars for
+`remote_preference`) and server validation remains authoritative.
+`remote_preference` is intentionally an arbitrary trimmed string (or null),
+and `preferred_seniority` accepts arbitrary list terms; neither is narrowed by
+the UI. Results render server-returned order with `textContent`/`createElement`
+(never unsafe `innerHTML` with API values). It manages only local presentation,
+navigation (`#home`/`#jobs`/`#review`/`#matching` hash routing; unknown hashes
+default to `#home`), loading/error/empty/retry state, and formatting of already-returned
 values. It must never re-implement ranking, grouping, tracking, review-state,
 reporting, or database logic, and never read SQLite, config files, candidate
 profiles, `profile_path`, filesystem paths, private notes/messages, or logs.

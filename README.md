@@ -331,11 +331,13 @@ Supported fields:
 - `skills` — preferred skills to look for in the posting
 - `required_skills` — skills that must appear (missing ones are penalized)
 - `preferred_locations` — locations that count as a match
-- `remote_preference` — `"remote"`, `"onsite_or_unspecified"`, or `null`
+- `remote_preference` — an optional provider/domain-specific string (trimmed,
+  up to 50 characters), or `null`; the API does not narrow this vocabulary
 - `excluded_terms` — soft-excluded terms (small penalty)
 - `hard_excluded_terms` — hard exclusions that force a score of 0
 - `preferred_employment_types` — e.g. `"Full-time"`
-- `preferred_seniority` — e.g. `"Senior"`
+- `preferred_seniority` — provider/domain-specific terms (e.g. `"Senior"`);
+  each entry is preserved and may be up to 100 characters
 
 ### Private profile
 

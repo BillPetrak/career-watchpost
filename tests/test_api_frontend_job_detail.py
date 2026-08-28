@@ -326,7 +326,8 @@ def test_main_skip_link_anchor_keeps_job_view() -> None:
 def test_job_detail_origin_is_in_memory_only() -> None:
     js = _js()
     assert "var jobDetailOrigin = JOBS;" in js
-    assert "if (leaving === JOBS || leaving === REVIEW || leaving === REVIEWED)" in js
+    assert "if (leaving === JOBS || leaving === REVIEW || leaving === REVIEWED ||" in js
+    assert "leaving === MATCHING" in js
     assert "jobDetailOrigin = leaving;" in js
     assert 'href: "#" + jobDetailOrigin' in js
     assert 'jobDetailOrigin === REVIEWED ? "Back to reviewed"' in js
@@ -978,8 +979,8 @@ def test_prior_views_still_driven_by_their_single_endpoint() -> None:
     js = _js()
     # Home is still GET /report; Jobs is still GET /jobs; Review uses POST
     # /report initially and POST /review-queue after a successful decision.
-    # Saved Searches adds one separate explicit execution POST call site.
+    # Saved Searches and Matching Preview each add one explicit POST call site.
     assert 'var data = await fetchJson("/report");' in js
     assert 'await loadJobs(qs ? "/jobs?" + qs : "/jobs");' in js
-    assert js.count("await postReportJson(") == 3
+    assert js.count("await postReportJson(") == 4
     assert 'addEventListener("submit", reviewFormSubmitted)' in js

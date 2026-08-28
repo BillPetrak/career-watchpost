@@ -39,8 +39,43 @@
   var APPLICATIONS = "applications";
   var REMINDERS = "reminders";
   var SAVED_SEARCHES = "saved-searches";
+  var MATCHING = "matching";
   var JOB = "job";
   var initialized = false;
+
+  // Matching Preferences is intentionally process-memory only. Values are
+  // replaced with deep copies at every run boundary and never persisted.
+  var EMPTY_PROFILE = { desiredTitles: [], requiredSkills: [], skills: [], preferredLocations: [], remotePreference: "", preferredEmploymentTypes: [], preferredSeniority: [], excludedTerms: [], hardExcludedTerms: [] };
+  var matchingDraftProfile = cloneProfile(EMPTY_PROFILE);
+  var matchingActiveProfile = cloneProfile(EMPTY_PROFILE);
+  var matchingActiveProfileGeneration = 0;
+  var matchingDraftGeneration = 0;
+  var matchingPreviewGeneration = 0;
+  var matchingPreviewRequestSeq = 0;
+  var matchingPreviewSnapshot = null;
+  var reviewSnapshot = null;
+  var matchingPreviewControls = { grouped: true, minimumScore: "0", limit: "10" };
+  var matchingPreviewControlsGeneration = 0;
+
+  function cloneProfile(profile) {
+    var copy = {};
+    Object.keys(EMPTY_PROFILE).forEach(function (key) { copy[key] = Array.isArray(profile[key]) ? profile[key].slice() : String(profile[key] || ""); });
+    return copy;
+  }
+  function freezeProfile(profile) {
+    var copy = cloneProfile(profile);
+    Object.keys(copy).forEach(function (key) {
+      if (Array.isArray(copy[key])) Object.freeze(copy[key]);
+    });
+    return Object.freeze(copy);
+  }
+  function profilePayload(profile) {
+    var body = {};
+    var names = { desiredTitles: "desired_titles", requiredSkills: "required_skills", skills: "skills", preferredLocations: "preferred_locations", preferredEmploymentTypes: "preferred_employment_types", preferredSeniority: "preferred_seniority", excludedTerms: "excluded_terms", hardExcludedTerms: "hard_excluded_terms" };
+    Object.keys(names).forEach(function (key) { if (profile[key].length) body[names[key]] = profile[key].slice(); });
+    if (profile.remotePreference.length) body.remote_preference = profile.remotePreference.trim();
+    return { profile: body };
+  }
 
   // In-memory origin for the Job Detail Back link: remembers whether the
   // detail view was opened from Jobs or Review so the Back link prefers that
@@ -181,6 +216,7 @@
     if (raw === APPLICATIONS) return APPLICATIONS;
     if (raw === REMINDERS) return REMINDERS;
     if (raw === SAVED_SEARCHES) return SAVED_SEARCHES;
+    if (raw === MATCHING) return MATCHING;
     if (raw === HOME) return HOME;
     return null; // unknown / absent / non-view (e.g. #main)
   }
@@ -253,6 +289,11 @@
       reviewRequestSeq++;
       reviewViewGeneration++;
       reviewQueueRefreshDirty = false;
+      reviewCardInFlight = {};
+      var reviewSubmit = document.getElementById("review-submit");
+      if (reviewSubmit) reviewSubmit.disabled = false;
+      var reviewStatus = document.getElementById("review-status");
+      if (reviewStatus) doneLoading(reviewStatus);
     }
     if (leaving === REVIEWED && name !== REVIEWED) {
       reviewedRequestSeq++;
@@ -270,6 +311,11 @@
       savedSearchState.selectionGeneration++;
       savedSearchState.executionSeq++;
       savedSearchState.inFlight = false;
+    }
+    if (leaving === MATCHING && name !== MATCHING) {
+      matchingPreviewRequestSeq++;
+      var matchingStatus = document.getElementById("matching-status");
+      if (matchingStatus) doneLoading(matchingStatus);
     }
     if (name === REVIEWED && leaving !== REVIEWED) {
       reviewedViewGeneration++;
@@ -308,27 +354,28 @@
     if (view === TODAY) {
       await renderTodayView();
     } else if (view === REVIEW) {
-      // The Review view renders its static form and never auto-submits; clear
-      // any prior results so nothing stale is shown when the view is entered.
-      resetReviewResults();
+      if (leaving !== REVIEW) {
+        var reviewProfileSummary = document.getElementById("review-profile-summary");
+        renderProfileSummary(reviewProfileSummary, matchingActiveProfile);
+        if (reviewSnapshot) renderStoredReviewSnapshot();
+      }
     } else if (view === REVIEWED) {
       await renderReviewedView();
     } else if (view === APPLICATIONS) {
       await renderApplicationsView();
     } else if (view === SAVED_SEARCHES) {
       await renderSavedSearchesView();
+    } else if (view === MATCHING) {
+      renderMatchingWorkspace();
     } else if (view === REMINDERS) {
-      if (leaving === REVIEW) resetReviewResults();
       await renderRemindersView();
     } else if (view === JOBS) {
-      if (leaving === REVIEW) resetReviewResults();
       await renderJobs();
     } else if (view === HOME) {
-      if (leaving === REVIEW) resetReviewResults();
       await renderHome();
     } else if (view === JOB) {
-      if (leaving === REVIEW) resetReviewResults();
-      if (leaving === JOBS || leaving === REVIEW || leaving === REVIEWED) {
+      if (leaving === JOBS || leaving === REVIEW || leaving === REVIEWED ||
+        leaving === MATCHING) {
         jobDetailOrigin = leaving;
       } else if (leaving === APPLICATIONS) {
         jobDetailOrigin = leaving;
@@ -863,6 +910,343 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Matching Preferences workspace and its explicit, server-authoritative preview.
+  function profileFieldSpec() {
+    return [
+      ["desiredTitles", "Desired job titles", "matching-desired-titles", "Comma- and/or newline-separated entries."],
+      ["requiredSkills", "Required skills", "matching-required-skills", "Matching improves rank; missing skills can reduce rank when description evidence is available. Required does not remove a job."],
+      ["skills", "Preferred skills", "matching-skills", "Comma- and/or newline-separated entries."],
+      ["preferredLocations", "Preferred locations", "matching-locations", "Comma- and/or newline-separated entries."],
+      ["preferredEmploymentTypes", "Preferred employment types", "matching-employment-types", "Comma- and/or newline-separated entries."],
+      ["preferredSeniority", "Preferred seniority", "matching-seniority", "Comma- and/or newline-separated entries."],
+      ["excludedTerms", "Terms to avoid", "matching-excluded-terms", "Soft penalties may reduce a match."],
+      ["hardExcludedTerms", "Terms that block a match", "matching-hard-excluded-terms", "Matching terms force displayed match_score to zero; they do not delete the listing. A threshold-zero surface may still include it."],
+    ];
+  }
+  function readMatchingDraft() {
+    var profile = cloneProfile(matchingDraftProfile);
+    profileFieldSpec().forEach(function (spec) { var node = document.getElementById(spec[2]); if (node) profile[spec[0]] = parseListValue(node.value); });
+    var remote = document.getElementById("matching-remote"); profile.remotePreference = remote ? remote.value.trim() : "";
+    return profile;
+  }
+  function matchingDraftInputChanged(event) {
+    var node = event.target;
+    var spec = profileFieldSpec().find(function (entry) { return entry[2] === node.id; });
+    if (spec) {
+      matchingDraftProfile[spec[0]] = parseListValue(node.value);
+      matchingDraftGeneration++;
+    } else if (node.id === "matching-remote") {
+      matchingDraftProfile.remotePreference = node.value.trim();
+      matchingDraftGeneration++;
+    } else if (
+      node.id === "matching-grouped" ||
+      node.id === "matching-min-score" ||
+      node.id === "matching-limit"
+    ) {
+      matchingPreviewControls = {
+        grouped: document.getElementById("matching-grouped").checked,
+        minimumScore: document.getElementById("matching-min-score").value,
+        limit: document.getElementById("matching-limit").value,
+      };
+      matchingPreviewControlsGeneration++;
+    }
+    renderMatchingStaleNotice();
+  }
+
+  function matchingSnapshotIsStale(snapshot) {
+    return snapshot.draftGeneration !== matchingDraftGeneration ||
+      snapshot.profileGeneration !== matchingActiveProfileGeneration ||
+      snapshot.controlsGeneration !== matchingPreviewControlsGeneration;
+  }
+
+  function renderMatchingStaleNotice() {
+    if (!matchingPreviewSnapshot || !matchingSnapshotIsStale(matchingPreviewSnapshot)) {
+      return;
+    }
+    var section = document.querySelector(".matching-preview");
+    if (section && !section.querySelector(".stale-note")) {
+      section.insertBefore(
+        el("p", {
+          className: "stale-note",
+          textContent: "Previous preferences — rerun to update",
+        }),
+        section.children[1] || null
+      );
+    }
+  }
+  function renderProfileSummary(target, profile) {
+    if (!target) return; target.textContent = "";
+    var count = 0; Object.keys(profile).forEach(function (key) { count += Array.isArray(profile[key]) ? profile[key].length : (profile[key] ? 1 : 0); });
+    target.appendChild(el("p", { className: "profile-summary-text", textContent: count ? count + " preference entr" + (count === 1 ? "y" : "ies") + " active for this session." : "No matching preferences are active for this session." }));
+    profileFieldSpec().forEach(function (spec) { if (profile[spec[0]].length) target.appendChild(el("p", { textContent: spec[1] + ": " + profile[spec[0]].join(", ") })); });
+    if (profile.remotePreference) target.appendChild(el("p", { textContent: "Remote preference: " + profile.remotePreference }));
+  }
+  function renderMatchingWorkspace() {
+    var content = document.getElementById("matching-content");
+    if (!content) return;
+    content.textContent = "";
+    var form = el("form", { className: "profile-form matching-form" });
+    form.id = "matching-form";
+    var fieldset = el("fieldset", { className: "profile-fields" });
+    fieldset.appendChild(el("legend", { textContent: "Draft preferences" }));
+    profileFieldSpec().forEach(function (spec) {
+      var wrap = el("div", { className: "profile-field" });
+      var label = el("label", { textContent: spec[1] });
+      label.htmlFor = spec[2];
+      var area = document.createElement("textarea");
+      area.id = spec[2];
+      area.name = spec[0];
+      area.rows = 2;
+      area.value = matchingDraftProfile[spec[0]].join(", ");
+      wrap.appendChild(label);
+      wrap.appendChild(area);
+      wrap.appendChild(el("p", { className: "field-hint", textContent: spec[3] }));
+      fieldset.appendChild(wrap);
+    });
+    var remoteWrap = el("div", { className: "profile-field" });
+    var remoteLabel = el("label", { textContent: "Remote preference" });
+    remoteLabel.htmlFor = "matching-remote";
+    var remote = document.createElement("input");
+    remote.id = "matching-remote";
+    remote.name = "remote_preference";
+    remote.maxLength = MAX_REMOTE_LENGTH;
+    remote.value = matchingDraftProfile.remotePreference;
+    remote.placeholder = "e.g. remote, hybrid, onsite";
+    remoteWrap.appendChild(remoteLabel);
+    remoteWrap.appendChild(remote);
+    remoteWrap.appendChild(el("p", {
+      className: "field-hint",
+      textContent: "Free text accepted by the canonical API; whitespace is trimmed only.",
+    }));
+    fieldset.appendChild(remoteWrap);
+    form.appendChild(fieldset);
+
+    var runControls = el("div", { className: "profile-controls" });
+    var groupedLabel = el("label", { className: "inline-label" });
+    var grouped = document.createElement("input");
+    grouped.type = "checkbox";
+    grouped.id = "matching-grouped";
+    grouped.checked = matchingPreviewControls.grouped;
+    groupedLabel.appendChild(grouped);
+    groupedLabel.appendChild(document.createTextNode(" Collapse duplicates"));
+    runControls.appendChild(groupedLabel);
+    var minLabel = el("label", { textContent: "Minimum match score" });
+    minLabel.htmlFor = "matching-min-score";
+    var min = document.createElement("input");
+    min.type = "number";
+    min.min = 0;
+    min.max = 100;
+    min.value = matchingPreviewControls.minimumScore;
+    min.id = "matching-min-score";
+    minLabel.appendChild(min);
+    runControls.appendChild(minLabel);
+    var limitLabel = el("label", { textContent: "Displayed results" });
+    limitLabel.htmlFor = "matching-limit";
+    var limit = document.createElement("input");
+    limit.type = "number";
+    limit.min = 1;
+    limit.max = 100;
+    limit.value = matchingPreviewControls.limit;
+    limit.id = "matching-limit";
+    limitLabel.appendChild(limit);
+    runControls.appendChild(limitLabel);
+    form.appendChild(runControls);
+
+    var actions = el("div", { className: "profile-actions" });
+    var preview = el("button", {
+      className: "primary-button",
+      textContent: "Preview matches",
+      type: "submit",
+    });
+    preview.id = "matching-preview";
+    actions.appendChild(preview);
+    var adopt = el("button", {
+      textContent: "Use these preferences for this session",
+      type: "button",
+    });
+    adopt.id = "matching-adopt";
+    adopt.addEventListener("click", adoptMatchingProfile);
+    actions.appendChild(adopt);
+    var reset = el("button", {
+      textContent: "Reset draft to current preferences",
+      type: "button",
+    });
+    reset.id = "matching-reset";
+    reset.addEventListener("click", function () {
+      matchingDraftProfile = cloneProfile(matchingActiveProfile);
+      matchingDraftGeneration++;
+      renderMatchingWorkspace();
+    });
+    actions.appendChild(reset);
+    form.appendChild(actions);
+    form.addEventListener("input", matchingDraftInputChanged);
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      previewMatching();
+    });
+    content.appendChild(form);
+
+    var summary = el("div", { className: "profile-summary" });
+    summary.id = "matching-active-summary";
+    renderProfileSummary(summary, matchingActiveProfile);
+    content.appendChild(summary);
+    if (matchingPreviewSnapshot) renderMatchingPreview(matchingPreviewSnapshot, content);
+  }
+  function validateMatchingProfile(profile) {
+    var specs = profileFieldSpec(); for (var i = 0; i < specs.length; i++) { var values = profile[specs[i][0]]; if (values.length > MAX_LIST_ENTRIES) return specs[i][1] + " has more than " + MAX_LIST_ENTRIES + " entries."; for (var j = 0; j < values.length; j++) if (values[j].length > MAX_ENTRY_LENGTH) return specs[i][1] + " entries must be " + MAX_ENTRY_LENGTH + " characters or fewer."; }
+    if (profile.remotePreference.length > MAX_REMOTE_LENGTH) return "Remote preference must be " + MAX_REMOTE_LENGTH + " characters or fewer."; return null;
+  }
+  function announceMatchingValidation(status, message) {
+    if (!status) return;
+    doneLoading(status);
+    clearErrorBoxes(status.parentNode);
+    status.textContent = message;
+    status.focus();
+  }
+  function adoptMatchingProfile() {
+    var profile = readMatchingDraft();
+    var error = validateMatchingProfile(profile);
+    var status = document.getElementById("matching-status");
+    if (error) {
+      announceMatchingValidation(status, error);
+      return;
+    }
+    matchingPreviewRequestSeq++;
+    matchingActiveProfile = cloneProfile(profile);
+    matchingActiveProfileGeneration++;
+    matchingDraftProfile = cloneProfile(profile);
+    matchingDraftGeneration++;
+    renderMatchingWorkspace();
+    if (status) {
+      doneLoading(status);
+      status.textContent = "Preferences adopted for this session. Generate Review or run a Saved Search explicitly when ready.";
+    }
+  }
+
+  function validateMatchingPreviewControls(controls) {
+    var minimum = Number(controls.minimumScore);
+    var limit = Number(controls.limit);
+    if (!Number.isInteger(minimum) || minimum < 0 || minimum > 100) {
+      return "Minimum match score must be a whole number from 0 to 100.";
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return "Displayed results must be a whole number from 1 to 100.";
+    }
+    return null;
+  }
+
+  async function previewMatching() {
+    var profile = freezeProfile(matchingDraftProfile);
+    var draftGeneration = matchingDraftGeneration;
+    var profileGeneration = matchingActiveProfileGeneration;
+    var controlsGeneration = matchingPreviewControlsGeneration;
+    var controls = Object.freeze({
+      grouped: matchingPreviewControls.grouped,
+      minimumScore: matchingPreviewControls.minimumScore,
+      limit: matchingPreviewControls.limit,
+    });
+    var validation = validateMatchingProfile(profile) ||
+      validateMatchingPreviewControls(controls);
+    var status = document.getElementById("matching-status");
+    if (validation) {
+      announceMatchingValidation(status, validation);
+      return;
+    }
+    var seq = ++matchingPreviewRequestSeq;
+    var runGeneration = ++matchingPreviewGeneration;
+    setLoading(status, "Previewing matches…");
+    try {
+      var data = await postReportJson(
+        "/ranked-jobs?grouped=" + (controls.grouped ? "true" : "false") +
+          "&minimum_score=" + encodeURIComponent(controls.minimumScore) +
+          "&offset=0&limit=" + encodeURIComponent(controls.limit),
+        Object.assign({}, profilePayload(profile), { untracked: true })
+      );
+      if (seq !== matchingPreviewRequestSeq || visibleView() !== MATCHING) return;
+      if (
+        draftGeneration !== matchingDraftGeneration ||
+        profileGeneration !== matchingActiveProfileGeneration ||
+        controlsGeneration !== matchingPreviewControlsGeneration
+      ) {
+        if (status) {
+          doneLoading(status);
+          status.textContent = "Preferences changed while Preview was running. Rerun to update.";
+        }
+        renderMatchingStaleNotice();
+        return;
+      }
+      if (
+        !isObject(data) ||
+        !Array.isArray(data.items) ||
+        !isFiniteNumber(data.total) ||
+        data.offset !== 0 ||
+        data.limit !== Number(controls.limit) ||
+        data.total < data.items.length
+      ) {
+        throw new Error("The /ranked-jobs response did not match the expected shape.");
+      }
+      matchingPreviewSnapshot = Object.freeze({
+        profile: profile,
+        profileGeneration: profileGeneration,
+        draftGeneration: draftGeneration,
+        controlsGeneration: controlsGeneration,
+        controls: controls,
+        runGeneration: runGeneration,
+        items: Object.freeze(data.items.slice()),
+        total: data.total,
+      });
+      renderMatchingWorkspace();
+      doneLoading(status);
+    } catch (errorResponse) {
+      if (seq !== matchingPreviewRequestSeq || visibleView() !== MATCHING) return;
+      renderError(status, errorResponse.message, previewMatching);
+    }
+  }
+
+  function renderMatchingPreview(snapshot, target) {
+    var section = el("section", { className: "chunk matching-preview" });
+    section.appendChild(el("h2", { textContent: "Preview results" }));
+    if (matchingSnapshotIsStale(snapshot)) {
+      section.appendChild(el("p", {
+        className: "stale-note",
+        textContent: "Previous preferences — rerun to update",
+      }));
+    }
+    section.appendChild(el("p", {
+      className: "result-summary",
+      textContent: String(snapshot.total) + " matches. " +
+        (snapshot.controls.grouped ? "Grouped" : "Individual") +
+        ", minimum " + snapshot.controls.minimumScore +
+        ", showing up to " + snapshot.controls.limit + ".",
+    }));
+    var list = el("ul", { className: "job-list" });
+    var presentationGeneration = ++rankingContextGeneration;
+    snapshot.items.forEach(function (item) {
+      var job = item.group && item.group.representative
+        ? item.group.representative
+        : (item.job || item);
+      var card = buildJobCard(job, item.match_score, item.score, item.group);
+      if (!card) return;
+      attachCardExplanationAndContext(card, item.explanation, {
+        generation: presentationGeneration,
+        runGeneration: snapshot.runGeneration,
+        profileGeneration: snapshot.profileGeneration,
+        surface: "matching-preview",
+        targetKind: snapshot.controls.grouped ? "opportunity" : "job",
+        targetIdentity: item.group && item.group.group_id
+          ? "group:" + item.group.group_id
+          : "job:" + job.id,
+        memberIds: item.group && item.group.members
+          ? item.group.members.map(function (member) { return member.id; })
+          : [job.id],
+        runConfig: snapshot.controls,
+      });
+      list.appendChild(card);
+    });
+    section.appendChild(list);
+    target.appendChild(section);
+  }
+
   // Saved Searches workspace (metadata + explicit, bounded snapshot execution)
   // ---------------------------------------------------------------------------
 
@@ -893,41 +1277,6 @@
     return section;
   }
 
-  function savedSearchProfileForm() {
-    var form = el("form", { className: "profile-form saved-search-profile" });
-    form.id = "saved-search-profile-form";
-    var fieldset = el("fieldset", { className: "profile-fields" });
-    fieldset.appendChild(el("legend", { textContent: "Profile for this run" }));
-    [["saved-profile-titles", "Desired titles"], ["saved-profile-skills", "Skills"], ["saved-profile-locations", "Preferred locations"]].forEach(function (entry) {
-      var wrap = el("div", { className: "profile-field" });
-      var label = el("label", { textContent: entry[1] }); label.htmlFor = entry[0];
-      var input = document.createElement("textarea"); input.id = entry[0]; input.rows = 2; input.name = entry[0];
-      wrap.appendChild(label); wrap.appendChild(input); fieldset.appendChild(wrap);
-    });
-    var remote = el("div", { className: "profile-field" });
-    var remoteLabel = el("label", { textContent: "Remote preference" }); remoteLabel.htmlFor = "saved-profile-remote";
-    var select = document.createElement("select"); select.id = "saved-profile-remote";
-    [["", "No preference"], ["remote", "Remote only"], ["onsite_or_unspecified", "Onsite or unspecified"]].forEach(function (option) { var node = document.createElement("option"); node.value = option[0]; node.textContent = option[1]; select.appendChild(node); });
-    remote.appendChild(remoteLabel); remote.appendChild(select); fieldset.appendChild(remote);
-    form.appendChild(fieldset);
-    if (savedSearchState.profile) {
-      form.querySelector("#saved-profile-titles").value = savedSearchState.profile.desiredTitles.join(", ");
-      form.querySelector("#saved-profile-skills").value = savedSearchState.profile.skills.join(", ");
-      form.querySelector("#saved-profile-locations").value = savedSearchState.profile.preferredLocations.join(", ");
-      form.querySelector("#saved-profile-remote").value = savedSearchState.profile.remotePreference;
-    }
-    return form;
-  }
-
-  function readSavedProfile(form) {
-    return {
-      desiredTitles: parseListValue(form.querySelector("#saved-profile-titles").value),
-      skills: parseListValue(form.querySelector("#saved-profile-skills").value),
-      preferredLocations: parseListValue(form.querySelector("#saved-profile-locations").value),
-      remotePreference: form.querySelector("#saved-profile-remote").value.trim(),
-    };
-  }
-
   function savedSearchJob(item, grouped) { var target = grouped ? (item.group || item) : (item.job || item); return target && target.representative ? target.representative : target; }
 
   function buildUnrankedJobCard(job, group) {
@@ -944,7 +1293,8 @@
     return card;
   }
 
-  function renderSavedResult(item, definition, generation) {
+  function renderSavedResult(item, snapshot, generation) {
+    var definition = snapshot.saved_search;
     var grouped = definition.grouped === true;
     var job = savedSearchJob(item, grouped);
     if (!isObject(job)) return null;
@@ -954,7 +1304,12 @@
     if (!card) return null;
     if (rank) {
       attachCardExplanationAndContext(card, item.explanation, {
-        generation: generation, surface: "saved-search", targetKind: grouped ? "opportunity" : "job",
+        generation: generation,
+        runGeneration: snapshot.runGeneration,
+        profileGeneration: snapshot.profileGeneration,
+        runConfig: snapshot.runConfig,
+        runLabel: definition.name,
+        surface: "saved-search", targetKind: grouped ? "opportunity" : "job",
         targetIdentity: grouped && item.group && item.group.group_id ? "group:" + item.group.group_id : "job:" + job.id,
         memberIds: grouped && item.group && Array.isArray(item.group.members) ? item.group.members.map(function (member) { return member.id; }) : [job.id],
         savedSearchId: definition.id, savedSearchUpdatedAt: definition.updated_at,
@@ -969,6 +1324,13 @@
     var definition = snapshot.saved_search;
     var result = el("section", { className: "saved-search-results chunk" });
     result.appendChild(el("h2", { textContent: "Definition used for this run" }));
+    if (definition.mode === "rank" &&
+      snapshot.profileGeneration !== matchingActiveProfileGeneration) {
+      result.appendChild(el("p", {
+        className: "stale-note",
+        textContent: "Previous preferences — rerun to update",
+      }));
+    }
     var executedFields = savedSearchFields(definition);
     addField(executedFields, "Name", definition.name);
     result.appendChild(executedFields);
@@ -981,7 +1343,11 @@
     function draw() {
       list.textContent = "";
       var start = savedSearchState.page * savedSearchState.pageSize;
-      items.slice(start, start + savedSearchState.pageSize).forEach(function (item) { var card = renderSavedResult(item, definition, savedSearchState.rankingGeneration); if (card) list.appendChild(card); });
+      var presentationGeneration = ++rankingContextGeneration;
+      items.slice(start, start + savedSearchState.pageSize).forEach(function (item) {
+        var card = renderSavedResult(item, snapshot, presentationGeneration);
+        if (card) list.appendChild(card);
+      });
       page.textContent = "";
       var pages = Math.max(1, Math.ceil(items.length / savedSearchState.pageSize));
       page.appendChild(el("span", { textContent: "Page " + (savedSearchState.page + 1) + " of " + pages }));
@@ -1017,7 +1383,7 @@
       detail.appendChild(savedSearchDefinition(savedSearchState.selected));
       var run = el("button", { className: "primary-button", textContent: "Run saved search", type: "button" }); run.id = "saved-search-run"; run.disabled = savedSearchState.inFlight;
       run.addEventListener("click", function () { runSavedSearch(savedSearchState.selected); }); detail.appendChild(run);
-      if (savedSearchState.selected.mode === "rank") { var form = savedSearchProfileForm(); form.addEventListener("input", function () { savedSearchState.profile = readSavedProfile(form); rankingContextGeneration++; rankedJobContext = null; pendingRankedNavigation = null; if (savedSearchState.snapshot) { savedSearchState.snapshot = null; savedSearchState.page = 0; var previousResults = detail.querySelector(".saved-search-results"); if (previousResults) previousResults.remove(); } }); detail.appendChild(form); }
+      if (savedSearchState.selected.mode === "rank") { var profileSummary = el("div", { className: "profile-summary" }); renderProfileSummary(profileSummary, matchingActiveProfile); detail.appendChild(profileSummary); var edit = el("p"); edit.appendChild(el("a", { href: "#matching", textContent: "Edit matching preferences" })); detail.appendChild(edit); }
       if (savedSearchState.snapshot) { renderSavedSearchSnapshot(savedSearchState.snapshot, detail); }
     }
     layout.appendChild(detail); content.appendChild(layout);
@@ -1028,19 +1394,117 @@
     try { var data = await fetchJson("/saved-searches?offset=" + (savedSearchState.metadataPage * savedSearchState.metadataPageSize) + "&limit=" + savedSearchState.metadataPageSize); if (seq !== savedSearchState.metadataSeq || visibleView() !== SAVED_SEARCHES) return; if (!isObject(data) || !Array.isArray(data.items)) throw new Error("The Saved Search response did not match the expected shape."); savedSearchState.metadata = data.items; savedSearchState.metadataTotal = typeof data.total === "number" ? data.total : data.items.length; if (savedSearchState.selected) { var current = data.items.find(function (item) { return item.id === savedSearchState.selected.id; }); if (current) savedSearchState.selected = current; else if (savedSearchState.metadataPage === 0) savedSearchState.selected = null; } renderSavedSearchWorkspace(); doneLoading(status); } catch (error) { if (seq !== savedSearchState.metadataSeq || visibleView() !== SAVED_SEARCHES) return; renderError(status, error.message, loadSavedSearchMetadata); }
   }
 
-  async function runSavedSearch(definition, retryProfile) {
+  async function runSavedSearch(definition, retryRun) {
     if (!definition) return;
     if (!savedSearchState.selected || savedSearchState.selected.id !== definition.id || savedSearchState.selected.updated_at !== definition.updated_at) {
       var changedStatus = document.getElementById("saved-searches-status");
       renderError(changedStatus, "This Saved Search changed. Refresh its metadata before running it.", loadSavedSearchMetadata);
       return;
     }
-    var seq = ++savedSearchState.executionSeq, selection = savedSearchState.selectionGeneration; savedSearchState.executionGeneration++;
-    var status = document.getElementById("saved-searches-status"), profile = null;
-    var form = document.getElementById("saved-search-profile-form"); if (definition.mode === "rank") { profile = retryProfile || readSavedProfile(form); var validation = validateReviewFields(profile); if (validation) { renderError(status, validation, function () { runSavedSearch(definition, profile); }); return; } }
-    savedSearchState.inFlight = true; savedSearchState.profile = profile; setLoading(status, "Running saved search…"); renderSavedSearchWorkspace();
-    var body = definition.mode === "rank" ? buildProfilePayload(profile) : {};
-    try { var data = await postReportJson("/saved-searches/" + encodeURIComponent(definition.name) + "/execute?snapshot=true", body); if (seq !== savedSearchState.executionSeq || selection !== savedSearchState.selectionGeneration || visibleView() !== SAVED_SEARCHES) return; if (!isObject(data) || !isObject(data.saved_search) || !Array.isArray(data.items)) throw new Error("The Saved Search execution response did not match the expected shape."); var used = data.saved_search; if (used.id !== definition.id || used.name !== definition.name || used.updated_at !== definition.updated_at) { var changed = new Error("The Saved Search changed while it was running. Refresh its metadata before running it again."); changed.savedSearchChanged = true; throw changed; } if ((used.mode !== "search" && used.mode !== "rank") || typeof used.updated_at !== "string" || data.mode !== used.mode || data.grouped !== used.grouped || data.offset !== 0 || data.limit !== used.result_limit || data.total !== data.items.length) throw new Error("The Saved Search execution response did not match the expected shape."); if (used.mode === "rank") savedSearchState.rankingGeneration = ++rankingContextGeneration; savedSearchState.snapshot = Object.freeze({ saved_search: used, items: Object.freeze(data.items.slice()), total: data.total, offset: data.offset, limit: data.limit }); savedSearchState.page = 0; renderSavedSearchWorkspace(); doneLoading(status); } catch (error) { if (seq !== savedSearchState.executionSeq || selection !== savedSearchState.selectionGeneration || visibleView() !== SAVED_SEARCHES) return; savedSearchState.snapshot = null; renderSavedSearchWorkspace(); if (error.status === 404) { savedSearchState.selected = null; savedSearchState.metadataPage = 0; await loadSavedSearchMetadata(); } else if (error.savedSearchChanged === true) { renderError(status, error.message, loadSavedSearchMetadata); } else { renderError(status, error.message, function () { runSavedSearch(definition, profile); }); } } finally { if (seq === savedSearchState.executionSeq) { savedSearchState.inFlight = false; renderSavedSearchWorkspace(); } }
+    var seq = ++savedSearchState.executionSeq;
+    var selection = savedSearchState.selectionGeneration;
+    var runGeneration = ++savedSearchState.executionGeneration;
+    var status = document.getElementById("saved-searches-status");
+    var captured = Object.freeze({
+      profile: definition.mode === "rank"
+        ? freezeProfile(retryRun && retryRun.profile
+          ? retryRun.profile
+          : matchingActiveProfile)
+        : null,
+      profileGeneration: definition.mode === "rank"
+        ? (retryRun && Number.isInteger(retryRun.profileGeneration)
+          ? retryRun.profileGeneration
+          : matchingActiveProfileGeneration)
+        : null,
+    });
+    if (captured.profile) {
+      var validation = validateMatchingProfile(captured.profile);
+      if (validation) {
+        renderError(status, validation, function () {
+          runSavedSearch(definition, captured);
+        });
+        return;
+      }
+    }
+    savedSearchState.inFlight = true;
+    setLoading(status, "Running saved search…");
+    renderSavedSearchWorkspace();
+    var body = captured.profile ? profilePayload(captured.profile) : {};
+    try {
+      var data = await postReportJson(
+        "/saved-searches/" + encodeURIComponent(definition.name) +
+          "/execute?snapshot=true",
+        body
+      );
+      if (seq !== savedSearchState.executionSeq ||
+        selection !== savedSearchState.selectionGeneration ||
+        visibleView() !== SAVED_SEARCHES) return;
+      if (captured.profile &&
+        captured.profileGeneration !== matchingActiveProfileGeneration) {
+        if (status) {
+          doneLoading(status);
+          status.textContent = "Matching preferences changed while the Saved Search was running. Run it again.";
+        }
+        return;
+      }
+      if (!isObject(data) || !isObject(data.saved_search) ||
+        !Array.isArray(data.items)) {
+        throw new Error("The Saved Search execution response did not match the expected shape.");
+      }
+      var used = data.saved_search;
+      if (used.id !== definition.id || used.name !== definition.name ||
+        used.updated_at !== definition.updated_at) {
+        var changed = new Error("The Saved Search changed while it was running. Refresh its metadata before running it again.");
+        changed.savedSearchChanged = true;
+        throw changed;
+      }
+      if ((used.mode !== "search" && used.mode !== "rank") ||
+        typeof used.updated_at !== "string" || data.mode !== used.mode ||
+        data.grouped !== used.grouped || data.offset !== 0 ||
+        data.limit !== used.result_limit || data.total !== data.items.length) {
+        throw new Error("The Saved Search execution response did not match the expected shape.");
+      }
+      savedSearchState.snapshot = Object.freeze({
+        saved_search: used,
+        items: Object.freeze(data.items.slice()),
+        total: data.total,
+        offset: data.offset,
+        limit: data.limit,
+        profile: captured.profile,
+        profileGeneration: captured.profileGeneration,
+        runGeneration: runGeneration,
+        runConfig: Object.freeze({
+          query: used.query,
+          grouped: used.grouped,
+          minimumScore: used.min_score,
+          resultLimit: used.result_limit,
+        }),
+      });
+      savedSearchState.page = 0;
+      renderSavedSearchWorkspace();
+      doneLoading(status);
+    } catch (error) {
+      if (seq !== savedSearchState.executionSeq ||
+        selection !== savedSearchState.selectionGeneration ||
+        visibleView() !== SAVED_SEARCHES) return;
+      if (error.status === 404) {
+        savedSearchState.selected = null;
+        savedSearchState.snapshot = null;
+        savedSearchState.metadataPage = 0;
+        await loadSavedSearchMetadata();
+      } else if (error.savedSearchChanged === true) {
+        renderError(status, error.message, loadSavedSearchMetadata);
+      } else {
+        renderError(status, error.message, function () {
+          runSavedSearch(definition, captured);
+        });
+      }
+    } finally {
+      if (seq === savedSearchState.executionSeq) {
+        savedSearchState.inFlight = false;
+        renderSavedSearchWorkspace();
+      }
+    }
   }
 
   async function renderSavedSearchesView() { await loadSavedSearchMetadata(); }
@@ -1058,25 +1522,6 @@
   var MAX_ENTRY_LENGTH = 100;
   var MAX_REMOTE_LENGTH = 50;
 
-  function resetReviewResults() {
-    var content = document.getElementById("review-content");
-    var status = document.getElementById("review-status");
-    var validation = document.getElementById("review-validation");
-    if (content) clearText(content);
-    if (status) clearText(status);
-    if (validation) clearText(validation);
-    // The previous result cards are gone; drop their per-card in-flight
-    // markers so the map can never describe a card that is no longer
-    // rendered. Any still-running mutation for a removed card is separately
-    // invalidated by the reviewRequestSeq token it captured.
-    reviewCardInFlight = {};
-    var section = document.getElementById("view-review");
-    if (section) section.removeAttribute("aria-busy");
-    var submit = document.getElementById("review-submit");
-    if (submit) submit.disabled = false;
-    reviewQueueRefreshDirty = false;
-  }
-
   function parseListValue(raw) {
     return String(raw)
       .split(/[,\n]+/)
@@ -1090,18 +1535,14 @@
 
   function readReviewFields() {
     return {
-      desiredTitles: parseListValue(document.getElementById("review-titles").value),
-      skills: parseListValue(document.getElementById("review-skills").value),
-      preferredLocations: parseListValue(
-        document.getElementById("review-locations").value
-      ),
-      remotePreference: document.getElementById("review-remote").value.trim(),
+      profile: cloneProfile(matchingActiveProfile),
       grouped: document.getElementById("review-grouped").checked,
       limit: document.getElementById("review-limit").value,
     };
   }
 
   function validateReviewFields(fields) {
+    if (fields.profile) return validateMatchingProfile(fields.profile);
     var lists = [
       ["Desired titles", fields.desiredTitles],
       ["Skills", fields.skills],
@@ -1149,6 +1590,7 @@
 
   // Only the approved profile fields are ever sent; empty fields are omitted.
   function buildProfilePayload(fields) {
+    if (fields.profile) return profilePayload(fields.profile);
     var profile = {};
     if (fields.desiredTitles.length > 0) {
       profile.desired_titles = fields.desiredTitles;
@@ -1171,22 +1613,37 @@
   // navigation away) is discarded whole -- it can never restore a queue card
   // that a later successful decision removed.
   async function runReviewRequest(fields) {
+    var captured = Object.freeze({
+      profile: freezeProfile(fields.profile || matchingActiveProfile),
+      profileGeneration: Number.isInteger(fields.profileGeneration)
+        ? fields.profileGeneration
+        : matchingActiveProfileGeneration,
+      grouped: fields.grouped === true,
+      limit: String(fields.limit),
+    });
     var seq = ++reviewRequestSeq;
     reviewDataGeneration++;
-    var generation = ++rankingContextGeneration;
+    var runGeneration = reviewDataGeneration;
     rankedJobContext = null;
     pendingRankedNavigation = null;
-    lastReviewFields = fields;
     var status = document.getElementById("review-status");
     var content = document.getElementById("review-content");
     var submit = document.getElementById("review-submit");
     var url =
-      "/report?grouped=" + (fields.grouped ? "true" : "false") + "&limit=" + fields.limit;
+      "/report?grouped=" + (captured.grouped ? "true" : "false") +
+      "&limit=" + encodeURIComponent(captured.limit);
     setLoading(status, "Generating review results…");
     if (submit) submit.disabled = true;
     try {
-      var data = await postReportJson(url, buildProfilePayload(fields));
+      var data = await postReportJson(url, profilePayload(captured.profile));
       if (seq !== reviewRequestSeq || visibleView() !== REVIEW) return;
+      if (captured.profileGeneration !== matchingActiveProfileGeneration) {
+        if (status) {
+          doneLoading(status);
+          status.textContent = "Matching preferences changed while Review was running. Generate Review again.";
+        }
+        return;
+      }
       if (
         !isObject(data) ||
         !isObject(data.review_queue) ||
@@ -1194,13 +1651,21 @@
       ) {
         throw new Error("The /report response did not match the expected shape.");
       }
-      renderReviewContent(content, data, generation);
+      reviewSnapshot = Object.freeze({
+        profile: captured.profile,
+        profileGeneration: captured.profileGeneration,
+        grouped: captured.grouped,
+        limit: captured.limit,
+        runGeneration: runGeneration,
+        data: Object.freeze(data),
+      });
+      lastReviewFields = captured;
+      renderStoredReviewSnapshot();
       doneLoading(status);
     } catch (error) {
       if (seq !== reviewRequestSeq || visibleView() !== REVIEW) return;
-      clearText(content);
       renderError(status, error.message, function () {
-        runReviewRequest(fields);
+        runReviewRequest(captured);
       });
     } finally {
       // Only the current run may touch the submit button; a newer run owns
@@ -1209,15 +1674,43 @@
     }
   }
 
-  function renderReviewContent(content, data, generation) {
+  function renderStoredReviewSnapshot() {
+    if (!reviewSnapshot) return;
+    var content = document.getElementById("review-content");
+    if (!content) return;
+    lastReviewFields = Object.freeze({
+      profile: reviewSnapshot.profile,
+      profileGeneration: reviewSnapshot.profileGeneration,
+      grouped: reviewSnapshot.grouped,
+      limit: reviewSnapshot.limit,
+    });
+    renderReviewContent(
+      content,
+      reviewSnapshot.data,
+      ++rankingContextGeneration,
+      reviewSnapshot
+    );
+  }
+
+  function renderReviewContent(content, data, generation, runContext) {
     content.textContent = "";
+    if (runContext.profileGeneration !== matchingActiveProfileGeneration) {
+      content.appendChild(el("p", {
+        className: "stale-note",
+        textContent: "Previous preferences — rerun to update",
+      }));
+    }
     var summary = buildReviewSummary(data.review_queue, data.recommendations);
-    var queue = buildReviewQueueSection(data.review_queue, generation);
+    var queue = buildReviewQueueSection(data.review_queue, generation, runContext);
     summary.setAttribute("data-review-summary", "true");
     queue.setAttribute("data-review-queue", "true");
     content.appendChild(summary);
     content.appendChild(queue);
-    content.appendChild(buildRecommendationsSection(data.recommendations, generation));
+    content.appendChild(buildRecommendationsSection(
+      data.recommendations,
+      generation,
+      runContext
+    ));
   }
 
   function buildReviewSummary(review, recommendations) {
@@ -1254,7 +1747,24 @@
     var summary = content.querySelector("[data-review-summary]");
     if (!queue || !summary) return;
     var review = normalizeReviewQueueResponse(data, fields);
-    var replacement = buildReviewQueueSection(review, rankingGeneration);
+    if (reviewSnapshot) {
+      var updatedData = Object.assign({}, reviewSnapshot.data, {
+        review_queue: review,
+      });
+      reviewSnapshot = Object.freeze({
+        profile: reviewSnapshot.profile,
+        profileGeneration: reviewSnapshot.profileGeneration,
+        grouped: reviewSnapshot.grouped,
+        limit: reviewSnapshot.limit,
+        runGeneration: reviewSnapshot.runGeneration,
+        data: Object.freeze(updatedData),
+      });
+    }
+    var replacement = buildReviewQueueSection(
+      review,
+      rankingGeneration,
+      reviewSnapshot
+    );
     replacement.setAttribute("data-review-queue", "true");
     queue.replaceWith(replacement);
     var recommendationCount = summary.getAttribute("data-recommendation-count") || "0";
@@ -1269,7 +1779,7 @@
     }
   }
 
-  function buildReviewQueueSection(review, generation) {
+  function buildReviewQueueSection(review, generation, runContext) {
     var section = el("section", { className: "chunk" });
     section.appendChild(el("h2", { textContent: "Review queue" }));
     var items = Array.isArray(review.items) ? review.items : [];
@@ -1293,6 +1803,12 @@
       var card = buildJobCard(group.representative, item.match_score, null, group);
       attachCardExplanationAndContext(card, item.explanation, {
         generation: generation,
+        runGeneration: runContext ? runContext.runGeneration : null,
+        profileGeneration: runContext ? runContext.profileGeneration : null,
+        runConfig: runContext ? Object.freeze({
+          grouped: runContext.grouped,
+          limit: runContext.limit,
+        }) : null,
         surface: "review-queue",
         targetKind: "opportunity",
         targetIdentity: group["group_id"]
@@ -1315,7 +1831,7 @@
     return section;
   }
 
-  function buildRecommendationsSection(recommendations, generation) {
+  function buildRecommendationsSection(recommendations, generation, runContext) {
     var section = el("section", { className: "chunk" });
     section.appendChild(el("h2", { textContent: "Recommendations" }));
     var grouped = recommendations.grouped === true;
@@ -1341,6 +1857,12 @@
       var card = buildJobCard(job, entry.match_score, entry.score, group);
       attachCardExplanationAndContext(card, entry.explanation, {
         generation: generation,
+        runGeneration: runContext ? runContext.runGeneration : null,
+        profileGeneration: runContext ? runContext.profileGeneration : null,
+        runConfig: runContext ? Object.freeze({
+          grouped: runContext.grouped,
+          limit: runContext.limit,
+        }) : null,
         surface: "recommendations",
         targetKind: grouped ? "opportunity" : "job",
         targetIdentity: grouped
@@ -1411,9 +1933,14 @@
     link.addEventListener("click", function (event) {
       if (event.button !== 0 || event.metaKey || event.ctrlKey ||
         event.shiftKey || event.altKey) return;
-      pendingRankedNavigation = { jobId: job.id, generation: rankingContext.generation };
+      var transitionGeneration = ++rankingContextGeneration;
+      pendingRankedNavigation = { jobId: job.id, generation: transitionGeneration };
       rankedJobContext = {
-        generation: rankingContext.generation,
+        generation: transitionGeneration,
+        runGeneration: rankingContext.runGeneration,
+        profileGeneration: rankingContext.profileGeneration,
+        runConfig: rankingContext.runConfig,
+        runLabel: rankingContext.runLabel,
         surface: rankingContext.surface,
         targetKind: rankingContext.targetKind,
         targetIdentity: rankingContext.targetIdentity,
@@ -2657,6 +3184,7 @@
     var label = jobDetailOrigin === REVIEW ? "Back to review" :
       jobDetailOrigin === REVIEWED ? "Back to reviewed" :
       jobDetailOrigin === APPLICATIONS ? "Back to applications" :
+      jobDetailOrigin === MATCHING ? "Back to matching preferences" :
       jobDetailOrigin === SAVED_SEARCHES ? "Back to saved searches" : "Back to jobs";
     return el("a", {
       className: "job-back",
@@ -2768,9 +3296,22 @@
     if (rankedJobContext.surface === "saved-search") {
       if (!savedSearchState.snapshot || !isObject(savedSearchState.snapshot.saved_search) ||
         rankedJobContext.savedSearchId !== savedSearchState.snapshot.saved_search.id ||
-        rankedJobContext.savedSearchUpdatedAt !== savedSearchState.snapshot.saved_search.updated_at) return false;
+        rankedJobContext.savedSearchUpdatedAt !== savedSearchState.snapshot.saved_search.updated_at ||
+        rankedJobContext.runGeneration !== savedSearchState.snapshot.runGeneration) return false;
     }
-    return (rankedJobContext.surface === "recommendations" || rankedJobContext.surface === "review-queue" || rankedJobContext.surface === "saved-search") &&
+    if (rankedJobContext.surface === "matching-preview") {
+      if (!matchingPreviewSnapshot ||
+        rankedJobContext.runGeneration !== matchingPreviewSnapshot.runGeneration) return false;
+    }
+    if (rankedJobContext.surface === "recommendations" ||
+      rankedJobContext.surface === "review-queue") {
+      if (!reviewSnapshot ||
+        rankedJobContext.runGeneration !== reviewSnapshot.runGeneration) return false;
+    }
+    return (rankedJobContext.surface === "recommendations" ||
+      rankedJobContext.surface === "review-queue" ||
+      rankedJobContext.surface === "saved-search" ||
+      rankedJobContext.surface === "matching-preview") &&
       rankedJobContext.generation === rankingContextGeneration &&
       rankedJobContext.jobId === job.id &&
       typeof rankedJobContext.targetIdentity === "string" && rankedJobContext.targetIdentity.length > 0 &&
@@ -2788,7 +3329,7 @@
     section.appendChild(el("h2", { textContent: "Why this job?" }));
     if (!validJobExplanationContext(job)) {
       section.appendChild(el("p", { className: "empty-note", textContent:
-        "No ranking context is available. Open this job from Recommendations, Review Queue, or a ranked saved search to see why it matched." }));
+        "No ranking context is available. Open this job from Matching Preview, Recommendations, Review Queue, or a ranked saved search to see why it matched." }));
       return section;
     }
     var explanation = rankedJobContext.explanation;

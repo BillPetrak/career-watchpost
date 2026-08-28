@@ -543,7 +543,9 @@ def test_home_jobs_review_regressions_intact() -> None:
     js = _js()
     assert 'var data = await fetchJson("/report");' in js
     assert 'await loadJobs(qs ? "/jobs?" + qs : "/jobs");' in js
-    assert js.count("await postReportJson(") == 3
+    # Matching Preview adds one explicit call to the three existing ranking
+    # call sites; application mutations remain independent of all four.
+    assert js.count("await postReportJson(") == 4
     assert 'addEventListener("submit", reviewFormSubmitted);' in js
 
 

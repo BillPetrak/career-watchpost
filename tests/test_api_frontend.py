@@ -229,10 +229,10 @@ def test_js_uses_only_intended_endpoints() -> None:
         '"/reminders?job_id=" + jobId',
         '"/saved-searches?offset="',
         '"/saved-searches/" + encodeURIComponent(definition.name)',
+        '"/ranked-jobs?grouped="',
     ):
         assert required in js, required
     for forbidden in (
-        "/ranked-jobs",
         "/report/",
         "/workflow",
     ):

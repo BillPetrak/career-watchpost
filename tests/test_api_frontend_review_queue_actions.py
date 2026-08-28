@@ -378,11 +378,14 @@ def test_reentry_uses_new_generation_and_old_queue_refresh_cannot_swallow_it() -
     assert "visibleView() !== REVIEW" in refresh
 
 
-def test_reset_clears_per_card_markers_with_the_results_area() -> None:
+def test_navigation_clears_operation_markers_but_preserves_run_snapshot() -> None:
     js = _js()
-    start = js.index("function resetReviewResults")
-    end = js.index("function parseListValue")
-    assert "reviewCardInFlight = {};" in js[start:end]
+    start = js.index("if (leaving === REVIEW && name !== REVIEW) {")
+    end = js.index("if (leaving === REVIEWED", start)
+    leaving = js[start:end]
+    assert "reviewCardInFlight = {};" in leaving
+    assert "reviewSnapshot = null" not in leaving
+    assert "review-content" not in leaving
 
 
 def test_operation_cleanup_is_conditional_on_identity_token() -> None:
@@ -454,7 +457,7 @@ def test_method_set_is_unchanged() -> None:
 
 def test_forbidden_endpoints_remain_absent() -> None:
     js = _js()
-    for forbidden in ("/ranked-jobs", "/workflow"):
+    for forbidden in ("/workflow",):
         assert forbidden not in js, forbidden
 
 
@@ -470,8 +473,8 @@ def test_post_helper_has_initial_report_and_queue_refresh_call_sites() -> None:
     js = _js()
     # The helper is used once for the initial full report, once for the
     # queue-only authoritative decision refresh, and once for explicit Saved
-    # Search execution.
-    assert js.count("await postReportJson(") == 3
+    # Search execution, plus the explicit Matching Preview.
+    assert js.count("await postReportJson(") == 4
 
 
 def test_job_detail_actions_remain_untouched() -> None:

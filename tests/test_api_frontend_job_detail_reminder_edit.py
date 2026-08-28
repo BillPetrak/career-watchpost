@@ -763,7 +763,9 @@ def test_patch_json_defined_once_called_once_against_reminders() -> None:
     assert 'await patchJson("/reminders/" + reminderId, payload);' in js
     # The only PATCH is the reminder edit; no other route is patched.
     assert 'await patchJson("/saved-searches' not in js
-    assert '"/ranked-jobs' not in js
+    # Matching Preview owns the sole ranked-jobs call site; reminder editing
+    # still cannot issue or reuse it.
+    assert js.count('"/ranked-jobs?grouped="') == 1
     assert '"/review-queue?grouped="' in js
 
 

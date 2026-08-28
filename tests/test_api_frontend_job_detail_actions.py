@@ -490,8 +490,8 @@ def test_home_jobs_review_regressions_intact() -> None:
     assert 'var data = await fetchJson("/report");' in js
     assert 'await loadJobs(qs ? "/jobs?" + qs : "/jobs");' in js
     # Review uses one initial report and one queue-only post-decision refresh;
-    # Saved Searches adds one separate explicit execution call site.
-    assert js.count("await postReportJson(") == 3
+    # Saved Searches and Matching Preview add one explicit call site each.
+    assert js.count("await postReportJson(") == 4
     assert 'addEventListener("submit", reviewFormSubmitted);' in js
 
 
