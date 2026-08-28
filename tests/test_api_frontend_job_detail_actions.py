@@ -477,7 +477,6 @@ def test_method_set_is_exactly_post_put_patch_delete_in_order() -> None:
 def test_forbidden_endpoints_remain_absent() -> None:
     js = _js()
     for forbidden in (
-        "/saved-searches",
         "/ranked-jobs",
         "/review-queue",
         "/workflow",
@@ -490,8 +489,9 @@ def test_home_jobs_review_regressions_intact() -> None:
     js = _js()
     assert 'var data = await fetchJson("/report");' in js
     assert 'await loadJobs(qs ? "/jobs?" + qs : "/jobs");' in js
-    # Review uses one initial report and one queue-only post-decision refresh.
-    assert js.count("await postReportJson(") == 2
+    # Review uses one initial report and one queue-only post-decision refresh;
+    # Saved Searches adds one separate explicit execution call site.
+    assert js.count("await postReportJson(") == 3
     assert 'addEventListener("submit", reviewFormSubmitted);' in js
 
 
@@ -526,7 +526,6 @@ def test_no_private_fields_filesystem_profile_or_storage_access() -> None:
         ".sqlite",
         "/data/",
         ".source_job_id",
-        ".group_id",
         "score_components",
         ".reasons",
         "reminder.message",

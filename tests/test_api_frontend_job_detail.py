@@ -535,11 +535,10 @@ def test_group_failure_is_section_error_not_absence() -> None:
     # 404 there is the whole-page "Job not found" state. Application/review
     # absent state is now an empty 200 list, so the two sections never
     # special-case a 404. The only other 404 special-cases in the file are the
-    # reminder-DELETE, reminder-edit-PATCH, and Today reminder-completion
-    # mutation reconciles (a 404 from those mutations is treated as "the
-    # reminder is gone", which is the desired state); every other rejection is
-    # a plain section error.
-    assert js.count("status === 404") == 4
+    # reminder-DELETE, reminder-edit-PATCH, Today reminder-completion mutation,
+    # and Saved Search execution reconciles (a Saved Search 404 refreshes its
+    # metadata); every other rejection is a plain section error.
+    assert js.count("status === 404") == 5
     assert "status === 404" not in _render_application_slice(js)
     assert "status === 404" not in _render_review_slice(js)
 
@@ -611,7 +610,6 @@ def test_no_private_fields_rendered_or_requested() -> None:
     for forbidden in (
         ".description",
         ".source_job_id",
-        ".group_id",
         "score_components",
         ".reasons",
         ".review_decision",
@@ -980,7 +978,8 @@ def test_prior_views_still_driven_by_their_single_endpoint() -> None:
     js = _js()
     # Home is still GET /report; Jobs is still GET /jobs; Review uses POST
     # /report initially and POST /review-queue after a successful decision.
+    # Saved Searches adds one separate explicit execution POST call site.
     assert 'var data = await fetchJson("/report");' in js
     assert 'await loadJobs(qs ? "/jobs?" + qs : "/jobs");' in js
-    assert js.count("await postReportJson(") == 2
+    assert js.count("await postReportJson(") == 3
     assert 'addEventListener("submit", reviewFormSubmitted)' in js

@@ -454,7 +454,7 @@ def test_method_set_is_unchanged() -> None:
 
 def test_forbidden_endpoints_remain_absent() -> None:
     js = _js()
-    for forbidden in ("/saved-searches", "/ranked-jobs", "/workflow"):
+    for forbidden in ("/ranked-jobs", "/workflow"):
         assert forbidden not in js, forbidden
 
 
@@ -468,9 +468,10 @@ def test_queue_refresh_does_not_rebuild_recommendations() -> None:
 
 def test_post_helper_has_initial_report_and_queue_refresh_call_sites() -> None:
     js = _js()
-    # The helper is used once for the initial full report and once for the
-    # queue-only authoritative decision refresh.
-    assert js.count("await postReportJson(") == 2
+    # The helper is used once for the initial full report, once for the
+    # queue-only authoritative decision refresh, and once for explicit Saved
+    # Search execution.
+    assert js.count("await postReportJson(") == 3
 
 
 def test_job_detail_actions_remain_untouched() -> None:

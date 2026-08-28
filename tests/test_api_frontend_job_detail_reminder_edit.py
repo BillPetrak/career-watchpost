@@ -762,7 +762,7 @@ def test_patch_json_defined_once_called_once_against_reminders() -> None:
     assert js.count("patchJson(") == 2
     assert 'await patchJson("/reminders/" + reminderId, payload);' in js
     # The only PATCH is the reminder edit; no other route is patched.
-    assert '"/saved-searches' not in js
+    assert 'await patchJson("/saved-searches' not in js
     assert '"/ranked-jobs' not in js
     assert '"/review-queue?grouped="' in js
 

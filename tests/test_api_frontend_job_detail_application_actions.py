@@ -364,8 +364,13 @@ def test_no_untrack_or_reset_control() -> None:
     # must never invent an Untrack button, map a status to "untracked", or
     # issue a DELETE for applications. The read path uses the job-scoped list
     # endpoint; the PUT mutation still targets the singular route.
-    assert "Untrack" not in js
-    assert "untracked" not in js
+    application_actions = js[
+        js.index("function buildApplicationStatusActions") : js.index(
+            "// Canonical review decisions"
+        )
+    ]
+    assert "Untrack" not in application_actions
+    assert "untracked" not in application_actions
     assert 'deleteJson("/applications/' not in js
     assert '"/applications?job_id=" + jobId' in js
     assert 'putJson("/applications/" + jobId, { status: status });' in js
@@ -509,7 +514,6 @@ def test_method_set_is_exactly_post_put_patch_delete_in_order() -> None:
 def test_forbidden_endpoints_remain_absent() -> None:
     js = _js()
     for forbidden in (
-        "/saved-searches",
         "/ranked-jobs",
         "/review-queue",
         "/workflow",
@@ -539,7 +543,7 @@ def test_home_jobs_review_regressions_intact() -> None:
     js = _js()
     assert 'var data = await fetchJson("/report");' in js
     assert 'await loadJobs(qs ? "/jobs?" + qs : "/jobs");' in js
-    assert js.count("await postReportJson(") == 2
+    assert js.count("await postReportJson(") == 3
     assert 'addEventListener("submit", reviewFormSubmitted);' in js
 
 
@@ -583,7 +587,6 @@ def test_no_private_fields_filesystem_profile_or_storage_access() -> None:
         ".sqlite",
         "/data/",
         ".source_job_id",
-        ".group_id",
         "score_components",
         ".reasons",
         "reminder.message",

@@ -217,8 +217,9 @@ def test_js_uses_only_intended_endpoints() -> None:
     # The Job Detail view calls exactly the five read GET route families
     # (application/review via their job-scoped list endpoints, so absent state
     # is an empty 200 list, never a canonical 404) plus the Home/Jobs/Review
-    # GETs, and only the review-decision PUT/DELETE mutation routes. The
-    # computation-only endpoints /report and /review-queue are the only
+    # GETs, Saved Search metadata plus explicit snapshot execution, and only
+    # the review-decision PUT/DELETE mutation routes. The computation-only
+    # endpoints /report, /review-queue, and Saved Search execution are the only
     # ranking/report POSTs, and forbidden endpoints stay absent.
     for required in (
         '"/jobs/" + jobId',
@@ -226,10 +227,11 @@ def test_js_uses_only_intended_endpoints() -> None:
         '"/applications?job_id=" + jobId',
         '"/review-decisions?job_id=" + jobId',
         '"/reminders?job_id=" + jobId',
+        '"/saved-searches?offset="',
+        '"/saved-searches/" + encodeURIComponent(definition.name)',
     ):
         assert required in js, required
     for forbidden in (
-        "/saved-searches",
         "/ranked-jobs",
         "/report/",
         "/workflow",

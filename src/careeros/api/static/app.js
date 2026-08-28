@@ -38,6 +38,7 @@
   var REVIEWED = "reviewed";
   var APPLICATIONS = "applications";
   var REMINDERS = "reminders";
+  var SAVED_SEARCHES = "saved-searches";
   var JOB = "job";
   var initialized = false;
 
@@ -53,6 +54,15 @@
   var rankingContextGeneration = 0;
   var rankedJobContext = null;
   var pendingRankedNavigation = null;
+
+  // Saved Searches is an independent, read/select/run workspace. Its result
+  // array and the definition returned with it are one immutable in-memory
+  // snapshot; no browser storage or implicit reruns are used.
+  var savedSearchState = {
+    metadata: [], metadataTotal: 0, metadataPage: 0, metadataPageSize: 20, selected: null, metadataSeq: 0, selectionGeneration: 0,
+    executionSeq: 0, executionGeneration: 0, rankingGeneration: 0, inFlight: false, snapshot: null,
+    page: 0, pageSize: 20, profile: null,
+  };
 
   // Stale-response guard for the Job Detail view: every full render of
   // #job/<id> increments this token, and every async operation that touches the
@@ -170,6 +180,7 @@
     if (raw === REVIEWED) return REVIEWED;
     if (raw === APPLICATIONS) return APPLICATIONS;
     if (raw === REMINDERS) return REMINDERS;
+    if (raw === SAVED_SEARCHES) return SAVED_SEARCHES;
     if (raw === HOME) return HOME;
     return null; // unknown / absent / non-view (e.g. #main)
   }
@@ -254,6 +265,12 @@
       applicationsRefreshDirty = false;
       applicationsFocusTarget = null;
     }
+    if (leaving === SAVED_SEARCHES && name !== SAVED_SEARCHES) {
+      savedSearchState.metadataSeq++;
+      savedSearchState.selectionGeneration++;
+      savedSearchState.executionSeq++;
+      savedSearchState.inFlight = false;
+    }
     if (name === REVIEWED && leaving !== REVIEWED) {
       reviewedViewGeneration++;
       reviewedRefreshDirty = false;
@@ -298,6 +315,8 @@
       await renderReviewedView();
     } else if (view === APPLICATIONS) {
       await renderApplicationsView();
+    } else if (view === SAVED_SEARCHES) {
+      await renderSavedSearchesView();
     } else if (view === REMINDERS) {
       if (leaving === REVIEW) resetReviewResults();
       await renderRemindersView();
@@ -320,6 +339,8 @@
         };
       } else if (leaving === TODAY) {
         jobDetailOrigin = TODAY;
+      } else if (leaving === SAVED_SEARCHES) {
+        jobDetailOrigin = SAVED_SEARCHES;
       }
       await renderJobDetail(jobId);
     }
@@ -382,7 +403,9 @@
       throw new Error("Could not reach the CareerOS API. Check that it is running, then retry.");
     }
     if (!response.ok) {
-      throw await readHttpError(url, response);
+      var error = await readHttpError(url, response);
+      error.status = response.status;
+      throw error;
     }
     return response.json();
   }
@@ -840,6 +863,189 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Saved Searches workspace (metadata + explicit, bounded snapshot execution)
+  // ---------------------------------------------------------------------------
+
+  function savedSearchLabel(item) {
+    return item.mode === "rank" ? "Rank" : "Search";
+  }
+
+  function savedSearchFields(definition) {
+    var fields = el("dl", { className: "job-fields" });
+    addField(fields, "Mode", savedSearchLabel(definition));
+    addField(fields, "Query", definition.query);
+    addField(fields, "Grouping", definition.grouped === true ? "Grouped" : "Individual");
+    addField(fields, "Result limit", String(definition.result_limit));
+    addField(fields, "Source", definition.source);
+    addField(fields, "Location", definition.location);
+    addField(fields, "Remote", definition.remote === true ? "Remote only" : definition.remote === false ? "Not remote" : "No preference");
+    addField(fields, "Tracking", definition.untracked ? "Untracked only" : "All applications");
+    if (Array.isArray(definition.include_statuses) && definition.include_statuses.length) addField(fields, "Statuses", definition.include_statuses.join(", "));
+    if (Array.isArray(definition.exclude_statuses) && definition.exclude_statuses.length) addField(fields, "Excluded statuses", definition.exclude_statuses.join(", "));
+    if (definition.mode === "rank") addField(fields, "Minimum score", definition.min_score === null ? "None" : definition.min_score);
+    return fields;
+  }
+
+  function savedSearchDefinition(definition) {
+    var section = el("section", { className: "saved-search-definition chunk" });
+    section.appendChild(el("h2", { textContent: displayText(definition.name) }));
+    section.appendChild(savedSearchFields(definition));
+    return section;
+  }
+
+  function savedSearchProfileForm() {
+    var form = el("form", { className: "profile-form saved-search-profile" });
+    form.id = "saved-search-profile-form";
+    var fieldset = el("fieldset", { className: "profile-fields" });
+    fieldset.appendChild(el("legend", { textContent: "Profile for this run" }));
+    [["saved-profile-titles", "Desired titles"], ["saved-profile-skills", "Skills"], ["saved-profile-locations", "Preferred locations"]].forEach(function (entry) {
+      var wrap = el("div", { className: "profile-field" });
+      var label = el("label", { textContent: entry[1] }); label.htmlFor = entry[0];
+      var input = document.createElement("textarea"); input.id = entry[0]; input.rows = 2; input.name = entry[0];
+      wrap.appendChild(label); wrap.appendChild(input); fieldset.appendChild(wrap);
+    });
+    var remote = el("div", { className: "profile-field" });
+    var remoteLabel = el("label", { textContent: "Remote preference" }); remoteLabel.htmlFor = "saved-profile-remote";
+    var select = document.createElement("select"); select.id = "saved-profile-remote";
+    [["", "No preference"], ["remote", "Remote only"], ["onsite_or_unspecified", "Onsite or unspecified"]].forEach(function (option) { var node = document.createElement("option"); node.value = option[0]; node.textContent = option[1]; select.appendChild(node); });
+    remote.appendChild(remoteLabel); remote.appendChild(select); fieldset.appendChild(remote);
+    form.appendChild(fieldset);
+    if (savedSearchState.profile) {
+      form.querySelector("#saved-profile-titles").value = savedSearchState.profile.desiredTitles.join(", ");
+      form.querySelector("#saved-profile-skills").value = savedSearchState.profile.skills.join(", ");
+      form.querySelector("#saved-profile-locations").value = savedSearchState.profile.preferredLocations.join(", ");
+      form.querySelector("#saved-profile-remote").value = savedSearchState.profile.remotePreference;
+    }
+    return form;
+  }
+
+  function readSavedProfile(form) {
+    return {
+      desiredTitles: parseListValue(form.querySelector("#saved-profile-titles").value),
+      skills: parseListValue(form.querySelector("#saved-profile-skills").value),
+      preferredLocations: parseListValue(form.querySelector("#saved-profile-locations").value),
+      remotePreference: form.querySelector("#saved-profile-remote").value.trim(),
+    };
+  }
+
+  function savedSearchJob(item, grouped) { var target = grouped ? (item.group || item) : (item.job || item); return target && target.representative ? target.representative : target; }
+
+  function buildUnrankedJobCard(job, group) {
+    if (!isObject(job)) return null;
+    var card = el("li", { className: "job-card" });
+    card.appendChild(el("h3", { className: "job-title", textContent: displayText(job.title) }));
+    appendJobCardActions(card, job);
+    var fields = el("dl", { className: "job-fields" });
+    addField(fields, "Company", job.company); addField(fields, "Location", job.location);
+    addField(fields, "Remote", job.remote_status); addField(fields, "Employment type", job.employment_type);
+    addField(fields, "Source", job.source); addField(fields, "Published", displayDate(job.published_at));
+    card.appendChild(fields);
+    if (isObject(group) && Array.isArray(group.members) && group.members.length > 1) card.appendChild(el("p", { className: "group-note", textContent: group.members.length + " listings combined." }));
+    return card;
+  }
+
+  function renderSavedResult(item, definition, generation) {
+    var grouped = definition.grouped === true;
+    var job = savedSearchJob(item, grouped);
+    if (!isObject(job)) return null;
+    var rank = definition.mode === "rank";
+    var group = grouped ? (item.group || item) : null;
+    var card = rank ? buildJobCard(job, item.match_score, item.score, group) : buildUnrankedJobCard(job, group);
+    if (!card) return null;
+    if (rank) {
+      attachCardExplanationAndContext(card, item.explanation, {
+        generation: generation, surface: "saved-search", targetKind: grouped ? "opportunity" : "job",
+        targetIdentity: grouped && item.group && item.group.group_id ? "group:" + item.group.group_id : "job:" + job.id,
+        memberIds: grouped && item.group && Array.isArray(item.group.members) ? item.group.members.map(function (member) { return member.id; }) : [job.id],
+        savedSearchId: definition.id, savedSearchUpdatedAt: definition.updated_at,
+      });
+    }
+    return card;
+  }
+
+  function renderSavedSearchSnapshot(snapshot, target) {
+    var content = target || document.getElementById("saved-searches-content");
+    if (!content || !snapshot) return;
+    var definition = snapshot.saved_search;
+    var result = el("section", { className: "saved-search-results chunk" });
+    result.appendChild(el("h2", { textContent: "Definition used for this run" }));
+    var executedFields = savedSearchFields(definition);
+    addField(executedFields, "Name", definition.name);
+    result.appendChild(executedFields);
+    result.appendChild(el("h2", { textContent: definition.mode === "rank" ? "Ranked results" : "Search results" }));
+    result.appendChild(el("p", { className: "result-summary", textContent: snapshot.total + " result" + (snapshot.total === 1 ? "" : "s") + ". This is one saved-search execution." }));
+    var items = Array.isArray(snapshot.items) ? snapshot.items : [];
+    if (!items.length) { result.appendChild(el("p", { className: "empty-note", textContent: "No results returned." })); content.appendChild(result); return; }
+    var page = el("div", { className: "saved-search-page-controls" });
+    var list = el("ul", { className: "job-list" });
+    function draw() {
+      list.textContent = "";
+      var start = savedSearchState.page * savedSearchState.pageSize;
+      items.slice(start, start + savedSearchState.pageSize).forEach(function (item) { var card = renderSavedResult(item, definition, savedSearchState.rankingGeneration); if (card) list.appendChild(card); });
+      page.textContent = "";
+      var pages = Math.max(1, Math.ceil(items.length / savedSearchState.pageSize));
+      page.appendChild(el("span", { textContent: "Page " + (savedSearchState.page + 1) + " of " + pages }));
+      if (savedSearchState.page > 0) { var previous = el("button", { textContent: "Previous", type: "button" }); previous.addEventListener("click", function () { savedSearchState.page--; draw(); }); page.appendChild(previous); }
+      if (savedSearchState.page + 1 < pages) { var next = el("button", { textContent: "Next", type: "button" }); next.addEventListener("click", function () { savedSearchState.page++; draw(); }); page.appendChild(next); }
+    }
+    result.appendChild(page); result.appendChild(list); content.appendChild(result); draw();
+  }
+
+  function selectSavedSearch(item) {
+    savedSearchState.selected = item; savedSearchState.selectionGeneration++; savedSearchState.executionSeq++; savedSearchState.executionGeneration++; savedSearchState.inFlight = false; savedSearchState.snapshot = null; savedSearchState.page = 0; savedSearchState.profile = null; rankingContextGeneration++; rankedJobContext = null; pendingRankedNavigation = null;
+    renderSavedSearchWorkspace();
+  }
+
+  function renderSavedSearchWorkspace() {
+    var content = document.getElementById("saved-searches-content"); if (!content) return; content.textContent = "";
+    var layout = el("div", { className: "saved-search-layout" });
+    var listPanel = el("aside", { className: "saved-search-list", "aria-label": "Saved Search definitions" });
+    listPanel.appendChild(el("h2", { textContent: "Saved Searches" }));
+    if (!savedSearchState.metadata.length) listPanel.appendChild(el("p", { className: "empty-note", textContent: "No Saved Searches yet. Definitions are currently authored through the existing CLI/API capabilities." }));
+    savedSearchState.metadata.forEach(function (item) { var button = el("button", { className: "saved-search-option", type: "button" }); button.appendChild(el("strong", { textContent: displayText(item.name) })); button.appendChild(el("span", { className: "mode-badge", textContent: savedSearchLabel(item) })); button.appendChild(el("span", { textContent: displayText(item.query) })); if (savedSearchState.selected && item.id === savedSearchState.selected.id) button.classList.add("selected"); button.addEventListener("click", function () { selectSavedSearch(item); }); listPanel.appendChild(button); });
+    if (savedSearchState.metadataTotal > savedSearchState.metadataPageSize) {
+      var metadataPager = el("div", { className: "saved-search-page-controls" });
+      metadataPager.appendChild(el("span", { textContent: "Page " + (savedSearchState.metadataPage + 1) + " of " + Math.ceil(savedSearchState.metadataTotal / savedSearchState.metadataPageSize) }));
+      if (savedSearchState.metadataPage > 0) { var previousMetadata = el("button", { textContent: "Previous", type: "button" }); previousMetadata.addEventListener("click", function () { savedSearchState.metadataPage--; loadSavedSearchMetadata(); }); metadataPager.appendChild(previousMetadata); }
+      if ((savedSearchState.metadataPage + 1) * savedSearchState.metadataPageSize < savedSearchState.metadataTotal) { var nextMetadata = el("button", { textContent: "Next", type: "button" }); nextMetadata.addEventListener("click", function () { savedSearchState.metadataPage++; loadSavedSearchMetadata(); }); metadataPager.appendChild(nextMetadata); }
+      listPanel.appendChild(metadataPager);
+    }
+    layout.appendChild(listPanel);
+    var detail = el("div", { className: "saved-search-detail" });
+    if (!savedSearchState.selected) detail.appendChild(el("p", { className: "empty-note", textContent: "Select a Saved Search to view its configuration." }));
+    else {
+      detail.appendChild(savedSearchDefinition(savedSearchState.selected));
+      var run = el("button", { className: "primary-button", textContent: "Run saved search", type: "button" }); run.id = "saved-search-run"; run.disabled = savedSearchState.inFlight;
+      run.addEventListener("click", function () { runSavedSearch(savedSearchState.selected); }); detail.appendChild(run);
+      if (savedSearchState.selected.mode === "rank") { var form = savedSearchProfileForm(); form.addEventListener("input", function () { savedSearchState.profile = readSavedProfile(form); rankingContextGeneration++; rankedJobContext = null; pendingRankedNavigation = null; if (savedSearchState.snapshot) { savedSearchState.snapshot = null; savedSearchState.page = 0; var previousResults = detail.querySelector(".saved-search-results"); if (previousResults) previousResults.remove(); } }); detail.appendChild(form); }
+      if (savedSearchState.snapshot) { renderSavedSearchSnapshot(savedSearchState.snapshot, detail); }
+    }
+    layout.appendChild(detail); content.appendChild(layout);
+  }
+
+  async function loadSavedSearchMetadata() {
+    var seq = ++savedSearchState.metadataSeq, status = document.getElementById("saved-searches-status"); setLoading(status, "Loading Saved Searches…");
+    try { var data = await fetchJson("/saved-searches?offset=" + (savedSearchState.metadataPage * savedSearchState.metadataPageSize) + "&limit=" + savedSearchState.metadataPageSize); if (seq !== savedSearchState.metadataSeq || visibleView() !== SAVED_SEARCHES) return; if (!isObject(data) || !Array.isArray(data.items)) throw new Error("The Saved Search response did not match the expected shape."); savedSearchState.metadata = data.items; savedSearchState.metadataTotal = typeof data.total === "number" ? data.total : data.items.length; if (savedSearchState.selected) { var current = data.items.find(function (item) { return item.id === savedSearchState.selected.id; }); if (current) savedSearchState.selected = current; else if (savedSearchState.metadataPage === 0) savedSearchState.selected = null; } renderSavedSearchWorkspace(); doneLoading(status); } catch (error) { if (seq !== savedSearchState.metadataSeq || visibleView() !== SAVED_SEARCHES) return; renderError(status, error.message, loadSavedSearchMetadata); }
+  }
+
+  async function runSavedSearch(definition, retryProfile) {
+    if (!definition) return;
+    if (!savedSearchState.selected || savedSearchState.selected.id !== definition.id || savedSearchState.selected.updated_at !== definition.updated_at) {
+      var changedStatus = document.getElementById("saved-searches-status");
+      renderError(changedStatus, "This Saved Search changed. Refresh its metadata before running it.", loadSavedSearchMetadata);
+      return;
+    }
+    var seq = ++savedSearchState.executionSeq, selection = savedSearchState.selectionGeneration; savedSearchState.executionGeneration++;
+    var status = document.getElementById("saved-searches-status"), profile = null;
+    var form = document.getElementById("saved-search-profile-form"); if (definition.mode === "rank") { profile = retryProfile || readSavedProfile(form); var validation = validateReviewFields(profile); if (validation) { renderError(status, validation, function () { runSavedSearch(definition, profile); }); return; } }
+    savedSearchState.inFlight = true; savedSearchState.profile = profile; setLoading(status, "Running saved search…"); renderSavedSearchWorkspace();
+    var body = definition.mode === "rank" ? buildProfilePayload(profile) : {};
+    try { var data = await postReportJson("/saved-searches/" + encodeURIComponent(definition.name) + "/execute?snapshot=true", body); if (seq !== savedSearchState.executionSeq || selection !== savedSearchState.selectionGeneration || visibleView() !== SAVED_SEARCHES) return; if (!isObject(data) || !isObject(data.saved_search) || !Array.isArray(data.items)) throw new Error("The Saved Search execution response did not match the expected shape."); var used = data.saved_search; if (used.id !== definition.id || used.name !== definition.name || used.updated_at !== definition.updated_at) { var changed = new Error("The Saved Search changed while it was running. Refresh its metadata before running it again."); changed.savedSearchChanged = true; throw changed; } if ((used.mode !== "search" && used.mode !== "rank") || typeof used.updated_at !== "string" || data.mode !== used.mode || data.grouped !== used.grouped || data.offset !== 0 || data.limit !== used.result_limit || data.total !== data.items.length) throw new Error("The Saved Search execution response did not match the expected shape."); if (used.mode === "rank") savedSearchState.rankingGeneration = ++rankingContextGeneration; savedSearchState.snapshot = Object.freeze({ saved_search: used, items: Object.freeze(data.items.slice()), total: data.total, offset: data.offset, limit: data.limit }); savedSearchState.page = 0; renderSavedSearchWorkspace(); doneLoading(status); } catch (error) { if (seq !== savedSearchState.executionSeq || selection !== savedSearchState.selectionGeneration || visibleView() !== SAVED_SEARCHES) return; savedSearchState.snapshot = null; renderSavedSearchWorkspace(); if (error.status === 404) { savedSearchState.selected = null; savedSearchState.metadataPage = 0; await loadSavedSearchMetadata(); } else if (error.savedSearchChanged === true) { renderError(status, error.message, loadSavedSearchMetadata); } else { renderError(status, error.message, function () { runSavedSearch(definition, profile); }); } } finally { if (seq === savedSearchState.executionSeq) { savedSearchState.inFlight = false; renderSavedSearchWorkspace(); } }
+  }
+
+  async function renderSavedSearchesView() { await loadSavedSearchMetadata(); }
+
+  // ---------------------------------------------------------------------------
   // Review view (driven by the computation-only POST /report only)
   //
   // Presentation of personalized review/recommendation results in the exact
@@ -1214,6 +1420,8 @@
         jobId: job.id,
         explanation: explanation,
         memberIds: Array.isArray(rankingContext.memberIds) ? rankingContext.memberIds.slice() : [],
+        savedSearchId: rankingContext.savedSearchId,
+        savedSearchUpdatedAt: rankingContext.savedSearchUpdatedAt,
       };
     });
   }
@@ -2448,7 +2656,8 @@
     }
     var label = jobDetailOrigin === REVIEW ? "Back to review" :
       jobDetailOrigin === REVIEWED ? "Back to reviewed" :
-      jobDetailOrigin === APPLICATIONS ? "Back to applications" : "Back to jobs";
+      jobDetailOrigin === APPLICATIONS ? "Back to applications" :
+      jobDetailOrigin === SAVED_SEARCHES ? "Back to saved searches" : "Back to jobs";
     return el("a", {
       className: "job-back",
       href: "#" + jobDetailOrigin,
@@ -2556,7 +2765,12 @@
     var members = rankedJobContext.memberIds;
     var grouped = rankedJobContext.targetKind === "opportunity";
     var flat = rankedJobContext.targetKind === "job";
-    return (rankedJobContext.surface === "recommendations" || rankedJobContext.surface === "review-queue") &&
+    if (rankedJobContext.surface === "saved-search") {
+      if (!savedSearchState.snapshot || !isObject(savedSearchState.snapshot.saved_search) ||
+        rankedJobContext.savedSearchId !== savedSearchState.snapshot.saved_search.id ||
+        rankedJobContext.savedSearchUpdatedAt !== savedSearchState.snapshot.saved_search.updated_at) return false;
+    }
+    return (rankedJobContext.surface === "recommendations" || rankedJobContext.surface === "review-queue" || rankedJobContext.surface === "saved-search") &&
       rankedJobContext.generation === rankingContextGeneration &&
       rankedJobContext.jobId === job.id &&
       typeof rankedJobContext.targetIdentity === "string" && rankedJobContext.targetIdentity.length > 0 &&

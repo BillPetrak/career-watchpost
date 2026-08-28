@@ -470,6 +470,9 @@ class SavedSearchExecutionResponse(BaseModel):
     total: int
     offset: int
     limit: int
+    # Present only for the explicit browser snapshot variant.  Ordinary
+    # paginated executions omit this field for backwards-compatible shape.
+    saved_search: SavedSearchItem | None = None
 
 
 class ReviewDecisionItem(BaseModel):

@@ -380,6 +380,11 @@ from careeros.today.service import build_today
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
 
+# Browser snapshots materialize one complete execution in memory.  Keep this
+# bounded independently of the stored saved-search result_limit and ordinary
+# HTTP pagination semantics.
+SAVED_SEARCH_SNAPSHOT_MAX_RESULTS = 500
+
 # Safety valve when loading all matching applications/events before Python-side
 # slicing (the same load-then-slice pattern as the other list endpoints).
 # Tracked-application and event counts are bounded by the stored jobs they
@@ -1939,6 +1944,7 @@ def create_app() -> FastAPI:
     @app.post(
         "/saved-searches/{name}/execute",
         response_model=SavedSearchExecutionResponse,
+        response_model_exclude_unset=True,
     )
     def execute_saved_search(
         connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
@@ -1946,6 +1952,7 @@ def create_app() -> FastAPI:
         payload: SavedSearchExecuteRequest | None = None,
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
+        snapshot: bool = False,
     ) -> SavedSearchExecutionResponse:
         """Execute a stored saved search (computation-only).
 
@@ -1973,6 +1980,31 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=404, detail=_no_saved_search_found_message(name)
             )
+        if snapshot:
+            if offset != 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail="snapshot execution requires offset=0.",
+                )
+            if limit != DEFAULT_LIMIT:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "snapshot execution requires the default request limit "
+                        f"({DEFAULT_LIMIT})."
+                    ),
+                )
+            # Check the persisted definition before profile conversion or any
+            # candidate query/scoring.  Never substitute the ceiling as a
+            # pipeline limit and never silently truncate a snapshot.
+            if stored.result_limit > SAVED_SEARCH_SNAPSHOT_MAX_RESULTS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "saved-search result_limit exceeds the browser snapshot "
+                        f"maximum of {SAVED_SEARCH_SNAPSHOT_MAX_RESULTS}."
+                    ),
+                )
         if stored.mode == "rank":
             request = payload or SavedSearchExecuteRequest()
             if request.profile is None:
@@ -1988,6 +2020,21 @@ def create_app() -> FastAPI:
             )
             if outcome.grouped:
                 ranked = outcome.grouped_ranked
+                if snapshot:
+                    return SavedSearchExecutionResponse(
+                        mode="rank",
+                        grouped=True,
+                        items=[
+                            RankedGroupItem.model_validate(ranked_group_item_dict(item))
+                            for item in ranked
+                        ],
+                        total=len(ranked),
+                        offset=0,
+                        limit=stored.result_limit,
+                        saved_search=SavedSearchItem.model_validate(
+                            saved_search_item_dict(stored)
+                        ),
+                    )
                 return SavedSearchExecutionResponse(
                     mode="rank",
                     grouped=True,
@@ -2000,6 +2047,21 @@ def create_app() -> FastAPI:
                     limit=limit,
                 )
             ranked_jobs = outcome.flat_ranked
+            if snapshot:
+                return SavedSearchExecutionResponse(
+                    mode="rank",
+                    grouped=False,
+                    items=[
+                        RankedJobItem.model_validate(ranked_job_item_dict(item))
+                        for item in ranked_jobs
+                    ],
+                    total=len(ranked_jobs),
+                    offset=0,
+                    limit=stored.result_limit,
+                    saved_search=SavedSearchItem.model_validate(
+                        saved_search_item_dict(stored)
+                    ),
+                )
             return SavedSearchExecutionResponse(
                 mode="rank",
                 grouped=False,
@@ -2019,6 +2081,18 @@ def create_app() -> FastAPI:
         search_outcome = execute_search(connection, stored)
         if search_outcome.grouped:
             groups = search_outcome.groups
+            if snapshot:
+                return SavedSearchExecutionResponse(
+                    mode="search",
+                    grouped=True,
+                    items=[Group.model_validate(group_dict(group)) for group in groups],
+                    total=len(groups),
+                    offset=0,
+                    limit=stored.result_limit,
+                    saved_search=SavedSearchItem.model_validate(
+                        saved_search_item_dict(stored)
+                    ),
+                )
             return SavedSearchExecutionResponse(
                 mode="search",
                 grouped=True,
@@ -2031,6 +2105,18 @@ def create_app() -> FastAPI:
                 limit=limit,
             )
         flat = search_outcome.flat
+        if snapshot:
+            return SavedSearchExecutionResponse(
+                mode="search",
+                grouped=False,
+                items=[Job.model_validate(job_dict(job)) for job in flat],
+                total=len(flat),
+                offset=0,
+                limit=stored.result_limit,
+                saved_search=SavedSearchItem.model_validate(
+                    saved_search_item_dict(stored)
+                ),
+            )
         return SavedSearchExecutionResponse(
             mode="search",
             grouped=False,
