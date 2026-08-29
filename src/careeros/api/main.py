@@ -182,18 +182,23 @@ from __future__ import annotations
 
 import importlib.resources
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Annotated, Literal, cast
+from pathlib import Path
+from typing import Annotated, Any, Literal, cast
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from careeros.api.deps import (
     DATABASE_UNAVAILABLE_MESSAGE,
     LOCK_CONTENTION_MESSAGE,
     read_only_connection,
+    read_only_connection_for,
     writable_connection,
+    writable_connection_for,
 )
 from careeros.api.schemas import (
     ApplicationHistoryEvent,
@@ -201,6 +206,7 @@ from careeros.api.schemas import (
     ApplicationItem,
     ApplicationListResponse,
     ApplicationPipelineCounts,
+    ApplicationPipelineItem,
     ApplicationPipelineResponse,
     ApplicationStatusRequest,
     CandidateProfileRequest,
@@ -260,6 +266,7 @@ from careeros.api.schemas import (
     TodayShortlist,
     TodayShortlistSection,
 )
+from careeros.api.security import SecurityMiddleware
 from careeros.applications.models import APPLICATION_STATUSES, validate_status
 from careeros.applications.service import (
     ApplicationFilter,
@@ -277,6 +284,7 @@ from careeros.database.applications import (
     get_application,
     list_application_events,
     list_applications,
+    preparation_summary_for_applications,
 )
 from careeros.database.groups import (
     GroupedJob,
@@ -290,6 +298,20 @@ from careeros.database.jobs import get_job_by_id, list_jobs, search_jobs
 from careeros.database.reminders import ReminderListEntry, get_reminder
 from careeros.database.review import DecisionListItem
 from careeros.database.runs import list_runs
+from careeros.preparations.service import (
+    PreparationError,
+    RevisionConflict,
+    add_requirement,
+    clear_ready,
+    clear_review,
+    confirm_ready,
+    delete_requirement,
+    get_preparation,
+    mark_reviewed,
+    readiness,
+    reorder_requirements,
+    update_requirement,
+)
 from careeros.presenters import (
     action_item_dict,
     application_event_dict,
@@ -376,6 +398,33 @@ from careeros.saved_searches.service import (
 )
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 from careeros.today.service import build_today
+
+
+class RequirementCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str
+    label: str = Field(max_length=160)
+    detail: str | None = Field(default=None, max_length=1000)
+    required: bool = True
+    fulfillment_state: str = "open"
+    deadline_at: str | None = None
+
+
+class RequirementOrder(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: list[str] = Field(max_length=200)
+
+
+class RequirementPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str | None = None
+    label: str | None = Field(default=None, max_length=160)
+    detail: str | None = Field(default=None, max_length=1000)
+    required: bool | None = None
+    fulfillment_state: str | None = None
+    deadline_at: str | None = None
+    confirmed: bool | None = None
+
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
@@ -750,8 +799,21 @@ def _read_schema_version(connection: sqlite3.Connection) -> int | None:
         return None
 
 
-def create_app() -> FastAPI:
+def create_app(database: Path | None = None) -> FastAPI:
     """Build the CareerOS FastAPI application."""
+
+    selected_database = database
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> Any:
+        from careeros.server import validate_startup_database
+        from careeros.settings import database_path
+
+        validate_startup_database(
+            selected_database if selected_database is not None else database_path()
+        )
+        yield
+
     app = FastAPI(
         title="CareerOS API",
         description=(
@@ -773,7 +835,23 @@ def create_app() -> FastAPI:
             "services."
         ),
         version="0.1.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
     )
+    app.add_middleware(SecurityMiddleware)
+
+    if selected_database is not None:
+
+        def bound_read_only_connection() -> Iterator[sqlite3.Connection | None]:
+            yield from read_only_connection_for(selected_database)
+
+        def bound_writable_connection() -> Iterator[sqlite3.Connection]:
+            yield from writable_connection_for(selected_database)
+
+        app.dependency_overrides[read_only_connection] = bound_read_only_connection
+        app.dependency_overrides[writable_connection] = bound_writable_connection
 
     @app.exception_handler(sqlite3.Error)
     async def _database_error_handler(
@@ -1152,9 +1230,19 @@ def create_app() -> FastAPI:
         result = get_application_pipeline(
             connection, view=view, offset=offset, limit=limit
         )
+        preparation = preparation_summary_for_applications(
+            connection,
+            [item.application.id for item in result.items],
+            now=datetime.now(UTC).isoformat(),
+        )
         return ApplicationPipelineResponse(
             items=[
-                ApplicationItem.model_validate(application_item_dict(item))
+                ApplicationPipelineItem.model_validate(
+                    {
+                        **application_item_dict(item),
+                        "preparation": preparation.get(item.application.id),
+                    }
+                )
                 for item in result.items
             ],
             counts=ApplicationPipelineCounts(**result.status_counts),
@@ -2831,6 +2919,243 @@ def create_app() -> FastAPI:
                 feedback=None,
             )
         )
+
+    def _preparation_revision(value: str | None) -> int:
+        if value is None:
+            raise HTTPException(status_code=428, detail="preparation_revision_required")
+        try:
+            revision = int(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="invalid preparation revision"
+            ) from exc
+        if revision < 0:
+            raise HTTPException(status_code=422, detail="invalid preparation revision")
+        return revision
+
+    def _prep_error(error: PreparationError) -> HTTPException:
+        text = str(error)
+        if isinstance(error, RevisionConflict):
+            detail: dict[str, object] = {
+                "code": "preparation_revision_conflict",
+            }
+            if error.current_revision is not None:
+                detail["current_revision"] = error.current_revision
+            return HTTPException(status_code=409, detail=detail)
+        if "job not found" in text:
+            return HTTPException(status_code=404, detail="job_not_found")
+        if "not tracked" in text:
+            return HTTPException(status_code=404, detail="application_not_tracked")
+        if "not found" in text:
+            return HTTPException(status_code=404, detail="requirement_not_found")
+        if "unconfirmed" in text:
+            return HTTPException(
+                status_code=409, detail="requirements_have_unconfirmed_items"
+            )
+        if "not reviewed" in text:
+            return HTTPException(status_code=409, detail="requirements_not_reviewed")
+        if "review stale" in text:
+            return HTTPException(status_code=409, detail="requirements_review_stale")
+        if "not ready" in text:
+            return HTTPException(status_code=409, detail="preparation_not_ready")
+        return HTTPException(status_code=422, detail="invalid requirement")
+
+    def _prep_response(connection: sqlite3.Connection, job_id: int) -> dict[str, Any]:
+        result = get_preparation(connection, job_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="application_not_tracked")
+        result["readiness"] = readiness(connection, job_id)
+        return result
+
+    def _validate_job_target(connection: sqlite3.Connection, job_id: int) -> None:
+        if (
+            connection.execute("SELECT 1 FROM jobs WHERE id=?", (job_id,)).fetchone()
+            is None
+        ):
+            raise HTTPException(status_code=404, detail="job_not_found")
+
+    @app.get("/applications/{job_id}/preparation")
+    def preparation_get(
+        job_id: int,
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=404, detail="job_not_found")
+        result = get_preparation(connection, job_id)
+        if result is None:
+            exists = connection.execute(
+                "SELECT 1 FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            raise HTTPException(
+                status_code=404,
+                detail="application_not_tracked" if exists else "job_not_found",
+            )
+        result["readiness"] = readiness(connection, job_id)
+        return result
+
+    @app.post("/applications/{job_id}/requirements")
+    def preparation_add(
+        job_id: int,
+        payload: RequirementCreate,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            expected_revision = _preparation_revision(revision)
+            _validate_job_target(connection, job_id)
+            add_requirement(
+                connection,
+                job_id,
+                expected_revision=expected_revision,
+                **payload.model_dump(),
+            )
+            return _prep_response(connection, job_id)
+        except PreparationError as error:
+            raise _prep_error(error) from error
+
+    @app.patch("/application-requirements/{requirement_id}")
+    def preparation_patch(
+        requirement_id: str,
+        payload: RequirementPatch,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        _preparation_revision(revision)
+        job_id = connection.execute(
+            "SELECT a.job_id FROM application_requirement_items i "
+            "JOIN applications a ON a.id=i.application_id WHERE i.id=?",
+            (requirement_id,),
+        ).fetchone()
+        if job_id is None:
+            raise HTTPException(status_code=404, detail="requirement_not_found")
+        try:
+            update_requirement(
+                connection,
+                int(job_id[0]),
+                requirement_id,
+                expected_revision=_preparation_revision(revision),
+                **payload.model_dump(exclude_unset=True),
+            )
+            return _prep_response(connection, int(job_id[0]))
+        except PreparationError as error:
+            raise _prep_error(error) from error
+
+    @app.delete("/application-requirements/{requirement_id}")
+    def preparation_delete(
+        requirement_id: str,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        _preparation_revision(revision)
+        job_id = connection.execute(
+            "SELECT a.job_id FROM application_requirement_items i "
+            "JOIN applications a ON a.id=i.application_id WHERE i.id=?",
+            (requirement_id,),
+        ).fetchone()
+        if job_id is None:
+            raise HTTPException(status_code=404, detail="requirement_not_found")
+        try:
+            delete_requirement(
+                connection,
+                int(job_id[0]),
+                requirement_id,
+                expected_revision=_preparation_revision(revision),
+            )
+            return _prep_response(connection, int(job_id[0]))
+        except PreparationError as error:
+            raise _prep_error(error) from error
+
+    @app.put("/applications/{job_id}/requirements/order")
+    def preparation_order(
+        job_id: int,
+        payload: RequirementOrder,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        _preparation_revision(revision)
+        _validate_job_target(connection, job_id)
+        try:
+            reorder_requirements(
+                connection,
+                job_id,
+                payload.ids,
+                expected_revision=_preparation_revision(revision),
+            )
+            return _prep_response(connection, job_id)
+        except PreparationError as error:
+            raise _prep_error(error) from error
+
+    @app.put("/applications/{job_id}/requirements-review")
+    def preparation_review(
+        job_id: int,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any] | None:
+        try:
+            expected_revision = _preparation_revision(revision)
+            _validate_job_target(connection, job_id)
+            mark_reviewed(connection, job_id, expected_revision)
+            return _prep_response(connection, job_id)
+        except PreparationError as error:
+            raise _prep_error(error) from error
+
+    @app.delete("/applications/{job_id}/requirements-review")
+    def preparation_review_clear(
+        job_id: int,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any] | None:
+        expected_revision = _preparation_revision(revision)
+        try:
+            _validate_job_target(connection, job_id)
+            clear_review(connection, job_id, expected_revision)
+            return _prep_response(connection, job_id)
+        except PreparationError as error:
+            raise _prep_error(error) from error
+
+    @app.put("/applications/{job_id}/ready-confirmation")
+    def preparation_ready(
+        job_id: int,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any] | None:
+        try:
+            expected_revision = _preparation_revision(revision)
+            _validate_job_target(connection, job_id)
+            confirm_ready(connection, job_id, expected_revision)
+            return _prep_response(connection, job_id)
+        except PreparationError as error:
+            raise _prep_error(error) from error
+
+    @app.delete("/applications/{job_id}/ready-confirmation")
+    def preparation_ready_clear(
+        job_id: int,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any] | None:
+        expected_revision = _preparation_revision(revision)
+        try:
+            _validate_job_target(connection, job_id)
+            clear_ready(connection, job_id, expected_revision)
+            return _prep_response(connection, job_id)
+        except PreparationError as error:
+            raise _prep_error(error) from error
 
     return app
 

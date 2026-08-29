@@ -17,8 +17,7 @@ from careeros.cli.render import (
     _render_rank_grouped,
     render_rank_json,
 )
-from careeros.database.connection import connect
-from careeros.database.schema import initialize_schema
+from careeros.database.connection import connect_read_only
 from careeros.review.feedback import build_feedback_set
 from careeros.saved_searches.execution import rank_candidates
 
@@ -46,8 +45,7 @@ def run_rank(
         return 1
 
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             feedback = build_feedback_set(connection) if use_feedback else None
             outcome = rank_candidates(
                 connection,

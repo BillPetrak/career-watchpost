@@ -47,6 +47,7 @@ class ApplicationEvent:
     new_status: str
     note: str | None
     created_at: str
+    note_redacted_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,53 @@ class ApplicationPipelineData:
     total: int
 
 
+def preparation_summary_for_applications(
+    connection: sqlite3.Connection, application_ids: Sequence[int], *, now: str
+) -> dict[int, dict[str, object]]:
+    """Return compact readiness summaries in one bounded aggregate query."""
+    if not application_ids:
+        return {}
+    placeholders = ",".join("?" * len(application_ids))
+    rows = connection.execute(
+        f"""SELECT a.id AS application_id, COALESCE(p.revision, 0) AS revision,
+            p.requirements_reviewed_revision, p.ready_confirmed_revision,
+            SUM(CASE WHEN i.required=1 AND i.kind != 'deadline'
+                AND i.fulfillment_state='open' THEN 1 ELSE 0 END) AS open_count,
+            SUM(CASE WHEN i.confirmed=0 THEN 1 ELSE 0 END) AS unconfirmed_count,
+            SUM(CASE WHEN i.required=1 AND i.kind='deadline'
+                AND i.fulfillment_state='open' AND i.deadline_at IS NOT NULL
+                AND i.deadline_at <= ? THEN 1 ELSE 0 END) AS passed_count
+            FROM applications a LEFT JOIN application_preparations p
+            ON p.application_id=a.id LEFT JOIN application_requirement_items i
+            ON i.application_id=a.id WHERE a.id IN ({placeholders})
+            GROUP BY a.id""",
+        (now, *application_ids),
+    ).fetchall()
+    result: dict[int, dict[str, object]] = {}
+    for row in rows:
+        blocking = int(row["unconfirmed_count"] or 0) + int(row["open_count"] or 0)
+        if int(row["passed_count"] or 0):
+            blocking += int(row["passed_count"])
+        reviewed = row["requirements_reviewed_revision"] == row["revision"]
+        if not reviewed:
+            blocking += 1
+        ready = row["ready_confirmed_revision"] == row["revision"]
+        category = (
+            "user_confirmed_ready"
+            if reviewed and blocking == 0 and ready
+            else (
+                "requirements_satisfied"
+                if reviewed and blocking == 0
+                else ("incomplete" if reviewed else "unknown")
+            )
+        )
+        result[int(row["application_id"])] = {
+            "category": category,
+            "blocking_count": blocking,
+        }
+    return result
+
+
 def _application_from_row(row: sqlite3.Row) -> StoredApplication:
     """Build a StoredApplication from a SQLite row."""
     return StoredApplication(
@@ -96,6 +144,9 @@ def _event_from_row(row: sqlite3.Row) -> ApplicationEvent:
         new_status=row["new_status"],
         note=row["note"],
         created_at=row["created_at"],
+        note_redacted_at=row["note_redacted_at"]
+        if "note_redacted_at" in row.keys()
+        else None,
     )
 
 
@@ -343,7 +394,8 @@ def list_application_events(
     """
     rows = connection.execute(
         """
-        SELECT id, application_id, old_status, new_status, note, created_at
+        SELECT id, application_id, old_status, new_status, note, created_at,
+               note_redacted_at
         FROM application_events
         WHERE application_id = ?
         ORDER BY created_at DESC, id DESC

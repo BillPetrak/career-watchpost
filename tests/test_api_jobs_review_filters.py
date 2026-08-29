@@ -25,7 +25,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.applications.service import set_application_status
@@ -36,6 +35,7 @@ from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.locking import collection_lock
 from careeros.reminders.service import add_reminder
 from careeros.review.service import set_decision
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -814,11 +814,9 @@ def test_absent_database_is_empty_without_creating_anything(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = _get(client, unreviewed=True)
-
-    assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not database_path.exists()
     assert not database_path.parent.exists()
 
@@ -847,11 +845,11 @@ def test_uninitialized_database_is_500(
     database_path.write_bytes(b"")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = _get(client, unreviewed=True)
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 def test_malformed_database_is_500(
@@ -861,11 +859,11 @@ def test_malformed_database_is_500(
     database_path.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = _get(client, exclude_decisions=["dismiss"])
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 # --------------------------------------------------------------------------- #
@@ -1106,8 +1104,8 @@ def test_review_filter_cross_dimension_no_conflict(
 # --------------------------------------------------------------------------- #
 
 
-def test_schema_version_is_eight() -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_is_nine() -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_api_does_not_import_careeros_cli() -> None:

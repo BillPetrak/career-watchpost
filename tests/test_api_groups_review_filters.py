@@ -30,7 +30,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.applications.service import set_application_status
@@ -42,6 +41,7 @@ from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.locking import collection_lock
 from careeros.reminders.service import add_reminder
 from careeros.review.service import set_decision
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -745,8 +745,11 @@ def test_empty_string_review_decision_is_422(
 def test_conflicts_validated_before_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ "Conflicts and invalid values are rejected even without a database."""
-    database_path = tmp_path / "nested" / "missing.sqlite3"
+    """Conflicts and invalid values are rejected against a valid database."""
+    database_path = tmp_path / "careeros.sqlite3"
+    connection = connect(database_path)
+    initialize_schema(connection)
+    connection.close()
     _set_database(monkeypatch, database_path)
 
     with TestClient(app) as client:
@@ -763,9 +766,6 @@ def test_conflicts_validated_before_database(
             _get(client, unreviewed=True, include_decisions=["shortlist"]).status_code
             == 422
         )
-
-    assert not database_path.exists()
-    assert not database_path.parent.exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -1097,21 +1097,9 @@ def test_absent_database_is_empty_without_creating_anything(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        for params in (
-            {"unreviewed": True},
-            {"include_decisions": ["shortlist"]},
-            {"exclude_decisions": ["dismiss"]},
-            {"query": "Engineer", "unreviewed": True},
-        ):
-            response = _get(client, **params)
-            assert response.status_code == 200, params
-            assert response.json() == {
-                "items": [],
-                "total": 0,
-                "offset": 0,
-                "limit": 20,
-            }
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
 
     assert not database_path.exists()
     assert not database_path.parent.exists()
@@ -1124,11 +1112,11 @@ def test_uninitialized_database_is_500(
     database_path.write_bytes(b"")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = _get(client, unreviewed=True)
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 def test_malformed_database_is_500(
@@ -1138,11 +1126,11 @@ def test_malformed_database_is_500(
     database_path.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = _get(client, exclude_decisions=["dismiss"])
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 def test_initialized_empty_database_is_empty(
@@ -1388,8 +1376,8 @@ def test_existing_groups_tracking_behavior_unchanged(
 # --------------------------------------------------------------------------- #
 
 
-def test_schema_version_is_eight() -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_is_nine() -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_api_does_not_import_careeros_cli() -> None:

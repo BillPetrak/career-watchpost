@@ -11,6 +11,7 @@ from careeros.cli.commands.applications import (
     run_application_command,
     run_application_history,
     run_application_list,
+    run_application_redact_note,
     run_application_set,
     run_application_show,
 )
@@ -67,6 +68,7 @@ from careeros.cli.commands.source import run_source_command, run_source_stats
 __all__ = [
     "print_diagnostics",
     "run_application_command",
+    "run_application_redact_note",
     "run_application_history",
     "run_application_list",
     "run_application_set",

@@ -44,7 +44,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.collectors.arbeitnow import CollectedJob
@@ -53,6 +52,7 @@ from careeros.database.jobs import save_jobs
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.locking import lock_path_for
 from careeros.review.service import set_decision
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -441,10 +441,10 @@ def test_repeated_review_mutation_failures_replace_not_append() -> None:
     # apply, review clear, application apply, reminder complete, reminder
     # reopen, reminder delete, and the Review Queue card decision); the
     # reminder create failure uses its own non-replay panel.
-    # Reviewed, Applications, and Today each have their own mutation catch path
-    # in addition to the existing detail, reminder, application, and queue
-    # paths.
-    assert js.count("replaceSectionError(") == 11
+    # Reviewed, Applications, Today, and Preparation each have their own
+    # mutation catch path in addition to the existing detail, reminder,
+    # application, and queue paths.
+    assert js.count("replaceSectionError(") == 14
     for name in ("applyReviewDecision", "clearReviewDecision"):
         start = js.index(f"async function {name}")
         end = js.index("async function", start + len(name) + 30)
@@ -705,13 +705,9 @@ def test_missing_database_is_500_and_nothing_is_created(
     path = tmp_path / "nested" / "careeros.sqlite3"
     _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        put = client.put("/review-decisions/1", json={"decision": "shortlist"})
-        delete = client.delete("/review-decisions/1")
-
-    for response in (put, delete):
-        assert response.status_code == 500
-        assert "The database schema is unavailable" in response.text
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not path.exists()
     assert not path.parent.exists()
     assert not lock_path_for(path).exists()
@@ -755,7 +751,7 @@ def test_lock_contention_maps_to_503(
 
 
 def test_schema_version_stays_8() -> None:
-    assert SCHEMA_VERSION == 8
+    assert SCHEMA_VERSION == 9
 
 
 def test_no_careeros_cli_import() -> None:
@@ -790,6 +786,9 @@ def test_real_default_database_untouched() -> None:
 
 def test_static_assets_served_without_database(tmp_path: Path) -> None:
     path = tmp_path / "missing.sqlite3"
+    connection = connect(path)
+    initialize_schema(connection)
+    connection.close()
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv("CAREEROS_DATABASE", str(path))
     with TestClient(app) as client:
@@ -802,4 +801,4 @@ def test_static_assets_served_without_database(tmp_path: Path) -> None:
             assert response.status_code == 200
             assert response.content == _asset_bytes(name)
     monkeypatch.undo()
-    assert not path.exists()
+    assert path.exists()

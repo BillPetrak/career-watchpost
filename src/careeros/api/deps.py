@@ -20,7 +20,7 @@ DATABASE_UNAVAILABLE_MESSAGE = (
 LOCK_CONTENTION_MESSAGE = "The database is temporarily busy; retry the request later."
 
 
-def read_only_connection() -> Iterator[sqlite3.Connection | None]:
+def read_only_connection_for(path: Path) -> Iterator[sqlite3.Connection | None]:
     """Yield a strictly read-only SQLite connection, or None when absent.
 
     A missing database file is treated as an empty database: no file, parent
@@ -33,7 +33,6 @@ def read_only_connection() -> Iterator[sqlite3.Connection | None]:
     scoped to one request and its enter/use/exit steps run strictly
     sequentially, so no thread ever touches a connection concurrently.
     """
-    path = database_path()
     if not path.is_file():
         yield None
         return
@@ -44,6 +43,11 @@ def read_only_connection() -> Iterator[sqlite3.Connection | None]:
         yield connection
     finally:
         connection.close()
+
+
+def read_only_connection() -> Iterator[sqlite3.Connection | None]:
+    """Yield a read-only connection to the settings-selected database."""
+    yield from read_only_connection_for(database_path())
 
 
 @contextmanager
@@ -61,7 +65,7 @@ def _collection_lock_or_503(path: Path) -> Iterator[None]:
         raise HTTPException(status_code=503, detail=LOCK_CONTENTION_MESSAGE) from None
 
 
-def writable_connection() -> Iterator[sqlite3.Connection]:
+def writable_connection_for(path: Path) -> Iterator[sqlite3.Connection]:
     """Yield a writable SQLite connection under the collection lock.
 
     The configured database file must already exist: a missing database is a
@@ -75,7 +79,6 @@ def writable_connection() -> Iterator[sqlite3.Connection]:
     is required because the anyio threadpool may migrate the request between
     threads across the generator-dependency steps.
     """
-    path = database_path()
     if not path.is_file():
         raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
     with _collection_lock_or_503(path):
@@ -89,9 +92,16 @@ def writable_connection() -> Iterator[sqlite3.Connection]:
             connection.close()
 
 
+def writable_connection() -> Iterator[sqlite3.Connection]:
+    """Yield a writable connection to the settings-selected database."""
+    yield from writable_connection_for(database_path())
+
+
 __all__: tuple[str, ...] = (
     "DATABASE_UNAVAILABLE_MESSAGE",
     "LOCK_CONTENTION_MESSAGE",
     "read_only_connection",
+    "read_only_connection_for",
     "writable_connection",
+    "writable_connection_for",
 )

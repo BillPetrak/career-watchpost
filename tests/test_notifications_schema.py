@@ -69,8 +69,8 @@ def test_fresh_schema_has_notifications_table(tmp_path: Path) -> None:
     assert "reminder_notifications" in _table_names(connection)
 
 
-def test_schema_version_is_eight(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_is_nine(tmp_path: Path) -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_notification_indexes_exist(tmp_path: Path) -> None:
@@ -100,6 +100,10 @@ def test_repeated_initialization_is_idempotent(tmp_path: Path) -> None:
 def _seed_v6_database(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
+        DROP TABLE IF EXISTS application_requirement_items;
+        DROP TABLE IF EXISTS application_preparations;
+        DROP TABLE IF EXISTS review_events;
+        DROP TABLE IF EXISTS review_decisions;
         DROP TABLE IF EXISTS reminder_notifications;
         """
     )
@@ -155,7 +159,9 @@ def _seed_v6_database(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
-def test_v6_database_upgrades_with_every_row_intact(tmp_path: Path) -> None:
+def test_v6_database_requires_explicit_migration_without_changes(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "careeros.sqlite3"
     with connect(database_path) as connection:
         initialize_schema(connection)
@@ -171,8 +177,11 @@ def test_v6_database_upgrades_with_every_row_intact(tmp_path: Path) -> None:
                 "reminders",
             )
         }
+        snapshot_before = tuple(connection.iterdump())
 
-        initialize_schema(connection)
+        with pytest.raises(ValueError, match="explicit migration"):
+            initialize_schema(connection)
+        snapshot_after = tuple(connection.iterdump())
 
         version = connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
@@ -182,8 +191,15 @@ def test_v6_database_upgrades_with_every_row_intact(tmp_path: Path) -> None:
             for table in counts_before
         }
 
-    assert version["value"] == str(SCHEMA_VERSION)
-    assert "reminder_notifications" in _table_names(connection)
+    assert snapshot_after == snapshot_before
+    assert version["value"] == "6"
+    assert {
+        "reminder_notifications",
+        "review_decisions",
+        "review_events",
+        "application_preparations",
+        "application_requirement_items",
+    }.isdisjoint(_table_names(connection))
     assert counts_after == counts_before
 
 

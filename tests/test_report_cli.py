@@ -105,13 +105,9 @@ def test_cli_report_empty_database(
     monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     exit_code = cli.main(["report", "--database", str(database_path)])
     captured = capsys.readouterr()
-    assert exit_code == 0
-    assert captured.out.startswith("Career Snapshot")
-    assert f"As of: {_EPOCH.isoformat()}" in captured.out
-    assert "Stored jobs:            0" in captured.out
-    assert "Tracked applications:   0" in captured.out
-    assert "Sources due:" in captured.out
-    assert "arbeitnow" in captured.out
+    assert exit_code == 1
+    assert not database_path.exists()
+    assert "Report failed" in captured.err
 
 
 def test_cli_report_json_format(

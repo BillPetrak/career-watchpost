@@ -157,10 +157,11 @@ def test_cli_status_never_run_shows_due(
     capsys: pytest.CaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    database_path = tmp_path / "careeros.sqlite3"
+    with connect(database_path) as connection:
+        initialize_schema(connection)
     monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
-    exit_code = cli.main(
-        ["collect", "status", "--database", str(tmp_path / "careeros.sqlite3")]
-    )
+    exit_code = cli.main(["collect", "status", "--database", str(database_path)])
     captured = capsys.readouterr()
     assert exit_code == 0
     assert f"As of: {_EPOCH.isoformat()}" in captured.out
@@ -169,6 +170,9 @@ def test_cli_status_never_run_shows_due(
     assert "State:          due" in captured.out
     assert "1 hour (documented)" in captured.out
     assert "6 hours (provisional)" in captured.out
+    with connect(database_path) as connection:
+        count = connection.execute("SELECT COUNT(*) FROM collection_runs").fetchone()[0]
+    assert count == 0
 
 
 def test_cli_status_recent_success_not_due(
@@ -245,13 +249,41 @@ def test_cli_status_does_not_mutate_database(tmp_path: Path, capsys) -> None:
     assert after == before
 
 
-def test_cli_status_on_empty_database_adds_no_runs(tmp_path: Path, capsys) -> None:
+def test_cli_status_on_initialized_database_adds_no_runs(
+    tmp_path: Path,
+    capsys,
+) -> None:
     database_path = tmp_path / "careeros.sqlite3"
+    with connect(database_path) as connection:
+        initialize_schema(connection)
     assert cli.main(["collect", "status", "--database", str(database_path)]) == 0
     capsys.readouterr()
     with connect(database_path) as connection:
         count = connection.execute("SELECT COUNT(*) FROM collection_runs").fetchone()[0]
     assert count == 0
+
+
+def test_cli_status_missing_database_fails_without_creation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    database_path = tmp_path / "missing.sqlite3"
+    assert cli.main(["collect", "status", "--database", str(database_path)]) == 1
+    captured = capsys.readouterr()
+    assert "Status failed: FileNotFoundError:" in captured.err
+    assert not database_path.exists()
+
+
+def test_cli_status_uninitialized_database_fails_without_schema_creation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    database_path = tmp_path / "uninitialized.sqlite3"
+    database_path.touch()
+    assert cli.main(["collect", "status", "--database", str(database_path)]) == 1
+    captured = capsys.readouterr()
+    assert "Status failed: OperationalError:" in captured.err
+    assert database_path.read_bytes() == b""
 
 
 def test_cli_status_custom_database(tmp_path: Path, capsys) -> None:

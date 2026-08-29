@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.collectors.arbeitnow import CollectedJob
@@ -14,6 +13,7 @@ from careeros.database.jobs import save_jobs
 from careeros.database.schema import initialize_schema
 from careeros.saved_searches.models import SavedSearchFields
 from careeros.saved_searches.service import create_search
+from tests.support import TestClient
 
 _MAIN_PROFILE = {
     "desired_titles": ["Engineer"],

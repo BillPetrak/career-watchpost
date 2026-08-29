@@ -14,7 +14,7 @@ from careeros.cli.common import (
     load_profile_or_error,
     no_job_found_message,
 )
-from careeros.database.connection import connect
+from careeros.database.connection import connect, connect_read_only
 from careeros.database.jobs import get_job_by_id
 from careeros.database.review import latest_event_note as review_latest_event_note
 from careeros.database.schema import initialize_schema
@@ -103,8 +103,7 @@ def run_review_clear(job_id: int, database_path: Path) -> int:
 def run_review_show(job_id: int, database_path: Path) -> int:
     """Show the current review decision for one job (read-only)."""
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             job = get_job_by_id(connection, job_id)
             if job is None:
                 print(no_job_found_message(job_id), file=sys.stderr)
@@ -144,8 +143,7 @@ def run_review_list(
 ) -> int:
     """List review decisions, optionally filtered by decision (read-only)."""
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             items = list_decisions(connection, decisions=decisions, limit=limit)
     except ReviewValidationError as error:
         print(str(error), file=sys.stderr)
@@ -190,8 +188,7 @@ def run_review_history(
 ) -> int:
     """Show the decision history for one job (read-only)."""
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             job = get_job_by_id(connection, job_id)
             if job is None:
                 print(no_job_found_message(job_id), file=sys.stderr)
@@ -245,8 +242,7 @@ def run_review_next(
         return 1
 
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             feedback = build_feedback_set(connection) if use_feedback else None
             outcome = build_queue(
                 connection,

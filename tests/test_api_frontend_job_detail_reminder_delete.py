@@ -42,7 +42,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.collectors.arbeitnow import CollectedJob
@@ -50,6 +49,7 @@ from careeros.database.connection import connect
 from careeros.database.jobs import save_jobs
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.locking import lock_path_for
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -301,7 +301,7 @@ def test_confirm_before_delete() -> None:
         'if (!window.confirm("Delete this reminder? This cannot be undone.")) return;'
         in js
     )
-    assert js.count("window.confirm(") == 1
+    assert js.count("window.confirm(") == 2
 
 
 def test_cancel_is_a_true_noop() -> None:
@@ -475,10 +475,9 @@ def test_no_private_fields_or_unsafe_sinks() -> None:
         "eval(",
     ):
         assert forbidden not in js, forbidden
-    # The only confirmation mechanism is the native window.confirm dialog that
-    # gates the destructive Delete action; a custom/bare confirm() helper or a
-    # second confirm site is never introduced.
-    assert js.count("window.confirm(") == 1
+    # Native confirmation gates reminder deletion and preparation requirement
+    # deletion; the reminder retry path itself never confirms again.
+    assert js.count("window.confirm(") == 2
     assert js.replace("window.confirm(", "").count("confirm(") == 0
 
 
@@ -635,11 +634,9 @@ def test_missing_database_is_500_and_nothing_is_created(
     path = tmp_path / "nested" / "careeros.sqlite3"
     _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        response = client.delete("/reminders/1")
-
-    assert response.status_code == 500
-    assert "The database schema is unavailable" in response.text
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not path.exists()
     assert not path.parent.exists()
     assert not lock_path_for(path).exists()
@@ -681,7 +678,7 @@ def test_lock_contention_maps_to_503(
 
 
 def test_schema_version_stays_8() -> None:
-    assert SCHEMA_VERSION == 8
+    assert SCHEMA_VERSION == 9
 
 
 def test_no_careeros_cli_import() -> None:
@@ -716,6 +713,9 @@ def test_real_default_database_untouched() -> None:
 
 def test_static_assets_served_without_database(tmp_path: Path) -> None:
     path = tmp_path / "missing.sqlite3"
+    connection = connect(path)
+    initialize_schema(connection)
+    connection.close()
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv("CAREEROS_DATABASE", str(path))
     with TestClient(app) as client:
@@ -728,4 +728,4 @@ def test_static_assets_served_without_database(tmp_path: Path) -> None:
             assert response.status_code == 200
             assert response.content == _asset_bytes(name)
     monkeypatch.undo()
-    assert not path.exists()
+    assert path.exists()

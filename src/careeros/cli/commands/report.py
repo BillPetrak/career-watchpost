@@ -9,8 +9,7 @@ from pathlib import Path
 
 from careeros.cli import common
 from careeros.cli.common import load_profile_or_error
-from careeros.database.connection import connect
-from careeros.database.schema import initialize_schema
+from careeros.database.connection import connect_read_only
 from careeros.ranking.scorer import CandidateProfile
 from careeros.reporting.models import Report
 from careeros.reporting.render import render_report, render_report_json
@@ -35,9 +34,7 @@ def run_report(
     report: Report | None = None
 
     try:
-        with connect(arguments.database) as connection:
-            initialize_schema(connection)
-
+        with connect_read_only(arguments.database) as connection:
             if arguments.saved_search is not None:
                 definition = get_search(connection, arguments.saved_search)
                 if definition is None:

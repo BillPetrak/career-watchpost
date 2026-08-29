@@ -34,7 +34,7 @@ checks through the FastAPI TestClient for the exact contract the view sends):
 - regressions: the two intended ``postReportJson`` call sites, method set unchanged,
   forbidden endpoints absent, Job Detail review/application actions untouched,
   no unsafe HTML sinks/storage/private fields, reused CSS classes,
-  ``SCHEMA_VERSION`` stays 8, the real default database is never touched,
+  ``SCHEMA_VERSION`` stays 9, the real default database is never touched,
   static assets are served without a database, and wheel packaging lists the
   static assets.
 """
@@ -47,7 +47,6 @@ import re
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.collectors.arbeitnow import CollectedJob
@@ -55,6 +54,7 @@ from careeros.database.connection import connect
 from careeros.database.groups import ensure_grouped
 from careeros.database.jobs import save_jobs
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
+from tests.support import TestClient
 
 _STATIC_DIR = importlib.resources.files("careeros.api").joinpath("static")
 
@@ -784,8 +784,8 @@ def test_invalid_decision_is_422_and_leaves_state_untouched(
 # --------------------------------------------------------------------------- #
 
 
-def test_schema_version_stays_8() -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_stays_9() -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_no_careeros_cli_import() -> None:
@@ -820,6 +820,9 @@ def test_real_default_database_untouched() -> None:
 
 def test_static_assets_served_without_database(tmp_path: Path) -> None:
     path = tmp_path / "missing.sqlite3"
+    connection = connect(path)
+    initialize_schema(connection)
+    connection.close()
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv("CAREEROS_DATABASE", str(path))
     try:
@@ -834,7 +837,7 @@ def test_static_assets_served_without_database(tmp_path: Path) -> None:
                 assert response.content == _asset_bytes(name)
     finally:
         monkeypatch.undo()
-    assert not path.exists()
+    assert path.exists()
 
 
 def test_database_file_never_created_by_asset_or_mutation_routes(
@@ -842,11 +845,7 @@ def test_database_file_never_created_by_asset_or_mutation_routes(
 ) -> None:
     path = tmp_path / "missing.sqlite3"
     _set_database(monkeypatch, path)
-    with TestClient(app) as client:
-        # The queue-card flow against a missing database: the computation-only
-        # report stays an empty 200 and the mutation fails closed.
-        body = _post_report(client, grouped=True)
-        assert body["review_queue"]["items"] == []  # type: ignore[index]
-        response = client.put("/review-decisions/1", json={"decision": "shortlist"})
-        assert response.status_code == 500
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not path.exists()

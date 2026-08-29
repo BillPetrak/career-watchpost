@@ -15,7 +15,7 @@ from careeros.cli.common import (
     no_job_found_message,
 )
 from careeros.cli.render import _reminder_state_text
-from careeros.database.connection import connect
+from careeros.database.connection import connect, connect_read_only
 from careeros.database.jobs import get_job_by_id
 from careeros.database.schema import initialize_schema
 from careeros.locking import (
@@ -106,8 +106,7 @@ def run_reminder_list(
 ) -> int:
     """List reminders with optional filters (read-only, no lock)."""
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             entries = list_reminders(
                 connection,
                 job_id=job_id,
@@ -169,8 +168,7 @@ def run_reminder_list(
 def run_reminder_show(reminder_id: int, database_path: Path) -> int:
     """Show one reminder by ID (read-only, no lock)."""
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             reminder = require_reminder(connection, reminder_id)
             job = get_job_by_id(connection, reminder.job_id)
             if job is None:
@@ -480,8 +478,7 @@ def run_reminder_notify_history(
 ) -> int:
     """Show notification delivery history (read-only, no lock)."""
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             attempts = list_attempts(
                 connection,
                 reminder_id=reminder_id,

@@ -15,7 +15,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.applications.service import set_application_status
@@ -26,6 +25,7 @@ from careeros.database.jobs import save_jobs
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.reminders.service import add_reminder, complete_reminder
 from careeros.review.service import set_decision
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -766,11 +766,9 @@ def test_list_absent_database_is_empty_without_creating_file(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/reminders")
-
-    assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not database_path.exists()
     assert not database_path.parent.exists()
 
@@ -781,11 +779,9 @@ def test_show_absent_database_returns_404_without_creating_file(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/reminders/1")
-
-    assert response.status_code == 404
-    assert response.json() == {"detail": "No reminder found with ID 1."}
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not database_path.exists()
     assert not database_path.parent.exists()
 
@@ -797,11 +793,11 @@ def test_list_uninitialized_database_is_500(
     database_path.write_bytes(b"")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/reminders")
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 def test_show_uninitialized_database_is_500(
@@ -811,11 +807,11 @@ def test_show_uninitialized_database_is_500(
     database_path.write_bytes(b"")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/reminders/1")
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 def test_list_malformed_database_is_500(
@@ -825,11 +821,11 @@ def test_list_malformed_database_is_500(
     database_path.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/reminders")
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 def test_show_malformed_database_is_500(
@@ -839,11 +835,11 @@ def test_show_malformed_database_is_500(
     database_path.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/reminders/1")
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 # --------------------------------------------------------------------------- #

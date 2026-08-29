@@ -15,7 +15,7 @@ from careeros.cli.render import (
     _render_search_flat,
     _render_search_grouped,
 )
-from careeros.database.connection import connect
+from careeros.database.connection import connect, connect_read_only
 from careeros.database.schema import initialize_schema
 from careeros.locking import CollectionLockConflict, collection_lock
 from careeros.ranking.profile import load_profile
@@ -216,10 +216,9 @@ def _reject_clear_pairs(
 
 def _run_saved_search_list(arguments: argparse.Namespace) -> int:
     try:
-        with connect(arguments.database) as connection:
-            initialize_schema(connection)
+        with connect_read_only(arguments.database) as connection:
             searches = list_searches(connection)
-    except sqlite3.Error as error:
+    except (OSError, sqlite3.Error) as error:
         print(
             f"Failed to list saved searches: {type(error).__name__}: {error}",
             file=sys.stderr,
@@ -237,10 +236,9 @@ def _run_saved_search_list(arguments: argparse.Namespace) -> int:
 
 def _run_saved_search_show(arguments: argparse.Namespace) -> int:
     try:
-        with connect(arguments.database) as connection:
-            initialize_schema(connection)
+        with connect_read_only(arguments.database) as connection:
             search = get_search(connection, arguments.name)
-    except sqlite3.Error as error:
+    except (OSError, sqlite3.Error) as error:
         print(
             f"Failed to show saved search: {type(error).__name__}: {error}",
             file=sys.stderr,
@@ -394,8 +392,7 @@ def _run_saved_search_delete(arguments: argparse.Namespace) -> int:
 
 def _run_saved_search_run(arguments: argparse.Namespace) -> int:
     try:
-        with connect(arguments.database) as connection:
-            initialize_schema(connection)
+        with connect_read_only(arguments.database) as connection:
             search = get_search(connection, arguments.name)
             if search is None:
                 print(f"No saved search named {arguments.name!r}.", file=sys.stderr)
@@ -422,7 +419,7 @@ def _run_saved_search_run(arguments: argparse.Namespace) -> int:
     except (ValueError, json.JSONDecodeError) as error:
         print(f"Failed to run saved search: {error}", file=sys.stderr)
         return 1
-    except sqlite3.Error as error:
+    except (OSError, sqlite3.Error) as error:
         print(
             f"Failed to run saved search: {type(error).__name__}: {error}",
             file=sys.stderr,

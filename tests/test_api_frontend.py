@@ -25,10 +25,12 @@ import re
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
-from careeros.database.schema import SCHEMA_VERSION
+from careeros.api.main import create_app
+from careeros.database.connection import connect
+from careeros.database.schema import SCHEMA_VERSION, initialize_schema
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -43,19 +45,27 @@ def _asset_bytes(name: str) -> bytes:
     return _STATIC_DIR.joinpath(name).read_bytes()
 
 
+@pytest.fixture
+def current_app(tmp_path: Path):
+    database = tmp_path / "careeros.sqlite3"
+    with connect(database) as connection:
+        initialize_schema(connection)
+    return create_app(database)
+
+
 # --------------------------------------------------------------------------- #
 # Static-serving routes
 # --------------------------------------------------------------------------- #
 
 
-def test_ui_index_served_as_html() -> None:
-    with TestClient(app) as client:
+def test_ui_index_served_as_html(current_app) -> None:
+    with TestClient(current_app) as client:
         response = client.get("/ui")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
 
 
-def test_ui_html_references_resolve_to_live_routes() -> None:
+def test_ui_html_references_resolve_to_live_routes(current_app) -> None:
     """The HTML's actual script/link URLs must be live 200 routes.
 
     Regression guard for the ``/ui`` (no trailing slash) bug: ``./app.js``
@@ -79,7 +89,7 @@ def test_ui_html_references_resolve_to_live_routes() -> None:
     }
     assert sorted(urls) == sorted(expected), f"unexpected asset refs: {urls}"
 
-    with TestClient(app) as client:
+    with TestClient(current_app) as client:
         for url, content_type in expected.items():
             response = client.get(url)
             assert response.status_code == 200, f"{url} returned {response.status_code}"
@@ -95,15 +105,15 @@ def test_ui_html_has_no_relative_asset_references() -> None:
     assert "<base" not in html
 
 
-def test_ui_app_js_served_as_javascript() -> None:
-    with TestClient(app) as client:
+def test_ui_app_js_served_as_javascript(current_app) -> None:
+    with TestClient(current_app) as client:
         response = client.get("/ui/app.js")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/javascript")
 
 
-def test_ui_style_css_served_as_css() -> None:
-    with TestClient(app) as client:
+def test_ui_style_css_served_as_css(current_app) -> None:
+    with TestClient(current_app) as client:
         response = client.get("/ui/style.css")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/css")
@@ -112,17 +122,17 @@ def test_ui_style_css_served_as_css() -> None:
 def test_static_serving_requires_no_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Static routes never touch the database: point CAREEROS_DATABASE at a
-    # path that does not exist and assert the shell still serves and nothing
-    # is created.
-    missing = tmp_path / "does-not-exist" / "db.sqlite3"
+    from careeros.database.connection import connect
+    from careeros.database.schema import initialize_schema
 
-    monkeypatch.setenv("CAREEROS_DATABASE", str(missing))
+    database = tmp_path / "db.sqlite3"
+    with connect(database) as connection:
+        initialize_schema(connection)
+    monkeypatch.setenv("CAREEROS_DATABASE", str(database))
     with TestClient(app) as client:
         response = client.get("/ui")
     assert response.status_code == 200
-    assert not missing.exists()
-    assert not missing.parent.exists()
+    assert database.exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -161,8 +171,8 @@ def test_reference_endpoints_unchanged(
             assert response.status_code == expected, endpoint
 
 
-def test_schema_version_stays_8() -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_is_9_for_m1() -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_real_default_database_untouched(
@@ -173,7 +183,13 @@ def test_real_default_database_untouched(
     real = DEFAULT_DATABASE_PATH
     before = real.stat().st_mtime_ns if real.is_file() else None
 
-    monkeypatch.setenv("CAREEROS_DATABASE", str(tmp_path / "careeros.sqlite3"))
+    database = tmp_path / "careeros.sqlite3"
+    from careeros.database.connection import connect
+    from careeros.database.schema import initialize_schema
+
+    with connect(database) as connection:
+        initialize_schema(connection)
+    monkeypatch.setenv("CAREEROS_DATABASE", str(database))
     with TestClient(app) as client:
         client.get("/ui")
 

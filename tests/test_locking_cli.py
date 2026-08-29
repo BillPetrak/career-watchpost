@@ -169,6 +169,8 @@ def test_read_only_commands_remain_available_while_locked(
     capsys: pytest.CaptureFixture,
 ) -> None:
     database_path = tmp_path / "careeros.sqlite3"
+    with connect(database_path) as connection:
+        initialize_schema(connection)
     with collection_lock(database_path):
         assert cli.main(["collect", "status", "--database", str(database_path)]) == 0
     capsys.readouterr()

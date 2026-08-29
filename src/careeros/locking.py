@@ -14,6 +14,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -105,7 +106,6 @@ def _write_metadata(
         "pid": str(os.getpid()),
         "command": command,
         "acquired_at": datetime.now(UTC).isoformat(),
-        "database_path": str(database_path),
     }
     payload = json.dumps(metadata, indent=2) + "\n"
     os.ftruncate(fd, 0)
@@ -161,6 +161,19 @@ def notification_lock(
     )
 
 
+@contextmanager
+def database_maintenance_lock(
+    database_path: Path, *, command: str = "careeros maintenance"
+) -> Iterator[None]:
+    """Acquire collection then notification locks atomically, without blocking."""
+    with collection_lock(database_path, command=command):
+        try:
+            with notification_lock(database_path, command=command):
+                yield
+        except NotificationLockConflict:
+            raise
+
+
 def _lock(
     database_path: Path,
     *,
@@ -176,7 +189,13 @@ def _lock(
     lock_path = lock_path_for(resolved, suffix)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+            # Never silently chmod user-owned existing files.
+            pass
+    except OSError:
+        pass
     try:
         try:
             _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)

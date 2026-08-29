@@ -5,13 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.collectors.arbeitnow import CollectedJob
 from careeros.database.connection import connect
 from careeros.database.jobs import save_jobs
 from careeros.database.schema import initialize_schema
+from tests.support import TestClient
 
 
 def _set_database(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
@@ -127,13 +127,13 @@ def test_list_jobs_remote_filter(
 def test_list_jobs_absent_database_is_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _set_database(monkeypatch, tmp_path / "missing.sqlite3")
+    path = tmp_path / "missing.sqlite3"
+    _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        response = client.get("/jobs")
-
-    assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert not path.exists()
 
 
 def test_list_jobs_rejects_invalid_pagination(
@@ -181,13 +181,13 @@ def test_show_job_missing_is_404(
 def test_show_job_absent_database_is_404(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _set_database(monkeypatch, tmp_path / "missing.sqlite3")
+    path = tmp_path / "missing.sqlite3"
+    _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        response = client.get("/jobs/1")
-
-    assert response.status_code == 404
-    assert response.json() == {"detail": "No job found with ID 1."}
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert not path.exists()
 
 
 def test_show_job_rejects_non_integer_id(
@@ -210,8 +210,8 @@ def test_list_jobs_uninitialized_database_is_500(
     path.write_bytes(b"")
     _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        response = client.get("/jobs")
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert path.read_bytes() == before

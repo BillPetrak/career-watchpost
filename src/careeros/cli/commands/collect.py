@@ -21,7 +21,7 @@ from careeros.collecting import (
     collect_one,
 )
 from careeros.collectors import COLLECTORS
-from careeros.database.connection import connect
+from careeros.database.connection import connect, connect_read_only
 from careeros.database.runs import CollectionRun, list_runs, parse_utc
 from careeros.database.schema import initialize_schema
 from careeros.locking import CollectionLockConflict, collection_lock
@@ -194,8 +194,7 @@ def run_collect_status(database_path: Path) -> int:
     """Show polling status for every registered source without mutating state."""
     now = common._utc_now()
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             statuses = build_statuses(connection, now=now)
     except (OSError, sqlite3.Error) as error:
         print(f"Status failed: {type(error).__name__}: {error}", file=sys.stderr)
@@ -249,8 +248,7 @@ def run_collect_history(
 ) -> int:
     """Show recent collection run history without mutating state."""
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             runs = list_runs(
                 connection,
                 source=source,

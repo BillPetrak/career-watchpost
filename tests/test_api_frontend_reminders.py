@@ -30,7 +30,6 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.collectors.arbeitnow import CollectedJob
@@ -38,6 +37,7 @@ from careeros.database.connection import connect
 from careeros.database.jobs import save_jobs
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.reminders.service import add_reminder, complete_reminder
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -640,8 +640,8 @@ def test_no_filesystem_or_config_access() -> None:
         assert forbidden not in combined, forbidden
 
 
-def test_schema_version_stays_8() -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_stays_9() -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_real_default_database_untouched(
@@ -652,7 +652,11 @@ def test_real_default_database_untouched(
     real = DEFAULT_DATABASE_PATH
     before = real.stat().st_mtime_ns if real.is_file() else None
 
-    monkeypatch.setenv("CAREEROS_DATABASE", str(tmp_path / "careeros.sqlite3"))
+    database = tmp_path / "careeros.sqlite3"
+    connection = connect(database)
+    initialize_schema(connection)
+    connection.close()
+    monkeypatch.setenv("CAREEROS_DATABASE", str(database))
     with TestClient(app) as client:
         client.get("/ui")
 
@@ -679,7 +683,12 @@ def test_api_does_not_import_careeros_cli() -> None:
     assert violations == []
 
 
-def test_static_assets_served() -> None:
+def test_static_assets_served(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    database = tmp_path / "careeros.sqlite3"
+    connection = connect(database)
+    initialize_schema(connection)
+    connection.close()
+    monkeypatch.setenv("CAREEROS_DATABASE", str(database))
     with TestClient(app) as client:
         for path, expected_type in (
             ("/ui", "text/html"),

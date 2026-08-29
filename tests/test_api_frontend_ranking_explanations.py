@@ -19,7 +19,10 @@ def test_ranked_cards_use_native_disclosure_and_server_explanation() -> None:
     assert "entry.explanation" in js
     assert "item.explanation" in js
     assert "score_components" not in js
-    assert "reasons" not in js
+    # Preparation has its own readiness reasons; keep the ranking-card slice
+    # prohibited from accessing/rendering raw reasons.
+    ranking_slice = js.split("// Preparation is an independently loaded", 1)[0]
+    assert "reasons" not in ranking_slice
 
 
 def test_job_detail_requires_ephemeral_exact_ranked_transition() -> None:

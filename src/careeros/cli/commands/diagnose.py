@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from careeros.cli.common import PROJECT_ROOT
+from careeros.locking import lock_path_for
 from careeros.notifications.backend import BackendUnavailable, resolve_backend
 
 NOTIFY_SERVICE_NAME = "careeros-reminder-notify.service"
@@ -101,6 +102,7 @@ def _guidance(
 def print_diagnostics() -> int:
     """Print basic CareerOS environment and notification readiness."""
     database_directory = PROJECT_ROOT / "data" / "database"
+    managed_database = database_directory / "careeros.sqlite3"
 
     print("CareerOS diagnostics")
     print("--------------------")
@@ -109,6 +111,11 @@ def print_diagnostics() -> int:
     print(f"Python executable: {sys.executable}")
     print(f"SQLite library:    {sqlite3.sqlite_version}")
     print(f"Database directory exists: {database_directory.is_dir()}")
+    if managed_database.exists() and managed_database.stat().st_mode & 0o077:
+        print("Warning: managed database permissions are broader than 0600.")
+    lock_file = lock_path_for(managed_database)
+    if lock_file.exists() and lock_file.stat().st_mode & 0o077:
+        print("Warning: managed lock permissions are broader than 0600.")
     print()
 
     notify_send = shutil.which("notify-send")

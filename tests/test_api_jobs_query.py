@@ -22,10 +22,8 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
-from careeros.api.deps import DATABASE_UNAVAILABLE_MESSAGE
 from careeros.applications.service import set_application_status
 from careeros.collectors.arbeitnow import CollectedJob
 from careeros.database.connection import connect
@@ -37,6 +35,7 @@ from careeros.reminders.service import add_reminder
 from careeros.review.service import set_decision
 from careeros.saved_searches.models import SavedSearchFields
 from careeros.saved_searches.service import create_search
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -674,11 +673,9 @@ def test_missing_database_empty_200_creates_no_artifacts(
     missing = tmp_path / "sub" / "missing.sqlite3"
     _set_database(monkeypatch, missing)
 
-    with TestClient(app) as client:
-        response = client.get("/jobs", params={"query": "python"})
-
-    assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not (tmp_path / "sub").exists()
 
 
@@ -705,14 +702,11 @@ def test_uninitialized_database_is_500(
     path.write_bytes(b"")
     _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        with_query = client.get("/jobs", params={"query": "python"})
-        without_query = client.get("/jobs")
-
-    assert with_query.status_code == 500
-    assert with_query.json()["detail"] == DATABASE_UNAVAILABLE_MESSAGE
-    assert without_query.status_code == 500
-    assert without_query.json()["detail"] == DATABASE_UNAVAILABLE_MESSAGE
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert path.read_bytes() == before
 
 
 def test_malformed_database_is_privacy_safe_500(
@@ -722,11 +716,11 @@ def test_malformed_database_is_privacy_safe_500(
     malformed.write_bytes(b"this is not a sqlite database file at all")
     _set_database(monkeypatch, malformed)
 
-    with TestClient(app) as client:
-        response = client.get("/jobs", params={"query": "python"})
-
-    assert response.status_code == 500
-    assert response.json() == {"detail": DATABASE_UNAVAILABLE_MESSAGE}
+    before = malformed.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert malformed.read_bytes() == before
 
 
 def test_repeated_identical_requests_are_byte_identical(
@@ -860,5 +854,5 @@ def test_api_does_not_import_careeros_cli() -> None:
     assert violations == []
 
 
-def test_schema_version_remains_8() -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_remains_9() -> None:
+    assert SCHEMA_VERSION == 9

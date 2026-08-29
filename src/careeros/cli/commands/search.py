@@ -10,8 +10,7 @@ from pathlib import Path
 
 from careeros.cli.common import _validate_application_filter_flags
 from careeros.cli.render import _render_search_flat, _render_search_grouped
-from careeros.database.connection import connect
-from careeros.database.schema import initialize_schema
+from careeros.database.connection import connect_read_only
 from careeros.saved_searches.execution import search_candidates
 
 
@@ -30,8 +29,7 @@ def run_search(
 ) -> int:
     """Search jobs in the SQLite database."""
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             outcome = search_candidates(
                 connection,
                 query=keyword,
@@ -44,10 +42,14 @@ def run_search(
                 include_statuses=tuple(include_statuses),
                 exclude_statuses=tuple(exclude_statuses),
             )
+    except FileNotFoundError:
+        outcome = None
     except (OSError, sqlite3.Error) as error:
         print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
+    if outcome is None:
+        return 0
     if outcome.grouped:
         _render_search_grouped(outcome.groups, outcome.tracking_statuses)
     else:

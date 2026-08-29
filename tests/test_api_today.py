@@ -1,9 +1,9 @@
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api.main import create_app
+from tests.support import TestClient
 
 
 def test_today_missing_database_is_empty_and_does_not_create_file(

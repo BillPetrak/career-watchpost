@@ -36,7 +36,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.applications.service import set_application_status
@@ -49,6 +48,7 @@ from careeros.reminders.service import add_reminder
 from careeros.review.service import set_decision
 from careeros.saved_searches.models import SavedSearchFields
 from careeros.saved_searches.service import create_search
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -610,60 +610,60 @@ def test_forbidden_body_fields_422_no_mutation(
 # --------------------------------------------------------------------------- #
 
 
-def test_missing_database_500_without_creating_anything(
+def test_missing_database_refuses_startup_without_creating_anything(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.patch("/saved-searches/alpha", json={"name": "Gamma"})
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    assert str(exc_info.value) == "CareerOS requires a current schema v9 database"
     assert not database_path.exists()
     assert not database_path.parent.exists()
     assert not Path(str(database_path) + ".lock").exists()
 
 
-def test_uninitialized_database_500_no_ddl(
+def test_uninitialized_database_refuses_startup_no_ddl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     empty = tmp_path / "empty.sqlite3"
     empty.write_bytes(b"")
     _set_database(monkeypatch, empty)
 
-    with TestClient(app) as client:
-        response = client.patch("/saved-searches/alpha", json={"name": "Gamma"})
+    before = empty.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
-    with connect(empty) as connection:
-        row = connection.execute(
-            "SELECT name FROM sqlite_master WHERE name = 'saved_searches'"
-        ).fetchone()
-    assert row is None
+    assert str(exc_info.value) == "CareerOS requires a current schema v9 database"
+    assert empty.read_bytes() == before == b""
 
 
-def test_malformed_database_500(
+def test_malformed_database_refuses_startup_privately(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     garbage = tmp_path / "garbage.sqlite3"
     garbage.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, garbage)
 
-    with TestClient(app) as client:
-        response = client.patch("/saved-searches/alpha", json={"name": "Gamma"})
+    before = garbage.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    message = str(exc_info.value)
+    assert message == "CareerOS requires a current schema v9 database"
+    assert garbage.read_bytes() == before
     for leaked in (
         "sqlite3",
         "OperationalError",
         "not a database",
         "file is not",
     ):
-        assert leaked not in response.text
+        assert leaked not in message
 
 
 # --------------------------------------------------------------------------- #
@@ -857,6 +857,7 @@ def test_privacy_leak_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     _set_database(monkeypatch, path)
 
     responses: list = []
+    startup_messages: list[str] = []
 
     # 503 while a child process holds the collection lock.
     child = _start_child(path)
@@ -871,12 +872,15 @@ def test_privacy_leak_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         if child.poll() is None:
             _release_child(child)
 
-    # 500 from a malformed database, then back to the real seeded database.
+    # Startup refuses a malformed database, then the valid seeded database is
+    # used for response-privacy coverage.
     malformed = tmp_path / "garbage.sqlite3"
     malformed.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, malformed)
-    with TestClient(app) as client:
-        responses.append(client.patch("/saved-searches/alpha", json={"name": "Gamma"}))
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
+    startup_messages.append(str(exc_info.value))
 
     _set_database(monkeypatch, path)
     with TestClient(app) as client:
@@ -917,6 +921,16 @@ def test_privacy_leak_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
             assert leaked not in response.text, (
                 f"{leaked!r} leaked in {response.status_code} response"
             )
+    assert startup_messages == ["CareerOS requires a current schema v9 database"]
+    for leaked in (
+        _SENTINEL_PROFILE_PATH,
+        _SENTINEL_DESCRIPTION,
+        str(malformed),
+        "sqlite3",
+        "OperationalError",
+        "not a database",
+    ):
+        assert leaked not in startup_messages[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -1103,7 +1117,7 @@ def test_prior_endpoints_unchanged(
     assert application.json()["current_status"] == "interested"
 
 
-def test_schema_version_stays_eight(
+def test_schema_version_stays_current_v9(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "careeros.sqlite3"
@@ -1113,13 +1127,13 @@ def test_schema_version_stays_eight(
     with TestClient(app) as client:
         health = client.get("/health")
 
-    assert health.json()["schema_version"] == SCHEMA_VERSION == 8
+    assert health.json()["schema_version"] == SCHEMA_VERSION == 9
     with connect(path) as connection:
         row = connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
         ).fetchone()
     assert row is not None
-    assert row["value"] == "8"
+    assert row["value"] == "9"
 
 
 # --------------------------------------------------------------------------- #

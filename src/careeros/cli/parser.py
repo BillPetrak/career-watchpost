@@ -26,6 +26,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    database_parser = subparsers.add_parser(
+        "database", help="Safely administer a CareerOS database."
+    )
+    database_commands = database_parser.add_subparsers(
+        dest="database_command", required=True
+    )
+    backup_parser = database_commands.add_parser("backup")
+    backup_parser.add_argument("destination", type=Path)
+    backup_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    migrate_parser = database_commands.add_parser("migrate")
+    migrate_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    migrate_parser.add_argument("--backup", type=Path)
+    migrate_parser.add_argument("--no-backup", action="store_true")
+    migrate_parser.add_argument("--acknowledge-data-loss-risk", action="store_true")
+    restore_parser = database_commands.add_parser("restore")
+    restore_parser.add_argument("backup", type=Path)
+    restore_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    restore_parser.add_argument("--confirm-replace", action="store_true")
+    serve_parser = subparsers.add_parser(
+        "serve", help="Serve the protected local web application."
+    )
+    serve_parser.add_argument("--port", type=int, default=8000)
+    serve_parser.add_argument("--ipv6", action="store_true")
+    serve_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+
     subparsers.add_parser(
         "diagnose",
         help="Check the CareerOS development environment.",
@@ -115,6 +140,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="application_command",
         required=True,
     )
+    redact_parser = application_commands.add_parser(
+        "redact-note", help="Destroy a private application event note."
+    )
+    redact_parser.add_argument("event_id", type=int)
+    redact_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
 
     set_parser = application_commands.add_parser(
         "set",

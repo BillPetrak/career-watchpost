@@ -97,7 +97,6 @@ def test_metadata_written_when_lock_acquired(tmp_path: Path) -> None:
         payload = json.loads(lock_path_for(database).read_text())
     assert payload["pid"] == str(os.getpid())
     assert payload["command"] == "collect due"
-    assert payload["database_path"] == str(database.resolve())
     assert "acquired_at" in payload
 
 
@@ -110,7 +109,6 @@ def test_conflict_reports_owner_metadata(tmp_path: Path) -> None:
         metadata = exc_info.value.metadata
         assert metadata["pid"] == str(os.getpid())
         assert metadata["command"] == "collect all"
-        assert metadata["database_path"] == str(database.resolve())
 
 
 def test_lock_path_open_failure_propagates(

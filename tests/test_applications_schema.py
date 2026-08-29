@@ -88,8 +88,8 @@ def test_fresh_schema_has_application_tables(tmp_path: Path) -> None:
     }
 
 
-def test_schema_version_is_eight(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_is_nine(tmp_path: Path) -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_required_indexes_exist(tmp_path: Path) -> None:
@@ -102,7 +102,9 @@ def test_required_indexes_exist(tmp_path: Path) -> None:
     assert "idx_application_events_application" in indexes
 
 
-def test_v3_database_upgrades_with_rows_intact(tmp_path: Path) -> None:
+def test_v3_database_requires_explicit_migration_without_changes(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "careeros.sqlite3"
     with connect(database_path) as connection:
         connection.executescript(_V3_TABLES)
@@ -131,8 +133,11 @@ def test_v3_database_upgrades_with_rows_intact(tmp_path: Path) -> None:
             """
         )
         connection.commit()
+        snapshot_before = tuple(connection.iterdump())
 
-        initialize_schema(connection)
+        with pytest.raises(ValueError, match="explicit migration"):
+            initialize_schema(connection)
+        snapshot_after = tuple(connection.iterdump())
 
         version = connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
@@ -145,11 +150,9 @@ def test_v3_database_upgrades_with_rows_intact(tmp_path: Path) -> None:
             "SELECT COUNT(*) FROM job_group_members"
         ).fetchone()[0]
 
-    assert version["value"] == str(SCHEMA_VERSION)
-    assert _table_names(connection) >= {
-        "applications",
-        "application_events",
-    }
+    assert snapshot_after == snapshot_before
+    assert version["value"] == "3"
+    assert "applications" not in _table_names(connection)
     assert len(jobs) == 1 and jobs[0]["source_job_id"] == "slug-1"
     assert runs == 1
     assert members == 1

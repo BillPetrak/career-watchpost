@@ -39,10 +39,11 @@ import re
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
-from careeros.database.schema import SCHEMA_VERSION
+from careeros.database.connection import connect
+from careeros.database.schema import SCHEMA_VERSION, initialize_schema
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -535,21 +536,9 @@ def test_missing_database_returns_friendly_empty_report(
     database_path = tmp_path / "missing" / "careeros.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.post(
-            "/report",
-            json={"profile": {"skills": ["python"]}},
-            params={"grouped": "true", "limit": "10"},
-        )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["overview"]["total_jobs"] == 0
-    assert body["review_queue"]["candidate_count"] == 0
-    assert body["recommendations"]["candidate_count"] == 0
-    assert body["review_queue"]["items"] == []
-    assert body["recommendations"]["ranked_jobs"] == []
-    assert body["recommendations"]["ranked_groups"] == []
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not database_path.exists()
 
 
@@ -557,6 +546,9 @@ def test_post_report_422_carries_usable_detail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_database(monkeypatch, tmp_path / "careeros.sqlite3")
+    connection = connect(tmp_path / "careeros.sqlite3")
+    initialize_schema(connection)
+    connection.close()
 
     # A field-length violation the client normally catches first; the server
     # stays authoritative and returns the canonical 422 detail shape.
@@ -574,6 +566,9 @@ def test_repeated_identical_requests_are_deterministic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _set_database(monkeypatch, tmp_path / "careeros.sqlite3")
+    connection = connect(tmp_path / "careeros.sqlite3")
+    initialize_schema(connection)
+    connection.close()
 
     with TestClient(app) as client:
         first = client.post(
@@ -600,7 +595,14 @@ def test_repeated_identical_requests_are_deterministic(
 # --------------------------------------------------------------------------- #
 
 
-def test_ui_assets_still_serve_with_correct_types() -> None:
+def test_ui_assets_still_serve_with_correct_types(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "careeros.sqlite3"
+    connection = connect(database)
+    initialize_schema(connection)
+    connection.close()
+    monkeypatch.setenv("CAREEROS_DATABASE", str(database))
     with TestClient(app) as client:
         index = client.get("/ui")
         js_response = client.get("/ui/app.js")
@@ -614,8 +616,8 @@ def test_ui_assets_still_serve_with_correct_types() -> None:
     assert css.headers["content-type"].startswith("text/css")
 
 
-def test_schema_version_stays_eight() -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_stays_nine() -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_no_careeros_cli_import_under_api() -> None:
@@ -646,7 +648,11 @@ def test_real_default_database_untouched(
     real = DEFAULT_DATABASE_PATH
     before = real.stat().st_mtime_ns if real.is_file() else None
 
-    _set_database(monkeypatch, tmp_path / "careeros.sqlite3")
+    database = tmp_path / "careeros.sqlite3"
+    connection = connect(database)
+    initialize_schema(connection)
+    connection.close()
+    _set_database(monkeypatch, database)
     with TestClient(app) as client:
         client.post(
             "/report",

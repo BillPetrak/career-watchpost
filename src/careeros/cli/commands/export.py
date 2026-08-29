@@ -6,7 +6,7 @@ import argparse
 import sqlite3
 import sys
 
-from careeros.database.connection import connect
+from careeros.database.connection import connect_read_only
 from careeros.export.models import ExportError, ExportFormat, ExportRequest
 from careeros.export.serializers import render_export
 from careeros.export.service import build_records
@@ -57,7 +57,7 @@ def run_export(
     connection: sqlite3.Connection | None = None
     try:
         if arguments.database.exists():
-            connection = connect(arguments.database)
+            connection = connect_read_only(arguments.database)
         result = build_records(connection, command, request)
     except (OSError, ValueError, sqlite3.Error) as error:
         print(f"Export failed: {type(error).__name__}: {error}", file=sys.stderr)

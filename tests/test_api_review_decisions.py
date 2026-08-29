@@ -20,7 +20,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.applications.service import set_application_status
@@ -31,6 +30,7 @@ from careeros.database.jobs import save_jobs
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.reminders.service import add_reminder
 from careeros.review.service import clear_decision, set_decision
+from tests.support import TestClient
 
 _EPOCH = datetime.fromisoformat("2026-08-03T12:00:00+00:00")
 _LATER = datetime.fromisoformat("2026-08-04T12:00:00+00:00")
@@ -662,17 +662,9 @@ def test_review_decisions_missing_database_is_empty_without_creating_file(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        list_response = client.get("/review-decisions")
-        detail_response = client.get("/review-decisions/1")
-        history_response = client.get("/review-decisions/1/history")
-
-    assert list_response.status_code == 200
-    assert list_response.json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
-    assert detail_response.status_code == 404
-    assert detail_response.json() == {"detail": "No job found with ID 1."}
-    assert history_response.status_code == 404
-    assert history_response.json() == {"detail": "No job found with ID 1."}
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not database_path.exists()
     assert not database_path.parent.exists()
 
@@ -684,11 +676,11 @@ def test_review_decisions_uninitialized_database_is_500(
     database_path.write_bytes(b"")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/review-decisions")
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 def test_review_decisions_malformed_database_is_500(
@@ -698,11 +690,11 @@ def test_review_decisions_malformed_database_is_500(
     database_path.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/review-decisions")
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 # --------------------------------------------------------------------------- #

@@ -10,13 +10,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from careeros.api import app
 from careeros.collectors.arbeitnow import CollectedJob
 from careeros.database.connection import connect
 from careeros.database.jobs import save_jobs
 from careeros.database.schema import initialize_schema
+from tests.support import TestClient
 
 
 def _seed(path: Path) -> None:

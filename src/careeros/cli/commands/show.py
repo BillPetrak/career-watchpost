@@ -8,18 +8,19 @@ import sys
 from pathlib import Path
 
 from careeros.cli.common import no_job_found_message
-from careeros.database.connection import connect
+from careeros.database.connection import connect_read_only
 from careeros.database.jobs import get_job_by_id
-from careeros.database.schema import initialize_schema
 from careeros.text import clean_description
 
 
 def run_show(job_id: int, database_path: Path) -> int:
     """Display a single job by its database ID."""
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             job = get_job_by_id(connection, job_id)
+    except FileNotFoundError:
+        print(no_job_found_message(job_id), file=sys.stderr)
+        return 1
     except (OSError, sqlite3.Error) as error:
         print(f"Show failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1

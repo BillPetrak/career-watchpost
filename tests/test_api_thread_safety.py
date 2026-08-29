@@ -179,7 +179,7 @@ class TestThreadMigration:
 
 
 class TestConcurrentJobDetailBursts:
-    """Five-endpoint bursts through the real ASGI app must never 5xx."""
+    """Six-endpoint bursts through the real ASGI app must never 5xx."""
 
     async def _burst(
         self, client: httpx.AsyncClient, job_id: int
@@ -189,6 +189,7 @@ class TestConcurrentJobDetailBursts:
                 client.get(f"/jobs/{job_id}"),
                 client.get(f"/jobs/{job_id}/group"),
                 client.get(f"/applications/{job_id}"),
+                client.get(f"/applications/{job_id}/preparation"),
                 client.get(f"/review-decisions/{job_id}"),
                 client.get(f"/reminders?job_id={job_id}"),
             )
@@ -205,7 +206,9 @@ class TestConcurrentJobDetailBursts:
 
         async def run() -> list[list[httpx.Response]]:
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://test"
+                transport=transport,
+                base_url="http://127.0.0.1",
+                headers={"Host": "127.0.0.1"},
             ) as client:
                 tasks = [
                     self._burst(client, job_id) for _ in range(25) for job_id in job_ids
@@ -220,8 +223,9 @@ class TestConcurrentJobDetailBursts:
             "application": set(),
             "review": set(),
             "reminders": set(),
+            "preparation": set(),
         }
-        names = ["job", "group", "application", "review", "reminders"]
+        names = ["job", "group", "application", "preparation", "review", "reminders"]
         for burst in results:
             for name, response in zip(names, burst, strict=True):
                 statuses[name].add(response.status_code)
@@ -232,10 +236,11 @@ class TestConcurrentJobDetailBursts:
         assert statuses["job"] == {200}
         assert statuses["group"] == {200}
         assert statuses["application"] == {404}
+        assert statuses["preparation"] == {404}
         assert statuses["review"] == {404}
         assert statuses["reminders"] == {200}
         for burst in results:
-            reminders = burst[4]
+            reminders = burst[5]
             assert reminders.json()["items"] == []
             assert reminders.json()["total"] == 0
 

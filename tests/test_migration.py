@@ -2,7 +2,10 @@
 
 from pathlib import Path
 
+import pytest
+
 from careeros.database.connection import connect
+from careeros.database.migrations.core import inspect_schema
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 
 
@@ -22,10 +25,23 @@ def test_initialize_schema_is_idempotent(tmp_path: Path) -> None:
         "schema_metadata",
         "jobs",
         "collection_runs",
+        "job_groups",
+        "job_group_members",
+        "applications",
+        "application_events",
+        "application_preparations",
+        "application_requirement_items",
+        "saved_searches",
+        "reminders",
+        "reminder_notifications",
+        "review_decisions",
+        "review_events",
     }
 
 
-def test_v1_database_upgrades_with_jobs_intact(tmp_path: Path) -> None:
+def test_v1_database_requires_explicit_migration_without_changes(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "careeros.sqlite3"
     with connect(database_path) as connection:
         connection.executescript(
@@ -58,8 +74,11 @@ def test_v1_database_upgrades_with_jobs_intact(tmp_path: Path) -> None:
             """
         )
         connection.commit()
+        snapshot_before = tuple(connection.iterdump())
 
-        initialize_schema(connection)
+        with pytest.raises(ValueError, match="explicit migration"):
+            initialize_schema(connection)
+        snapshot_after = tuple(connection.iterdump())
 
         version = connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
@@ -72,14 +91,16 @@ def test_v1_database_upgrades_with_jobs_intact(tmp_path: Path) -> None:
             " AND name = 'collection_runs'"
         ).fetchone()
 
-    assert version["value"] == str(SCHEMA_VERSION)
+    assert snapshot_after == snapshot_before
+    assert version["value"] == "1"
     assert len(jobs) == 1
     assert jobs[0]["source_job_id"] == "slug-1"
-    assert runs_table is not None
+    assert runs_table is None
 
 
-def test_v7_database_upgrades_to_v8_with_review_tables(tmp_path: Path) -> None:
-    """A v7 database gains the review tables without losing stored jobs."""
+def test_v7_database_requires_explicit_migration_without_changes(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "careeros.sqlite3"
     with connect(database_path) as connection:
         connection.executescript(
@@ -112,8 +133,11 @@ def test_v7_database_upgrades_to_v8_with_review_tables(tmp_path: Path) -> None:
             """
         )
         connection.commit()
+        snapshot_before = tuple(connection.iterdump())
 
-        initialize_schema(connection)
+        with pytest.raises(ValueError, match="explicit migration"):
+            initialize_schema(connection)
+        snapshot_after = tuple(connection.iterdump())
 
         version = connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
@@ -130,9 +154,10 @@ def test_v7_database_upgrades_to_v8_with_review_tables(tmp_path: Path) -> None:
             "SELECT source_job_id, title FROM jobs WHERE source_job_id = 'slug-1'"
         ).fetchone()
 
-    assert version["value"] == str(SCHEMA_VERSION)
-    assert review_decisions is not None
-    assert review_events is not None
+    assert snapshot_after == snapshot_before
+    assert version["value"] == "7"
+    assert review_decisions is None
+    assert review_events is None
     assert job["title"] == "Python Engineer"
 
 
@@ -145,3 +170,58 @@ def test_collection_runs_index_exists(tmp_path: Path) -> None:
             "AND name = 'idx_collection_runs_source_started'"
         ).fetchone()
     assert index is not None
+
+
+@pytest.mark.parametrize(
+    ("table", "needle", "replacement"),
+    [
+        (
+            "application_preparations",
+            "ON DELETE CASCADE",
+            "ON DELETE RESTRICT",
+        ),
+        (
+            "application_requirement_items",
+            "required INTEGER NOT NULL",
+            "required INTEGER",
+        ),
+        (
+            "application_requirement_items",
+            "UNIQUE(application_id, sort_order)",
+            "UNIQUE(id, sort_order)",
+        ),
+        (
+            "application_requirement_items",
+            "CHECK (kind != 'deadline' OR fulfillment_state != 'satisfied')",
+            "CHECK (kind != 'deadline' OR fulfillment_state = 'satisfied')",
+        ),
+        (
+            "application_events",
+            "note_redacted_at TEXT,",
+            "",
+        ),
+    ],
+)
+def test_v9_inspection_rejects_weakened_contract(
+    tmp_path: Path, table: str, needle: str, replacement: str
+) -> None:
+    """Structural inspection must fail closed for weakened v9 definitions."""
+    database_path = tmp_path / "careeros.sqlite3"
+    with connect(database_path) as connection:
+        initialize_schema(connection)
+        assert inspect_schema(connection) == "current"
+        sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()[0]
+        assert needle in sql
+        connection.execute("PRAGMA writable_schema=ON")
+        connection.execute(
+            "UPDATE sqlite_master SET sql=? WHERE type='table' AND name=?",
+            (sql.replace(needle, replacement), table),
+        )
+        connection.execute("PRAGMA writable_schema=OFF")
+        connection.commit()
+
+    # Reopening forces SQLite to reparse the mutated sqlite_master definitions.
+    with connect(database_path) as connection:
+        assert inspect_schema(connection) == "malformed"

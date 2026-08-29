@@ -23,8 +23,8 @@ def _index_names(connection: sqlite3.Connection) -> set[str]:
     return {row["name"] for row in rows}
 
 
-def test_schema_version_is_eight() -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_is_nine_for_m1() -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_fresh_schema_has_saved_searches_table(tmp_path: Path) -> None:
@@ -122,7 +122,9 @@ def test_saved_searches_mode_and_min_score_checks(tmp_path: Path) -> None:
             )
 
 
-def test_v4_database_upgrades_with_saved_search_row_intact(tmp_path: Path) -> None:
+def test_v4_database_requires_explicit_migration_without_changes(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "careeros.sqlite3"
     with connect(database_path) as connection:
         _create_v4_tables(connection)
@@ -142,17 +144,21 @@ def test_v4_database_upgrades_with_saved_search_row_intact(tmp_path: Path) -> No
             " '2026-08-01T08:00:00+00:00')"
         )
         connection.commit()
+        snapshot_before = tuple(connection.iterdump())
 
-        initialize_schema(connection)
+        with pytest.raises(ValueError, match="explicit migration"):
+            initialize_schema(connection)
+        snapshot_after = tuple(connection.iterdump())
 
         version = connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
         ).fetchone()
         apps = connection.execute("SELECT COUNT(*) FROM applications").fetchone()[0]
 
-    assert version["value"] == str(SCHEMA_VERSION)
+    assert snapshot_after == snapshot_before
+    assert version["value"] == "4"
     assert apps == 1
-    assert "saved_searches" in _table_names(connection)
+    assert "saved_searches" not in _table_names(connection)
 
 
 def test_repeated_initialization_is_idempotent(tmp_path: Path) -> None:

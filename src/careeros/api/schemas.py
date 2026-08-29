@@ -131,6 +131,12 @@ class ApplicationItem(BaseModel):
     job: Job
 
 
+class ApplicationPipelineItem(ApplicationItem):
+    """Pipeline-only application projection with compact preparation state."""
+
+    preparation: dict[str, object] | None = None
+
+
 class ApplicationListResponse(BaseModel):
     """A paginated page of tracked applications, newest first."""
 
@@ -157,7 +163,7 @@ class ApplicationPipelineCounts(BaseModel):
 class ApplicationPipelineResponse(BaseModel):
     """A server-authoritative flat application pipeline page."""
 
-    items: list[ApplicationItem]
+    items: list[ApplicationPipelineItem]
     counts: ApplicationPipelineCounts
     view: Literal[
         "active", "completed", "all", "interested", "applied", "interview", "offer"

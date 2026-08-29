@@ -32,7 +32,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.applications.service import set_application_status
@@ -47,6 +46,7 @@ from careeros.reminders.service import (
     complete_reminder,
 )
 from careeros.review.service import set_decision
+from tests.support import TestClient
 
 _EPOCH = datetime.fromisoformat("2026-08-03T12:00:00+00:00")
 
@@ -467,16 +467,9 @@ def test_missing_database_500_without_creating_anything(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.delete("/reminders/1")
-
-    assert response.status_code == 500
-    assert response.json() == {
-        "detail": (
-            "The database schema is unavailable (run 'careeros collect "
-            "<source>' to initialize it)."
-        )
-    }
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not database_path.exists()
     assert not database_path.parent.exists()
     assert not lock_path_for(database_path).exists()
@@ -489,11 +482,11 @@ def test_uninitialized_database_500(
     database_path.write_bytes(b"")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.delete("/reminders/1")
-
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 def test_malformed_database_500(
@@ -503,17 +496,11 @@ def test_malformed_database_500(
     database_path.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.delete("/reminders/1")
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == (
-        "The database schema is unavailable (run 'careeros collect "
-        "<source>' to initialize it)."
-    )
-    # No raw sqlite text leaks into the response.
-    for leaked in ("OperationalError", "file is not a database", "sqlite3"):
-        assert leaked not in response.text
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert database_path.read_bytes() == before
 
 
 # --------------------------------------------------------------------------- #
@@ -753,12 +740,13 @@ def test_privacy_leak_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         if child.poll() is None:
             _release_child(child)
 
-    # 500 from a malformed database, then back to the real seeded database.
+    # Malformed databases are refused at startup, then return to the seeded DB.
     malformed = tmp_path / "garbage.sqlite3"
     malformed.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, malformed)
-    with TestClient(app) as client:
-        responses.append(client.delete(f"/reminders/{reminder_id}"))
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
 
     _set_database(monkeypatch, path)
     with TestClient(app) as client:

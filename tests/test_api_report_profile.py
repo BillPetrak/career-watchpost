@@ -40,10 +40,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
-from careeros.api.deps import DATABASE_UNAVAILABLE_MESSAGE
 from careeros.applications.service import set_application_status
 from careeros.collectors.arbeitnow import CollectedJob
 from careeros.database.connection import connect
@@ -56,6 +54,7 @@ from careeros.reminders.service import add_reminder
 from careeros.review.service import set_decision
 from careeros.saved_searches.models import SavedSearchFields
 from careeros.saved_searches.service import create_search
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -1020,37 +1019,9 @@ def test_post_report_missing_database_empty_report(
     database_path = tmp_path / _SENTINEL_DIRECTORY / "careeros.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.post("/report", json={"profile": _MAIN_PROFILE})
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["overview"]["total_jobs"] == 0
-    assert body["overview"]["canonical_groups"] == 0
-    assert body["overview"]["grouped_members"] == 0
-    assert body["overview"]["distinct_opportunities"] == 0
-    assert body["application_pipeline"]["status_counts"] == dict(
-        (status, 0) for status in _APPLICATION_STATUS_ORDER
-    )
-    assert body["review_queue"] == {
-        "grouped": False,
-        "source": "none",
-        "source_name": None,
-        "candidate_count": 0,
-        "note": _REVIEW_QUEUE_NOTE,
-        "items": [],
-    }
-    assert body["recommendations"] == {
-        "grouped": False,
-        "source": "none",
-        "source_name": None,
-        "min_score": 0,
-        "candidate_count": 0,
-        "note": _RECOMMENDATIONS_NOTE,
-        "ranked_jobs": [],
-        "ranked_groups": [],
-    }
-    assert body["collection_health"]["sources"] == []
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not database_path.exists()
     assert not database_path.parent.exists()
     assert not Path(str(database_path) + ".lock").exists()
@@ -1062,13 +1033,9 @@ def test_post_report_missing_database_profile_matches_get(
     database_path = tmp_path / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        get_body = client.get("/report").json()
-        post_body = _post_report_json(
-            client, {"profile": _MAIN_PROFILE}, grouped="true"
-        )
-
-    assert _normalize_as_of(post_body) == _normalize_as_of(get_body)
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not database_path.exists()
     assert not Path(str(database_path) + ".lock").exists()
 
@@ -1080,11 +1047,11 @@ def test_post_report_uninitialized_database_500(
     sqlite3.connect(path).close()
     _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        response = client.post("/report", json={"profile": _MAIN_PROFILE})
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == DATABASE_UNAVAILABLE_MESSAGE
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert path.read_bytes() == before
 
 
 def test_post_report_malformed_database_500(
@@ -1094,11 +1061,11 @@ def test_post_report_malformed_database_500(
     malformed.write_bytes(b"this is not a sqlite database file at all")
     _set_database(monkeypatch, malformed)
 
-    with TestClient(app) as client:
-        response = client.post("/report", json={"profile": _MAIN_PROFILE})
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == DATABASE_UNAVAILABLE_MESSAGE
+    before = malformed.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert malformed.read_bytes() == before
 
 
 def test_post_report_malformed_timestamp_treated_as_due(
@@ -1306,8 +1273,8 @@ def test_post_report_schema_version_unchanged(
     with TestClient(app) as client:
         health = client.get("/health").json()
 
-    assert SCHEMA_VERSION == 8
-    assert health["schema_version"] == 8
+    assert SCHEMA_VERSION == 9
+    assert health["schema_version"] == 9
 
 
 def test_api_does_not_import_careeros_cli() -> None:

@@ -4,11 +4,30 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
-    """Create the initial CareerOS database schema."""
+    """Bootstrap a genuinely empty database; never migrate an existing one."""
+    tables = int(
+        connection.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table'"
+        ).fetchone()[0]
+    )
+    if tables:
+        try:
+            metadata = connection.execute(
+                "SELECT value FROM schema_metadata WHERE key='schema_version'"
+            ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("database schema is malformed") from exc
+        if metadata is None or str(metadata[0]) != str(SCHEMA_VERSION):
+            raise ValueError("database requires explicit migration")
+        from careeros.database.migrations.core import inspect_schema
+
+        if inspect_schema(connection) != "current":
+            raise ValueError("database schema is structurally invalid")
+        return
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -95,11 +114,48 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             old_status TEXT,
             new_status TEXT NOT NULL,
             note TEXT,
+            note_redacted_at TEXT,
             created_at TEXT NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_application_events_application
             ON application_events(application_id, created_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS application_preparations (
+            application_id INTEGER PRIMARY KEY REFERENCES applications(id)
+                ON DELETE CASCADE,
+            revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+            requirements_reviewed_revision INTEGER,
+            requirements_reviewed_at TEXT,
+            ready_confirmed_revision INTEGER,
+            ready_confirmed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS application_requirement_items (
+            id TEXT PRIMARY KEY,
+            application_id INTEGER NOT NULL REFERENCES applications(id)
+                ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK (kind IN
+                ('material','link','question','task','deadline','other')),
+            label TEXT NOT NULL CHECK (length(label) BETWEEN 1 AND 160),
+            detail TEXT CHECK (detail IS NULL OR length(detail) BETWEEN 1 AND 1000),
+            required INTEGER NOT NULL CHECK (required IN (0,1)),
+            fulfillment_state TEXT NOT NULL CHECK (fulfillment_state IN
+                ('open','satisfied','not_applicable')),
+            deadline_at TEXT,
+            sort_order INTEGER NOT NULL CHECK (sort_order >= 0),
+            origin TEXT NOT NULL CHECK (origin = 'manual'),
+            capture_method TEXT NOT NULL CHECK (capture_method = 'manual'),
+            confirmed INTEGER NOT NULL CHECK (confirmed IN (0,1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK (kind != 'deadline' OR fulfillment_state != 'satisfied'),
+            UNIQUE(application_id, sort_order)
+        );
+        CREATE INDEX IF NOT EXISTS idx_requirement_items_application
+            ON application_requirement_items(application_id, sort_order);
 
         CREATE TABLE IF NOT EXISTS saved_searches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -196,6 +252,17 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             ON review_events(job_id, created_at DESC, id DESC);
         """
     )
+
+    # Existing v8 databases need the additive event column; preparation tables
+    # above are intentionally created with IF NOT EXISTS for safe retries.
+    event_columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(application_events)")
+    }
+    if "note_redacted_at" not in event_columns:
+        connection.execute(
+            "ALTER TABLE application_events ADD COLUMN note_redacted_at TEXT"
+        )
 
     connection.execute(
         """

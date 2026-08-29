@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from careeros.cli.common import EXIT_TEMP_FAILURE, _lock_conflict_message
-from careeros.database.connection import connect
+from careeros.database.connection import connect, connect_read_only
 from careeros.database.groups import (
     ensure_grouped,
     grouping_summary,
@@ -46,8 +46,7 @@ def run_group_explain(
 ) -> int:
     """Show canonical groups (with members) without mutating state."""
     try:
-        with connect(database_path) as connection:
-            initialize_schema(connection)
+        with connect_read_only(database_path) as connection:
             infos = list_group_infos(
                 connection,
                 group_id=group_id,

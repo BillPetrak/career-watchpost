@@ -28,10 +28,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
-from careeros.api.deps import DATABASE_UNAVAILABLE_MESSAGE
 from careeros.applications.service import set_application_status
 from careeros.collectors.arbeitnow import CollectedJob
 from careeros.database.connection import connect
@@ -44,6 +42,7 @@ from careeros.reminders.service import add_reminder
 from careeros.review.service import set_decision
 from careeros.saved_searches.models import SavedSearchFields
 from careeros.saved_searches.service import create_search
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -323,49 +322,9 @@ def test_report_missing_database_empty_report(
     database_path = tmp_path / _SENTINEL_DIRECTORY / "careeros.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/report")
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["overview"]["total_jobs"] == 0
-    assert body["overview"]["canonical_groups"] == 0
-    assert body["overview"]["grouped_members"] == 0
-    assert body["overview"]["distinct_opportunities"] == 0
-    assert body["overview"]["tracked_applications"] == 0
-    assert body["overview"]["saved_searches"] == 0
-    assert body["overview"]["reviewed_groups"] == 0
-    assert body["overview"]["unreviewed_groups"] == 0
-    assert body["overview"]["sources"] == []
-    assert body["overview"]["due_sources"] == []
-    assert body["overview"]["source_stats"] == []
-    assert body["application_pipeline"]["status_counts"] == dict(
-        (status, 0) for status in _APPLICATION_STATUS_ORDER
-    )
-    assert body["application_pipeline"]["recently_changed"] == []
-    assert body["action_items"]["interview"] == []
-    assert body["action_items"]["offer"] == []
-    assert body["action_items"]["interested"] == []
-    assert body["action_items"]["awaiting_progress"] == []
-    assert body["reminders"] == {
-        "overdue_count": 0,
-        "due_today_utc_count": 0,
-        "open_total": 0,
-        "upcoming": [],
-    }
-    assert body["review_queue"]["source"] == "none"
-    assert body["review_queue"]["source_name"] is None
-    assert body["review_queue"]["items"] == []
-    assert body["review_queue"]["candidate_count"] == 0
-    assert body["review_queue"]["note"] == _REVIEW_QUEUE_NOTE
-    assert body["recommendations"]["source"] == "none"
-    assert body["recommendations"]["source_name"] is None
-    assert body["recommendations"]["ranked_jobs"] == []
-    assert body["recommendations"]["ranked_groups"] == []
-    assert body["recommendations"]["candidate_count"] == 0
-    assert body["recommendations"]["min_score"] == 0
-    assert body["recommendations"]["note"] == _RECOMMENDATIONS_NOTE
-    assert body["collection_health"]["sources"] == []
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not database_path.exists()
     assert not database_path.parent.exists()
     assert not Path(str(database_path) + ".lock").exists()
@@ -377,10 +336,9 @@ def test_report_missing_database_never_creates_file_or_schema(
     database_path = tmp_path / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/report")
-
-    assert response.status_code == 200
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not database_path.exists()
     assert not Path(str(database_path) + ".lock").exists()
 
@@ -787,10 +745,11 @@ def test_report_missing_database_does_not_leak_paths(
     database_path = tmp_path / _SENTINEL_DIRECTORY / "careeros.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/report")
-
-    assert _SENTINEL_DIRECTORY not in response.text
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert not database_path.exists()
+    assert not database_path.parent.exists()
 
 
 # --------------------------------------------------------------------------- #
@@ -884,11 +843,11 @@ def test_report_does_not_initialize_schema(
     empty.write_bytes(b"")
     _set_database(monkeypatch, empty)
 
-    with TestClient(app) as client:
-        response = client.get("/report")
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == DATABASE_UNAVAILABLE_MESSAGE
+    before = empty.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert empty.read_bytes() == before
     with connect(empty) as connection:
         row = connection.execute(
             "SELECT name FROM sqlite_master WHERE name = 'jobs'"
@@ -903,11 +862,11 @@ def test_report_malformed_database_500(
     malformed.write_bytes(b"this is not a sqlite database file at all")
     _set_database(monkeypatch, malformed)
 
-    with TestClient(app) as client:
-        response = client.get("/report")
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == DATABASE_UNAVAILABLE_MESSAGE
+    before = malformed.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert malformed.read_bytes() == before
 
 
 def test_report_uninitialized_database_500(
@@ -917,11 +876,11 @@ def test_report_uninitialized_database_500(
     sqlite3.connect(path).close()
     _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        response = client.get("/report")
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == DATABASE_UNAVAILABLE_MESSAGE
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
+    assert path.read_bytes() == before
 
 
 def test_report_schema_version_unchanged(
@@ -934,7 +893,7 @@ def test_report_schema_version_unchanged(
     with TestClient(app) as client:
         health = client.get("/health")
 
-    assert health.json()["schema_version"] == SCHEMA_VERSION == 8
+    assert health.json()["schema_version"] == SCHEMA_VERSION == 9
 
 
 # --------------------------------------------------------------------------- #

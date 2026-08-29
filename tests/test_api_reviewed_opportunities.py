@@ -3,7 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+import pytest
 
 from careeros.api import app
 from careeros.collectors.arbeitnow import CollectedJob
@@ -12,6 +12,7 @@ from careeros.database.groups import ensure_grouped
 from careeros.database.jobs import save_jobs
 from careeros.database.schema import initialize_schema
 from careeros.review.service import set_decision
+from tests.support import TestClient
 
 
 def _job(source: str, source_id: str, title: str = "Engineer") -> CollectedJob:
@@ -95,10 +96,9 @@ def test_flat_pagination_and_validation(monkeypatch, tmp_path):
 def test_missing_database_is_read_only(monkeypatch, tmp_path):
     path = tmp_path / "missing" / "reviewed.sqlite3"
     monkeypatch.setenv("CAREEROS_DATABASE", str(path))
-    with TestClient(app) as client:
-        response = client.get("/reviewed-opportunities")
-    assert response.status_code == 200
-    assert response.json()["items"] == []
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     assert not path.exists()
 
 
@@ -211,5 +211,5 @@ def test_reviewed_read_does_not_invoke_other_workflows(monkeypatch, tmp_path):
             connection.execute(
                 "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
             ).fetchone()[0]
-            == "8"
+            == "9"
         )

@@ -11,6 +11,7 @@ from careeros.collectors.arbeitnow import CollectedJob
 from careeros.database.connection import connect
 from careeros.database.groups import ensure_grouped
 from careeros.database.jobs import save_jobs
+from careeros.database.migrations.core import migrate
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.review.service import set_decision
 
@@ -47,8 +48,8 @@ def _index_names(connection: sqlite3.Connection) -> set[str]:
     return {row["name"] for row in rows}
 
 
-def test_schema_version_is_eight(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_is_nine(tmp_path: Path) -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_fresh_schema_has_review_tables(tmp_path: Path) -> None:
@@ -78,6 +79,8 @@ def _seed_v7_database(connection: sqlite3.Connection) -> None:
     """Populate every pre-v8 table with representative rows."""
     connection.executescript(
         """
+        DROP TABLE IF EXISTS application_requirement_items;
+        DROP TABLE IF EXISTS application_preparations;
         DROP INDEX IF EXISTS idx_review_decisions_decision;
         DROP INDEX IF EXISTS idx_review_events_job;
         DROP TABLE IF EXISTS review_events;
@@ -143,7 +146,9 @@ def _seed_v7_database(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
-def test_v7_database_upgrades_with_every_row_intact(tmp_path: Path) -> None:
+def test_v7_database_requires_explicit_migration_without_changes(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "careeros.sqlite3"
     with connect(database_path) as connection:
         initialize_schema(connection)
@@ -163,8 +168,11 @@ def test_v7_database_upgrades_with_every_row_intact(tmp_path: Path) -> None:
             table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             for table in tables
         }
+        snapshot_before = tuple(connection.iterdump())
 
-        initialize_schema(connection)
+        with pytest.raises(ValueError, match="explicit migration"):
+            initialize_schema(connection)
+        snapshot_after = tuple(connection.iterdump())
 
         version = connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
@@ -174,34 +182,64 @@ def test_v7_database_upgrades_with_every_row_intact(tmp_path: Path) -> None:
             for table in tables
         }
 
-    assert version["value"] == str(SCHEMA_VERSION)
-    assert "review_decisions" in _table_names(connection)
-    assert "review_events" in _table_names(connection)
+    assert snapshot_after == snapshot_before
+    assert version["value"] == "7"
+    assert {
+        "review_decisions",
+        "review_events",
+        "application_preparations",
+        "application_requirement_items",
+    }.isdisjoint(_table_names(connection))
     assert counts_after == counts_before
 
 
-def test_v8_migration_is_idempotent(tmp_path: Path) -> None:
+def test_explicit_v8_to_v9_migration_preserves_review_rows(tmp_path: Path) -> None:
     database_path = tmp_path / "careeros.sqlite3"
     with connect(database_path) as connection:
         initialize_schema(connection)
-        _seed_v7_database(connection)
-        initialize_schema(connection)
+        save_jobs(connection, [_make_job(source="arbeitnow", source_job_id="a-1")])
         set_decision(
             connection,
             job_id=1,
             decision="shortlist",
             now=_EPOCH,
         )
+        connection.executescript(
+            """
+            DROP TABLE application_requirement_items;
+            DROP TABLE application_preparations;
+            ALTER TABLE application_events DROP COLUMN note_redacted_at;
+            UPDATE schema_metadata SET value = '8' WHERE key = 'schema_version';
+            """
+        )
+        connection.commit()
         counts_before = {
             table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             for table in ("review_decisions", "review_events")
         }
+
+        with pytest.raises(ValueError, match="explicit migration"):
+            initialize_schema(connection)
+        assert migrate(connection) == "current"
         initialize_schema(connection)
         counts_after = {
             table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             for table in ("review_decisions", "review_events")
         }
+        version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+        ).fetchone()
+        event_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(application_events)")
+        }
 
+    assert version["value"] == str(SCHEMA_VERSION)
+    assert "note_redacted_at" in event_columns
+    assert {
+        "application_preparations",
+        "application_requirement_items",
+    } <= _table_names(connection)
     assert counts_after == counts_before
 
 

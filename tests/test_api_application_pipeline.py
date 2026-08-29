@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.applications.service import (
@@ -17,6 +16,7 @@ from careeros.collectors.arbeitnow import CollectedJob
 from careeros.database.connection import connect
 from careeros.database.jobs import save_jobs
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
+from tests.support import TestClient
 
 
 def _job(source_id: str, title: str = "Engineer") -> CollectedJob:
@@ -243,5 +243,5 @@ def test_pipeline_missing_database_is_empty_without_creating_file(
     assert not path.exists()
 
 
-def test_schema_version_remains_eight() -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_is_nine_for_m1() -> None:
+    assert SCHEMA_VERSION == 9

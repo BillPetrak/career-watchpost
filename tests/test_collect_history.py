@@ -311,10 +311,38 @@ def test_cli_history_does_not_mutate_database(tmp_path: Path, capsys) -> None:
 
 def test_cli_history_empty(tmp_path: Path, capsys) -> None:
     database_path = tmp_path / "careeros.sqlite3"
+    with connect(database_path) as connection:
+        initialize_schema(connection)
     exit_code = cli.main(["collect", "history", "--database", str(database_path)])
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "No collection runs found." in captured.out
+    with connect(database_path) as connection:
+        count = connection.execute("SELECT COUNT(*) FROM collection_runs").fetchone()[0]
+    assert count == 0
+
+
+def test_cli_history_missing_database_fails_without_creation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    database_path = tmp_path / "missing.sqlite3"
+    assert cli.main(["collect", "history", "--database", str(database_path)]) == 1
+    captured = capsys.readouterr()
+    assert "History failed: FileNotFoundError:" in captured.err
+    assert not database_path.exists()
+
+
+def test_cli_history_uninitialized_database_fails_without_schema_creation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    database_path = tmp_path / "uninitialized.sqlite3"
+    database_path.touch()
+    assert cli.main(["collect", "history", "--database", str(database_path)]) == 1
+    captured = capsys.readouterr()
+    assert "History failed: OperationalError:" in captured.err
+    assert database_path.read_bytes() == b""
 
 
 def test_cli_history_database_failure(

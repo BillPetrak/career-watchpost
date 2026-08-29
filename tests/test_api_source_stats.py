@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.collectors import COLLECTORS
@@ -14,6 +13,7 @@ from careeros.database.connection import connect
 from careeros.database.jobs import save_jobs
 from careeros.database.schema import initialize_schema
 from careeros.source_stats.models import MISSING_FIELD_COLUMNS
+from tests.support import TestClient
 
 SOURCE_ORDER = tuple(COLLECTORS)
 
@@ -205,23 +205,17 @@ def test_source_stats_pagination(
     assert [item["source"] for item in payload["items"]] == list(SOURCE_ORDER[1:3])
 
 
-def test_source_stats_absent_database_is_empty_without_creating_file(
+def test_source_stats_absent_database_refuses_startup_without_creating_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/sources/stats")
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["total"] == 7
-    assert [item["source"] for item in payload["items"]] == list(SOURCE_ORDER)
-    for item in payload["items"]:
-        assert item["total_jobs"] == 0
-        assert item["never_groupable_jobs"] == 0
-        assert all(field["coverage_pct"] is None for field in item["fields"])
+    assert str(exc_info.value) == "CareerOS requires a current schema v9 database"
     assert not database_path.exists()
     assert not database_path.parent.exists()
 
@@ -239,15 +233,17 @@ def test_source_stats_rejects_invalid_pagination(
             assert response.status_code == 422
 
 
-def test_source_stats_uninitialized_database_is_500(
+def test_source_stats_uninitialized_database_refuses_startup_without_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "empty.sqlite3"
     path.write_bytes(b"")
     _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        response = client.get("/sources/stats")
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    assert str(exc_info.value) == "CareerOS requires a current schema v9 database"
+    assert path.read_bytes() == before == b""

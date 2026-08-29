@@ -555,3 +555,7 @@ contribution total. It is embedded in ranked jobs, grouped opportunities,
 review queues, and report ranking sections. Search-mode results remain
 unranked. Explanations belong to the exact ranked response item: they are not
 persisted, and the API has no generic job explanation endpoint.
+
+Application event notes are private local workflow data. The
+`application redact-note` command removes a note while preserving immutable
+event facts; backups made before redaction may retain the original content.

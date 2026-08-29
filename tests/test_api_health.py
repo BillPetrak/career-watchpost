@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.database.connection import connect
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
+from tests.support import TestClient
 
 
 def _set_database(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
@@ -27,15 +27,9 @@ def test_health_ok_with_absent_database(
 ) -> None:
     _set_database(monkeypatch, tmp_path / "missing.sqlite3")
 
-    with TestClient(app) as client:
-        response = client.get("/health")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "status": "ok",
-        "database": "absent",
-        "schema_version": None,
-    }
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
 
 
 def test_health_ok_with_initialized_database(
@@ -61,10 +55,6 @@ def test_health_schema_version_null_for_uninitialized_file(
     path.write_bytes(b"")
     _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        response = client.get("/health")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["database"] == "present"
-    assert payload["schema_version"] is None
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass

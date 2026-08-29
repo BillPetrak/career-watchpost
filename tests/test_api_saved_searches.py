@@ -15,13 +15,13 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.database.connection import connect
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.saved_searches.models import SavedSearchFields
 from careeros.saved_searches.service import create_search, list_searches
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -438,90 +438,104 @@ def test_private_sentinel_strings_never_appear_in_any_response(
 # --------------------------------------------------------------------------- #
 
 
-def test_list_missing_database_is_empty_without_creating_file(
+def test_list_missing_database_refuses_startup_without_creating_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/saved-searches")
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 200
-    assert response.json() == {"items": [], "total": 0, "offset": 0, "limit": 20}
+    assert str(exc_info.value) == "CareerOS requires a current schema v9 database"
     assert not database_path.exists()
     assert not database_path.parent.exists()
 
 
-def test_detail_missing_database_is_404_without_creating_file(
+def test_detail_missing_database_refuses_startup_without_creating_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/saved-searches/alpha")
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 404
-    assert response.json() == {"detail": "No saved search named 'alpha'."}
+    assert str(exc_info.value) == "CareerOS requires a current schema v9 database"
     assert not database_path.exists()
     assert not database_path.parent.exists()
 
 
-def test_list_uninitialized_database_is_500(
+def test_list_uninitialized_database_refuses_startup_without_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database_path = tmp_path / "empty.sqlite3"
     database_path.write_bytes(b"")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/saved-searches")
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    assert str(exc_info.value) == "CareerOS requires a current schema v9 database"
+    assert database_path.read_bytes() == before == b""
 
 
-def test_detail_uninitialized_database_is_500(
+def test_detail_uninitialized_database_refuses_startup_without_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database_path = tmp_path / "empty.sqlite3"
     database_path.write_bytes(b"")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/saved-searches/alpha")
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    assert str(exc_info.value) == "CareerOS requires a current schema v9 database"
+    assert database_path.read_bytes() == before == b""
 
 
-def test_list_malformed_database_is_500(
+def test_list_malformed_database_refuses_startup_privately(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database_path = tmp_path / "garbage.sqlite3"
     database_path.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/saved-searches")
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    message = str(exc_info.value)
+    assert message == "CareerOS requires a current schema v9 database"
+    assert database_path.read_bytes() == before
+    assert str(database_path) not in message
+    assert "not a database" not in message
 
 
-def test_detail_malformed_database_is_500(
+def test_detail_malformed_database_refuses_startup_privately(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database_path = tmp_path / "garbage.sqlite3"
     database_path.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, database_path)
 
-    with TestClient(app) as client:
-        response = client.get("/saved-searches/alpha")
+    before = database_path.read_bytes()
+    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+        with TestClient(app):
+            pass
 
-    assert response.status_code == 500
-    assert "run 'careeros collect" in response.json()["detail"]
+    message = str(exc_info.value)
+    assert message == "CareerOS requires a current schema v9 database"
+    assert database_path.read_bytes() == before
+    assert str(database_path) not in message
+    assert "not a database" not in message
 
 
 # --------------------------------------------------------------------------- #

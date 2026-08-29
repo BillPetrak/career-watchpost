@@ -179,6 +179,12 @@
   // Application section. Buttons are disabled for the whole operation as well,
   // so this is defense-in-depth against programmatic/edge re-entry.
   var applicationOperationActive = false;
+  // Preparation state is scoped to the current Job Detail generation. Drafts
+  // are deliberately memory-only and are retained only after a revision
+  // conflict so the user must explicitly reapply them.
+  var preparationOperationSeq = 0;
+  var preparationOperationActive = false;
+  var preparationDraft = null;
 
   // Serializes the Reminder actions (create, complete, reopen): while a
   // mutation and its immediate refetch/reconciliation are in flight, no second
@@ -443,6 +449,7 @@
         headers: {
           "Content-Type": "application/json",
           "Accept": "application/json",
+          "X-CareerOS-Write": "1",
         },
         body: JSON.stringify(body),
       });
@@ -465,6 +472,7 @@
   // Review view's POST stays on postReportJson.
   async function writeJson(url, options) {
     var response;
+    options.headers = Object.assign({}, options.headers || {}, { "X-CareerOS-Write": "1" });
     try {
       response = await fetch(url, options);
     } catch (_networkError) {
@@ -489,6 +497,7 @@
       headers: {
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "X-CareerOS-Write": "1",
       },
       body: JSON.stringify(body),
     });
@@ -530,6 +539,7 @@
 
   async function readHttpError(url, response) {
     var message = "Request to " + url + " failed (HTTP " + response.status + ").";
+    var errorCode = null;
     try {
       var payload = await response.json();
       if (
@@ -538,11 +548,16 @@
         payload.detail.length > 0
       ) {
         message += " " + payload.detail;
+      } else if (isObject(payload) && isObject(payload.detail) && typeof payload.detail.code === "string") {
+        message += " " + payload.detail.code;
+        errorCode = payload.detail.code;
       }
     } catch (_notJson) {
       // Non-JSON error body: keep the generic HTTP message.
     }
-    return new Error(message);
+    var error = new Error(message);
+    if (errorCode) error.code = errorCode;
+    return error;
   }
 
   function isObject(value) {
@@ -2451,6 +2466,10 @@
     addField(fields, "First tracked", displayDate(item.created_at));
     addField(fields, "Application owner", "job " + item.job_id);
     card.appendChild(fields);
+    if (isObject(item.preparation)) {
+      var prep = el("p", { className: "preparation-summary", textContent: "Preparation: " + prepLabel(item.preparation.category) + " · Blocking: " + countValue(item.preparation.blocking_count) });
+      card.appendChild(prep);
+    }
     var actions = el("div", { className: "job-actions" });
     var details = jobDetailsLink({ id: item.job_id });
     if (details) {
@@ -3147,6 +3166,7 @@
       job: base,
       group: base + "/group",
       application: "/applications?job_id=" + jobId,
+      preparation: "/applications/" + jobId + "/preparation",
       review: "/review-decisions?job_id=" + jobId,
       reminders: "/reminders?job_id=" + jobId,
     };
@@ -3154,7 +3174,7 @@
 
   async function loadJobDetailData(jobId) {
     var urls = jobDetailUrls(jobId);
-    var keys = ["job", "group", "application", "review", "reminders"];
+    var keys = ["job", "group", "application", "preparation", "review", "reminders"];
     var settled = await Promise.allSettled(
       keys.map(function (key) {
         return fetchJson(urls[key]);
@@ -3236,6 +3256,8 @@
     reviewOperationActive = false;
     applicationOperationActive = false;
     reminderOperationActive = false;
+    preparationOperationActive = false;
+    preparationDraft = null;
     var status = document.getElementById("job-detail-status");
     var content = document.getElementById("job-detail-content");
     setLoading(status, "Loading job details…");
@@ -3281,6 +3303,7 @@
     content.appendChild(buildJobExplanationSection(job));
     fillDetailSection(content, job, "group", results.group);
     fillDetailSection(content, job, "application", results.application);
+    fillDetailSection(content, job, "preparation", results.preparation);
     fillDetailSection(content, job, "review", results.review);
     fillDetailSection(content, job, "reminders", results.reminders);
   }
@@ -3377,6 +3400,7 @@
   function sectionHeading(sectionKey) {
     if (sectionKey === "group") return "Opportunity";
     if (sectionKey === "application") return "Application";
+    if (sectionKey === "preparation") return "Preparation";
     if (sectionKey === "review") return "Review";
     return "Reminders";
   }
@@ -3415,6 +3439,8 @@
       renderOpportunity(body, job, settled, retry);
     } else if (sectionKey === "application") {
       renderApplication(body, job, settled, retry);
+    } else if (sectionKey === "preparation") {
+      renderPreparation(body, job, settled, retry);
     } else if (sectionKey === "review") {
       renderReview(body, job, settled, retry);
     } else {
@@ -3710,6 +3736,219 @@
         focusCurrentStatusButton(group, settled.value.items[0].current_status);
       }
     }
+  }
+
+  // Preparation is an independently loaded, server-authoritative nested
+  // workspace. It never creates an application and never writes optimistically.
+  var PREPARATION_KINDS = ["material", "link", "question", "task", "deadline", "other"];
+  var PREPARATION_FULFILLMENT = ["open", "satisfied", "not_applicable"];
+
+  function prepHeaders(revision) {
+    return { "Content-Type": "application/json", "Accept": "application/json", "X-CareerOS-Preparation-Revision": String(revision) };
+  }
+
+  function prepWrite(url, method, revision, payload) {
+    return writeJson(url, { method: method, headers: prepHeaders(revision), body: payload === undefined ? undefined : JSON.stringify(payload) });
+  }
+
+  function preparationUnavailable(body) {
+    body.appendChild(el("p", { className: "empty-note", textContent: "Preparation is unavailable until you explicitly track this job in Application. CareerOS will not create application state automatically." }));
+  }
+
+  function prepLabel(value) {
+    if (value === "open") return "Applies";
+    if (value === "not_applicable") return "Not applicable";
+    return String(value || "").replace(/_/g, " ").replace(/(^| )\w/g, function (letter) { return letter.toUpperCase(); });
+  }
+
+  // Deadline requirements intentionally have no satisfied state in the UI.
+  // Keep this guard at the presentation boundary too, in case an older or
+  // malformed response contains one despite the API contract.
+  function prepFulfillmentLabel(kind, value) {
+    return kind === "deadline" && value === "satisfied" ? "Applies" : prepLabel(value);
+  }
+
+  function prepReasonText(reason) {
+    if (!isObject(reason)) return "";
+    return typeof reason.message === "string" ? reason.message : String(reason.code || "");
+  }
+
+  function prepField(label, control, id) {
+    var wrap = el("div", { className: "preparation-field" });
+    var lab = el("label", { textContent: label });
+    lab.setAttribute("for", id);
+    control.id = id;
+    wrap.appendChild(lab); wrap.appendChild(control);
+    return wrap;
+  }
+
+  function prepSelect(values, selected) {
+    var select = el("select");
+    values.forEach(function (value) { var option = el("option", { textContent: prepLabel(value) }); option.value = value; option.selected = value === selected; select.appendChild(option); });
+    return select;
+  }
+
+  function prepRevision(data) { return isFiniteNumber(data && data.revision) ? data.revision : 0; }
+
+  function renderPreparation(body, job, settled, retry) {
+    body.setAttribute("aria-live", "polite");
+    if (settled.status === "rejected") {
+      if (settled.reason && settled.reason.status === 404) { preparationUnavailable(body); return; }
+      body.appendChild(sectionErrorBox("The preparation could not be loaded.", settled.reason, retry)); return;
+    }
+    var data = settled.value;
+    if (!isObject(data) || !Array.isArray(data.items) || !isObject(data.readiness)) {
+      body.appendChild(sectionErrorBox("The preparation response did not match the expected shape.", null, retry)); return;
+    }
+    var readinessBox = el("div", { className: "preparation-readiness" });
+    readinessBox.appendChild(el("p", { className: "readiness-category", textContent: "Readiness: " + prepLabel(data.readiness.category) }));
+    var reasons = Array.isArray(data.readiness["reasons"]) ? data.readiness["reasons"] : [];
+    var blockers = reasons.filter(function (reason) { return isObject(reason) && reason.code !== "job_information_unavailable"; });
+    readinessBox.appendChild(el("p", { className: "readiness-blockers", textContent: "Blocking requirements: " + blockers.length }));
+    var note = el("p", { className: "field-hint", textContent: "CareerOS records what you captured; it has NOT verified that the listing is complete." });
+    readinessBox.appendChild(note);
+    if (reasons.some(function (r) { return isObject(r) && r.code === "job_information_unavailable"; })) readinessBox.appendChild(el("p", { className: "warning-note", textContent: "The listing description is unavailable. You may independently review an authoritative external source before capturing requirements." }));
+    body.appendChild(readinessBox);
+    if (preparationDraft) {
+      var conflict = el("div", { className: "error-box", role: "alert" });
+      conflict.appendChild(el("p", { textContent: "Preparation changed elsewhere. Your unsent change is preserved in memory; review the refreshed requirements, then explicitly reapply it." }));
+      var reapply = el("button", { type: "button", className: "retry-button", textContent: "Reapply unsent change" });
+      reapply.addEventListener("click", function () { var draft = preparationDraft; preparationDraft = null; applyPreparationMutation(body, job, data, draft.url, draft.method, draft.payload, draft.focus); });
+      conflict.appendChild(reapply); body.appendChild(conflict);
+    }
+    var form = buildPreparationForm(body, job, data);
+    body.appendChild(form);
+    var list = el("ol", { className: "preparation-list" });
+    data.items.forEach(function (item, index) { if (isObject(item)) list.appendChild(buildRequirementRow(body, job, data, item, index)); });
+    body.appendChild(list);
+    var reviewSet = data.requirements_reviewed_revision === data.revision;
+    var reviewButton = el("button", { type: "button", className: "preparation-action", textContent: reviewSet ? "Clear requirements review" : "Mark requirements reviewed" }); reviewButton.id = "preparation-review-action"; reviewButton.disabled = !reviewSet && data.items.some(function (item) { return !item.confirmed; }); reviewButton.title = reviewButton.disabled ? "Confirm every requirement before marking requirements reviewed." : "";
+    reviewButton.addEventListener("click", function () { var url = "/applications/" + job.id + "/requirements-review"; applyPreparationMutation(body, job, data, url, reviewSet ? "DELETE" : "PUT", undefined, "preparation-review-action"); });
+    body.appendChild(reviewButton);
+    var readyAllowed = data.readiness.category === "requirements_satisfied" || data.readiness.category === "user_confirmed_ready";
+    var readyButton = el("button", { type: "button", className: "preparation-action", textContent: data.ready_confirmed_revision === data.revision ? "Clear ready confirmation" : "Confirm ready" });
+    readyButton.disabled = !readyAllowed && data.ready_confirmed_revision !== data.revision;
+    readyButton.title = readyButton.disabled ? "Resolve all blocking requirements first." : "";
+    readyButton.id = "preparation-ready-action";
+    readyButton.addEventListener("click", function () { var url = "/applications/" + job.id + "/ready-confirmation"; applyPreparationMutation(body, job, data, url, data.ready_confirmed_revision === data.revision ? "DELETE" : "PUT", undefined, "preparation-ready-action"); });
+    body.appendChild(readyButton);
+  }
+
+  function buildPreparationForm(body, job, data) {
+    var form = el("form", { className: "preparation-form" }); form.setAttribute("aria-label", "Add preparation requirement");
+    var fieldset = el("fieldset"); fieldset.appendChild(el("legend", { textContent: "Add requirement" })); form.appendChild(fieldset);
+    var kind = prepSelect(PREPARATION_KINDS, "material"); fieldset.appendChild(prepField("Kind", kind, "preparation-kind"));
+    var label = el("input", { type: "text" }); label.required = true; label.maxLength = 160; fieldset.appendChild(prepField("Requirement", label, "preparation-label"));
+    var detail = el("textarea"); detail.maxLength = 1000; fieldset.appendChild(prepField("Detail (optional)", detail, "preparation-detail"));
+    var required = el("input", { type: "checkbox" }); required.checked = true; var reqWrap = el("label", { className: "checkbox-label", textContent: "Required" }); reqWrap.prepend(required); fieldset.appendChild(reqWrap);
+    var fulfillment = prepSelect(PREPARATION_FULFILLMENT, "open"); fieldset.appendChild(prepField("Fulfillment", fulfillment, "preparation-fulfillment"));
+    var deadline = el("input", { type: "datetime-local" }); fieldset.appendChild(prepField("Deadline (optional)", deadline, "preparation-deadline"));
+    function setFulfillmentOptions() { var selected = fulfillment.value; clearText(fulfillment); (kind.value === "deadline" ? ["open", "not_applicable"] : PREPARATION_FULFILLMENT).forEach(function (value) { var option = el("option", { textContent: prepLabel(value) }); option.value = value; option.selected = value === selected || (value === "open" && selected === "satisfied"); fulfillment.appendChild(option); }); }
+    kind.addEventListener("change", setFulfillmentOptions); setFulfillmentOptions();
+    var submit = el("button", { type: "submit", textContent: "Add requirement" }); form.appendChild(submit);
+    form.addEventListener("submit", function (event) { event.preventDefault(); var payload = { kind: kind.value, label: label.value, detail: detail.value || null, required: required.checked, fulfillment_state: kind.value === "deadline" && fulfillment.value === "satisfied" ? "open" : fulfillment.value, deadline_at: deadline.value ? dueTimestamp(deadline.value) : null }; applyPreparationMutation(body, job, data, "/applications/" + job.id + "/requirements", "POST", payload, "preparation-label"); });
+    return form;
+  }
+
+  // A requirement may hand its deadline to the existing canonical Reminder
+  // form, but the user must still choose to submit that form. No requirement
+  // label/detail is copied and this action never sends a request itself.
+  function focusReminderFromRequirement(body, item) {
+    var reminderForm = document.querySelector(".reminder-form");
+    if (!reminderForm) return;
+    var due = reminderForm.querySelector("#reminder-due");
+    if (due && item.deadline_at) {
+      due.value = localDatetimeValue(item.deadline_at);
+      due.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    if (due) due.focus();
+    var existing = body.querySelector(".preparation-reminder-status");
+    if (!existing) {
+      existing = el("p", {
+        className: "field-hint preparation-reminder-status",
+        role: "status",
+      });
+      body.appendChild(existing);
+    }
+    existing.textContent = item.deadline_at
+      ? "Reminder form focused and due time prefilled. No reminder was created."
+      : "Reminder form focused. Choose a due time; no reminder was created.";
+  }
+
+  function buildRequirementRow(body, job, data, item, index) {
+    var row = el("li", { className: "preparation-item" }); row.setAttribute("data-requirement-id", String(item.id));
+    row.appendChild(el("h3", { textContent: displayText(item.label) }));
+    if (item.detail) row.appendChild(el("p", { textContent: displayText(item.detail) }));
+    row.appendChild(el("p", { className: "requirement-meta", textContent: (item.required ? "Required" : "Optional") + " · " + prepFulfillmentLabel(item.kind, item.fulfillment_state) + (item.deadline_at ? " · Deadline: " + displayDate(item.deadline_at) : "") + " · Origin: " + displayText(item.origin || "manual") + " · Capture method: " + displayText(item.capture_method || "manual") }));
+    row.appendChild(el("p", { className: item.confirmed ? "requirement-confirmed" : "warning-note", textContent: item.confirmed ? "Confirmed" : "Needs confirmation" }));
+    var actions = el("div", { className: "preparation-actions" });
+    var edit = el("button", { type: "button", textContent: "Edit" }); edit.id = "preparation-edit-" + item.id; edit.addEventListener("click", function () { editRequirement(row, body, job, data, item); }); actions.appendChild(edit);
+    var confirm = el("button", { type: "button", textContent: item.confirmed ? "Clear item confirmation" : "Confirm requirement" }); confirm.id = "preparation-confirm-" + item.id; confirm.addEventListener("click", function () { applyPreparationMutation(body, job, data, "/application-requirements/" + item.id, "PATCH", { confirmed: !item.confirmed }, confirm.id); }); actions.appendChild(confirm);
+    var reminder = el("button", { type: "button", textContent: "Create reminder…" });
+    reminder.addEventListener("click", function () { focusReminderFromRequirement(body, item); });
+    actions.appendChild(reminder);
+    var del = el("button", { type: "button", textContent: "Delete" }); del.addEventListener("click", function () { if (window.confirm("Delete this requirement?")) applyPreparationMutation(body, job, data, "/application-requirements/" + item.id, "DELETE", undefined, "preparation-label"); }); actions.appendChild(del);
+    [index - 1, index + 1].forEach(function (target, offset) { var button = el("button", { type: "button", textContent: offset === 0 ? "Up" : "Down" }); button.id = "preparation-" + (offset === 0 ? "up-" : "down-") + item.id; button.disabled = target < 0 || target >= data.items.length; button.addEventListener("click", function () { var ids = data.items.map(function (entry) { return entry.id; }); var swap = ids[index]; ids[index] = ids[target]; ids[target] = swap; applyPreparationMutation(body, job, data, "/applications/" + job.id + "/requirements/order", "PUT", { ids: ids }, "preparation-edit-" + item.id); }); actions.appendChild(button); });
+    row.appendChild(actions); return row;
+  }
+
+  function editRequirement(row, body, job, data, item) {
+    clearText(row); var form = el("form", { className: "preparation-edit-form" });
+    var fieldset = el("fieldset"); fieldset.appendChild(el("legend", { textContent: "Edit requirement" })); form.appendChild(fieldset);
+    var kind = prepSelect(PREPARATION_KINDS, item.kind); fieldset.appendChild(prepField("Kind", kind, "edit-kind-" + item.id));
+    var label = el("input", { type: "text" }); label.value = item.label; label.required = true; fieldset.appendChild(prepField("Requirement", label, "edit-label-" + item.id));
+    var detail = el("textarea"); detail.value = item.detail || ""; fieldset.appendChild(prepField("Detail", detail, "edit-detail-" + item.id));
+    var required = el("input", { type: "checkbox" }); required.checked = Boolean(item.required); var req = el("label", { textContent: "Required" }); req.prepend(required); fieldset.appendChild(req);
+    var fulfillment = prepSelect(item.kind === "deadline" ? ["open", "not_applicable"] : PREPARATION_FULFILLMENT, item.fulfillment_state); fieldset.appendChild(prepField("Fulfillment", fulfillment, "edit-state-" + item.id));
+    var deadline = el("input", { type: "datetime-local" }); deadline.value = localDatetimeValue(item.deadline_at || ""); fieldset.appendChild(prepField("Deadline", deadline, "edit-deadline-" + item.id));
+    var confirmed = el("input", { type: "checkbox" }); confirmed.checked = Boolean(item.confirmed); var confirmation = el("label", { textContent: "Confirmed" }); confirmation.prepend(confirmed); fieldset.appendChild(confirmation);
+    kind.addEventListener("change", function () { var selected = fulfillment.value; clearText(fulfillment); (kind.value === "deadline" ? ["open", "not_applicable"] : PREPARATION_FULFILLMENT).forEach(function (value) { var option = el("option", { textContent: prepLabel(value) }); option.value = value; option.selected = value === selected || (value === "open" && selected === "satisfied"); fulfillment.appendChild(option); }); });
+    var save = el("button", { type: "submit", textContent: "Save" }); var cancel = el("button", { type: "button", textContent: "Cancel" }); form.appendChild(save); form.appendChild(cancel); row.appendChild(form);
+    cancel.addEventListener("click", function () { var replacement = buildRequirementRow(body, job, data, item, data.items.indexOf(item)); row.replaceWith(replacement); var focus = replacement.querySelector("#preparation-edit-" + item.id); if (focus) focus.focus(); });
+    form.addEventListener("submit", function (event) { event.preventDefault(); applyPreparationMutation(body, job, data, "/application-requirements/" + item.id, "PATCH", { kind: kind.value, label: label.value, detail: detail.value || null, required: required.checked, fulfillment_state: kind.value === "deadline" && fulfillment.value === "satisfied" ? "open" : fulfillment.value, deadline_at: deadline.value ? dueTimestamp(deadline.value) : null, confirmed: confirmed.checked }, "preparation-edit-" + item.id); });
+  }
+
+  async function applyPreparationMutation(body, job, data, url, method, payload, focus) {
+    if (preparationOperationActive) return; preparationOperationActive = true;
+    var operation = { id: ++preparationOperationSeq, generation: detailRequestSeq }; body.parentNode.setAttribute("aria-busy", "true");
+    var committed = false;
+    try {
+      await prepWrite(url, method, prepRevision(data), payload);
+      committed = true;
+      var latest = await fetchDetailSection("preparation", job.id);
+      if (operation.generation !== detailRequestSeq || !isCurrentDetailJob(job.id)) return;
+      preparationDraft = null;
+      clearText(body);
+      renderPreparation(body, job, latest, function () { retrySection(body.parentNode, body, job, "preparation"); });
+      var target = focus && document.getElementById(focus);
+      if (target) target.focus();
+    } catch (error) {
+      if (operation.generation !== detailRequestSeq || !isCurrentDetailJob(job.id)) return;
+      var conflict = error && error.status === 409 &&
+        (String(error.message || "").indexOf("preparation_revision_conflict") !== -1 ||
+         error.code === "preparation_revision_conflict");
+      if (conflict) {
+        preparationDraft = { url: url, method: method, payload: payload, focus: focus };
+        var refreshed;
+        try {
+          refreshed = await fetchDetailSection("preparation", job.id);
+        } catch (refreshError) {
+          replaceSectionError(body, "The authoritative preparation could not be refreshed.", refreshError, function () { retrySection(body.parentNode, body, job, "preparation"); });
+          return;
+        }
+        if (operation.generation === detailRequestSeq && isCurrentDetailJob(job.id)) {
+          clearText(body);
+          renderPreparation(body, job, refreshed, function () { retrySection(body.parentNode, body, job, "preparation"); });
+        }
+      } else if (committed) {
+        // The write already committed. Retry only the authoritative read; a
+        // second POST could create a duplicate requirement.
+        replaceSectionError(body, "The preparation was saved, but its current state could not be loaded.", error, function () { retrySection(body.parentNode, body, job, "preparation"); });
+      } else {
+        replaceSectionError(body, "The preparation change could not be saved.", error, function () { applyPreparationMutation(body, job, data, url, method, payload, focus); });
+      }
+    }
+    finally { if (operation.generation === detailRequestSeq && isCurrentDetailJob(job.id)) body.parentNode.removeAttribute("aria-busy"); if (operation.generation === detailRequestSeq) preparationOperationActive = false; }
   }
 
   // Canonical review decisions (presentation labels only; the transmitted

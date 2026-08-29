@@ -39,7 +39,6 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from careeros.api import app
 from careeros.applications.service import set_application_status
@@ -50,6 +49,7 @@ from careeros.database.jobs import save_jobs
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.reminders.service import add_reminder, complete_reminder
 from careeros.review.service import set_decision
+from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -404,7 +404,10 @@ def test_five_canonical_route_families_built_once() -> None:
         'reminders: "/reminders?job_id=" + jobId',
     ):
         assert route in js, route
-    assert 'var keys = ["job", "group", "application", "review", "reminders"];' in js
+    assert (
+        'var keys = ["job", "group", "application", "preparation", '
+        '"review", "reminders"];' in js
+    )
 
 
 def test_load_issues_all_requests_concurrently_via_all_settled() -> None:
@@ -539,7 +542,7 @@ def test_group_failure_is_section_error_not_absence() -> None:
     # reminder-DELETE, reminder-edit-PATCH, Today reminder-completion mutation,
     # and Saved Search execution reconciles (a Saved Search 404 refreshes its
     # metadata); every other rejection is a plain section error.
-    assert js.count("status === 404") == 5
+    assert js.count("status === 404") == 6
     assert "status === 404" not in _render_application_slice(js)
     assert "status === 404" not in _render_review_slice(js)
 
@@ -874,19 +877,9 @@ def test_missing_database_all_five_endpoints(
     missing = tmp_path / "does-not-exist" / "db.sqlite3"
     _set_database(monkeypatch, missing)
 
-    with TestClient(app) as client:
-        job = client.get("/jobs/1")
-        group = client.get("/jobs/1/group")
-        application = client.get("/applications/1")
-        review = client.get("/review-decisions/1")
-        reminders = client.get("/reminders?job_id=1")
-
-    assert job.status_code == 404
-    assert group.status_code == 404
-    assert application.status_code == 404
-    assert review.status_code == 404
-    assert reminders.status_code == 200
-    assert reminders.json()["items"] == []
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
     # Nothing is ever created for a missing database.
     assert not missing.exists()
     assert not missing.parent.exists()
@@ -899,17 +892,9 @@ def test_uninitialized_database_all_five_endpoints_500(
     path.write_bytes(b"")  # present but uninitialized
     _set_database(monkeypatch, path)
 
-    with TestClient(app) as client:
-        job = client.get("/jobs/1")
-        group = client.get("/jobs/1/group")
-        application = client.get("/applications/1")
-        review = client.get("/review-decisions/1")
-        reminders = client.get("/reminders?job_id=1")
-
-    for response in (job, group, application, review, reminders):
-        assert response.status_code == 500
-        assert "run" in response.json()["detail"].lower()
-        assert "collect" in response.json()["detail"].lower()
+    with pytest.raises(ValueError, match="current schema v9"):
+        with TestClient(app):
+            pass
 
 
 # --------------------------------------------------------------------------- #
@@ -920,17 +905,21 @@ def test_uninitialized_database_all_five_endpoints_500(
 def test_static_serving_requires_no_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    missing = tmp_path / "does-not-exist" / "db.sqlite3"
-    monkeypatch.setenv("CAREEROS_DATABASE", str(missing))
+    from careeros.database.connection import connect
+    from careeros.database.schema import initialize_schema
+
+    database = tmp_path / "db.sqlite3"
+    with connect(database) as connection:
+        initialize_schema(connection)
+    monkeypatch.setenv("CAREEROS_DATABASE", str(database))
     with TestClient(app) as client:
         response = client.get("/ui")
     assert response.status_code == 200
-    assert not missing.exists()
-    assert not missing.parent.exists()
+    assert database.exists()
 
 
-def test_schema_version_stays_8() -> None:
-    assert SCHEMA_VERSION == 8
+def test_schema_version_is_9_for_m1() -> None:
+    assert SCHEMA_VERSION == 9
 
 
 def test_real_default_database_untouched(
@@ -941,7 +930,13 @@ def test_real_default_database_untouched(
     real = DEFAULT_DATABASE_PATH
     before = real.stat().st_mtime_ns if real.is_file() else None
 
-    monkeypatch.setenv("CAREEROS_DATABASE", str(tmp_path / "careeros.sqlite3"))
+    database = tmp_path / "careeros.sqlite3"
+    from careeros.database.connection import connect
+    from careeros.database.schema import initialize_schema
+
+    with connect(database) as connection:
+        initialize_schema(connection)
+    monkeypatch.setenv("CAREEROS_DATABASE", str(database))
     with TestClient(app) as client:
         client.get("/ui")
 

@@ -817,6 +817,40 @@ main {
   background: var(--color-error-bg);
 }
 
+/* Application preparation workspace. Controls remain usable at narrow widths
+   and state is conveyed by text as well as color. */
+.preparation-readiness,
+.preparation-form,
+.preparation-item {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin: 10px 0;
+}
+.preparation-readiness p { margin: 4px 0; }
+.readiness-category { font-weight: 700; }
+.readiness-blockers { font-weight: 600; }
+.warning-note { color: var(--color-error); }
+.preparation-form { display: grid; gap: 10px; }
+.preparation-field { display: grid; gap: 4px; }
+.preparation-field input,
+.preparation-field textarea,
+.preparation-field select { width: 100%; box-sizing: border-box; font: inherit; padding: 6px; }
+.preparation-field textarea { min-height: 60px; resize: vertical; }
+.checkbox-label { display: flex; gap: 8px; align-items: center; }
+.preparation-list { padding-left: 24px; }
+.preparation-item h3 { margin: 0 0 6px; }
+.requirement-meta { font-size: .9rem; }
+.preparation-actions,
+.preparation-edit-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.preparation-actions button,
+.preparation-action,
+.preparation-form button,
+.preparation-edit-form button { padding: 6px 12px; font: inherit; cursor: pointer; }
+.preparation-actions button:disabled,
+.preparation-action:disabled { cursor: not-allowed; opacity: .55; }
+.preparation-summary { font-weight: 600; }
+
 /* Narrow / mobile layout. */
 @media (max-width: 600px) {
   main {

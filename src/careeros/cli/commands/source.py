@@ -7,7 +7,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from careeros.database.connection import connect
+from careeros.database.connection import connect_read_only
 from careeros.source_stats.render import (
     render_source_stats_json,
     render_source_stats_text,
@@ -28,7 +28,7 @@ def run_source_stats(
     """
     try:
         if database_path.exists():
-            with connect(database_path) as connection:
+            with connect_read_only(database_path) as connection:
                 stats = compute_source_stats(connection)
         else:
             stats = empty_source_stats()
