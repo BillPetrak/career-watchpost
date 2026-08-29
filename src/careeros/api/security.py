@@ -48,6 +48,20 @@ def _host(value: str) -> str | None:
         return None
 
 
+def _same_origin(origin: str, valid_host: str, valid_port: int | None) -> bool:
+    try:
+        parsed = urlsplit(origin)
+        origin_port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and not (parsed.path or parsed.query or parsed.fragment)
+        and _host(parsed.netloc or "") == valid_host
+        and (origin_port or 80) == (valid_port or 80)
+    )
+
+
 class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
@@ -84,16 +98,10 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             and (fetch is None or fetch in {"same-origin", "none"})
             and (
                 origin is None
-                or (
-                    urlsplit(origin).scheme == "http"
-                    and not (
-                        urlsplit(origin).path
-                        or urlsplit(origin).query
-                        or urlsplit(origin).fragment
-                    )
-                    and _host(urlsplit(origin).netloc or "") == valid
-                    and (urlsplit(origin).port or 80)
-                    == (_host_port(raw_hosts[0].decode("latin-1")) or 80)
+                or _same_origin(
+                    origin,
+                    valid,
+                    _host_port(raw_hosts[0].decode("latin-1")),
                 )
             )
             and not preflight

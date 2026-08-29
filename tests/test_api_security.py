@@ -55,6 +55,17 @@ def test_origin_attacks_rejected(origin: str):
     assert response.status_code == 403
 
 
+@pytest.mark.parametrize("origin", ["http://[::1", "http://127.0.0.1:bad"])
+def test_malformed_origins_rejected_with_security_headers(origin: str):
+    response = client().get("/health", headers={"Origin": origin})
+    assert response.status_code == 403
+    assert response.headers["content-security-policy"]
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["cache-control"] == "no-store"
+
+
 def test_exact_http_origin_and_fetch_metadata_allowed():
     response = client().get(
         "/health",
