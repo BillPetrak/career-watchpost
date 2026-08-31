@@ -6,6 +6,54 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+
+class MaterialVersionItem(BaseModel):
+    version_id: str
+    version_number: int
+    display_filename: str
+    declared_media_type: str
+    byte_size: int
+    created_at: str
+    is_current: bool
+
+
+class MaterialSummary(BaseModel):
+    material_id: str
+    name: str
+    category: str
+    status: str
+    revision: int
+    version_count: int
+    current_version: MaterialVersionItem | None
+    retired_at: str | None
+    created_at: str
+    updated_at: str
+
+
+class MaterialDetail(MaterialSummary):
+    versions: list[MaterialVersionItem]
+
+
+class MaterialListResponse(BaseModel):
+    items: list[MaterialSummary]
+    total: int
+    offset: int
+    limit: int
+
+
+class MaterialUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    category: str | None = None
+
+    @model_validator(mode="after")
+    def has_update(self) -> MaterialUpdateRequest:
+        if self.name is None and self.category is None:
+            raise ValueError("at least one material field is required")
+        return self
+
+
 # Bounds for inline candidate-profile fields submitted to POST /ranked-jobs.
 # They mirror the candidate-profile file semantics (all optional, unknown
 # fields ignored, entries stripped, empty-after-strip rejected, duplicates

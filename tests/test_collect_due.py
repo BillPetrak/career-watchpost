@@ -1,11 +1,14 @@
 """Tests for rate-aware scheduled collection (collect due)."""
 
+import hashlib
+import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from careeros import cli
+from careeros.cli.commands.collect import run_collect_due
 from careeros.collecting import collect_due
 from careeros.collection_policies import SOURCE_POLICIES
 from careeros.collectors.models import CollectedJob
@@ -131,6 +134,50 @@ def test_collect_due_no_history_collects_all_in_registry_order(tmp_path: Path) -
     assert all(result.succeeded for result in results)
     for source in fakes:
         assert fakes[source].calls == 1
+
+
+def test_scheduled_collect_due_on_v9_fails_without_migration_or_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_path = tmp_path / "careeros.sqlite3"
+    with connect(database_path) as connection:
+        initialize_schema(connection)
+        for table in ("material_versions", "materials", "material_store"):
+            connection.execute(f"DROP TABLE {table}")
+        connection.execute("UPDATE schema_metadata SET value='9'")
+        connection.commit()
+    before_hash = hashlib.sha256(database_path.read_bytes()).digest()
+    before_mtime = database_path.stat().st_mtime_ns
+    called = False
+
+    def collector(*, limit: int = 25, timeout: float = 30.0):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(
+        __import__("careeros.cli.commands.collect", fromlist=["COLLECTORS"]),
+        "COLLECTORS",
+        {"arbeitnow": collector},
+    )
+    assert run_collect_due(limit=1, database_path=database_path) == 1
+    assert "explicit migration" in capsys.readouterr().err
+    assert not called
+    assert hashlib.sha256(database_path.read_bytes()).digest() == before_hash
+    assert database_path.stat().st_mtime_ns == before_mtime
+    with sqlite3.connect(database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT value FROM schema_metadata WHERE key='schema_version'"
+            ).fetchone()[0]
+            == "9"
+        )
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM sqlite_master WHERE name='material_store'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_collect_due_skips_recent_sources(tmp_path: Path) -> None:

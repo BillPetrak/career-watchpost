@@ -96,7 +96,7 @@ def test_flat_pagination_and_validation(monkeypatch, tmp_path):
 def test_missing_database_is_read_only(monkeypatch, tmp_path):
     path = tmp_path / "missing" / "reviewed.sqlite3"
     monkeypatch.setenv("CAREEROS_DATABASE", str(path))
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
     assert not path.exists()
@@ -211,5 +211,5 @@ def test_reviewed_read_does_not_invoke_other_workflows(monkeypatch, tmp_path):
             connection.execute(
                 "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
             ).fetchone()[0]
-            == "9"
+            == "10"
         )

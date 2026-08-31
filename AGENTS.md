@@ -2076,4 +2076,30 @@ descriptions, notes, matcher diagnostics, or feedback-source provenance.
 Explanations are invocation-scoped ranked-result data, not generic job data;
 there is no explanation endpoint or persistence. Grouped explanations belong
 to the union-scored opportunity and retain the exact response member count.
-`SCHEMA_VERSION` remains 8.
+## R3 M2 private Materials library
+
+`SCHEMA_VERSION` is 10. Materials are global reusable private records with
+immutable versions; they are not owned by jobs or applications. Managed bytes
+live outside the checkout under an XDG-configured root, with a DB/root marker
+pair, mode 0700 directories, mode 0600 files, no arbitrary durable paths, and
+no destructive deletion or history erasure. Browser uploads are raw bounded
+`application/octet-stream` streams; multipart, parsing, OCR, indexing,
+preview, cloud storage, and AI generation are out of scope.
+
+Material writes require an explicit current-v10 database and enforce the
+managed-root A–G binding state machine; the first successful import may safely
+create and bind an absent/empty root. Startup and read-only commands never
+migrate or initialize databases or create roots. Scheduled `collect due`
+retains its existing fresh-database bootstrap behavior, but never migrates or
+changes an existing old-schema database. Use temporary databases and roots for
+development and tests. SQLite backup/restore/migration operations contain
+database pages only; managed material bytes and their root must be preserved
+separately as a matching pair. Production v9 to v10 migration is an explicit
+post-commit user decision.
+
+Material commands are available as `careeros material list`, `show`, `import`,
+`add-version`, `update`, `retire`, `restore`, `export-version`, and `audit`.
+The audit is read-only, certifies only a stable snapshot, and returns 0 for a
+coherent store, 1 for stable inconsistency, and 75 for contention/repeated
+instability. Private names, hashes, storage keys, local paths, and content do
+not appear in ordinary diagnostics or URLs.

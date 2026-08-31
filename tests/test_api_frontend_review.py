@@ -536,7 +536,7 @@ def test_missing_database_returns_friendly_empty_report(
     database_path = tmp_path / "missing" / "careeros.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -616,8 +616,8 @@ def test_ui_assets_still_serve_with_correct_types(
     assert css.headers["content-type"].startswith("text/css")
 
 
-def test_schema_version_stays_nine() -> None:
-    assert SCHEMA_VERSION == 9
+def test_schema_version_stays_ten() -> None:
+    assert SCHEMA_VERSION == 10
 
 
 def test_no_careeros_cli_import_under_api() -> None:

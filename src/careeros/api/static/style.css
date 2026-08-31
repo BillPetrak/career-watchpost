@@ -887,3 +887,241 @@ main {
 
   .saved-search-layout { grid-template-columns: 1fr; }
 }
+
+/* Private Materials library. The list/detail split collapses cleanly through
+   the full 320–600 px acceptance range, and every state has a textual label. */
+.materials-workspace {
+  display: grid;
+  gap: 16px;
+}
+
+.materials-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.materials-filter legend {
+  flex-basis: 100%;
+  font-weight: 700;
+}
+
+.materials-filter button,
+.material-secondary-button,
+.materials-pagination button {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.materials-filter button[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.material-panel {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.material-panel > h2,
+.material-history h3 {
+  margin: 0 0 10px;
+}
+
+.materials-layout {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.85fr) minmax(0, 1.4fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.material-form {
+  display: grid;
+  gap: 10px;
+}
+
+.material-form fieldset {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.material-form legend {
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.material-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.material-field label {
+  font-weight: 600;
+}
+
+.material-field input,
+.material-field select {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.material-field input[type="file"] {
+  overflow: hidden;
+}
+
+.material-form .primary-button {
+  justify-self: start;
+}
+
+.material-list,
+.material-version-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.material-list-item + .material-list-item,
+.material-version-item + .material-version-item {
+  margin-top: 8px;
+}
+
+.material-select {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 10px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.material-select span,
+.material-meta,
+.field-hint {
+  color: var(--color-muted);
+  font-size: 0.9rem;
+}
+
+.material-select[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.materials-pagination {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+.materials-pagination button:disabled,
+.materials-workspace button:disabled,
+.materials-workspace input:disabled,
+.materials-workspace select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.material-status {
+  font-weight: 700;
+}
+
+.material-status.active {
+  color: var(--color-ok);
+}
+
+.material-status.retired,
+.materials-error {
+  color: var(--color-error);
+}
+
+.material-edit-form,
+.material-version-form,
+.material-lifecycle,
+.material-history {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--color-border);
+}
+
+.material-draft-note,
+.download-warning {
+  padding: 10px 12px;
+  border: 1px solid #f2c94c;
+  border-radius: var(--radius);
+  background: #fff8db;
+  color: var(--color-text);
+}
+
+.material-draft-note p,
+.download-warning {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+
+.material-version-item {
+  padding: 10px 0;
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--color-border);
+}
+
+.material-version-item h4,
+.material-version-item p {
+  margin: 0 0 5px;
+}
+
+.material-download {
+  display: inline-block;
+  margin-top: 5px;
+  font-weight: 600;
+}
+
+@media (max-width: 600px) {
+  .materials-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .material-panel {
+    padding: 12px;
+  }
+
+  .materials-filter button,
+  .material-form .primary-button,
+  .material-secondary-button {
+    width: 100%;
+  }
+
+  .materials-pagination {
+    flex-wrap: wrap;
+  }
+}

@@ -341,7 +341,7 @@ def test_cli_history_uninitialized_database_fails_without_schema_creation(
     database_path.touch()
     assert cli.main(["collect", "history", "--database", str(database_path)]) == 1
     captured = capsys.readouterr()
-    assert "History failed: OperationalError:" in captured.err
+    assert "History failed: ValueError: database schema is not current" in captured.err
     assert database_path.read_bytes() == b""
 
 

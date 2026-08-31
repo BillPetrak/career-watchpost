@@ -2,6 +2,21 @@
 
 CareerOS is a privacy-first career intelligence platform.
 
+## Private reusable Materials (R3 M2)
+
+CareerOS schema v10 includes a local Materials library for reusable private
+documents. Versions are immutable and globally reusable; no material belongs
+to a job or application. File bytes remain outside SQLite in a managed XDG
+root outside the Git checkout. The root is private and marker-bound to the
+database; backups of SQLite do not include these bytes.
+
+Use `careeros material list|show|import|add-version|update|retire|restore`
+for administration, `export-version` for an explicit verified copy, and
+`audit` for a read-only consistency check. Development and migration tests
+must use temporary databases and roots. CareerOS never implicitly migrates an
+old database or creates a Materials root during startup/read-only operations;
+production v9 to v10 migration is a separate explicit decision.
+
 Its first working module will be an AI-assisted job discovery and
 recommendation system that collects job advertisements, normalizes them,
 stores them locally, ranks them, and produces explainable recommendations.

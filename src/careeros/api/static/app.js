@@ -37,6 +37,7 @@
   var REVIEW = "review";
   var REVIEWED = "reviewed";
   var APPLICATIONS = "applications";
+  var MATERIALS = "materials";
   var REMINDERS = "reminders";
   var SAVED_SEARCHES = "saved-searches";
   var MATCHING = "matching";
@@ -174,6 +175,35 @@
   var applicationsOriginState = null;
   var applicationsFocusTarget = null;
 
+  // Materials is a global, server-authoritative workspace. Opaque selections,
+  // pagination, and conflict drafts exist only for this running page. A write
+  // remains globally owned across navigation, while a coalescing coordinator
+  // reconciles its settlement into whichever Materials generation is current.
+  // Old-generation continuations report outcomes to that coordinator only;
+  // they never render or copy an old response into a newer generation.
+  var materialsViewGeneration = 0;
+  var materialsListRequestSeq = 0;
+  var materialsDetailRequestSeq = 0;
+  var materialsOperationSeq = 0;
+  var materialsOperationActive = null;
+  var materialsReconcileSeq = 0;
+  var materialsReconcileActive = null;
+  var materialsReconcileDirty = false;
+  var materialsReconcileFirstPage = false;
+  var materialsReconcileFocusId = null;
+  var materialsReconcileNotice = null;
+  var materialsCreateReconcileRequired = false;
+  var materialsEditDraft = null;
+  var materialsVersionDraft = null;
+  var materialsState = {
+    includeRetired: false,
+    offset: 0,
+    limit: 20,
+    selectedId: null,
+    list: null,
+    detail: null,
+  };
+
   // Serializes the Application status actions: while a mutation (PUT) and its
   // immediate refetch are in flight, no second mutation may start for the same
   // Application section. Buttons are disabled for the whole operation as well,
@@ -220,6 +250,7 @@
     if (raw === REVIEW) return REVIEW;
     if (raw === REVIEWED) return REVIEWED;
     if (raw === APPLICATIONS) return APPLICATIONS;
+    if (raw === MATERIALS) return MATERIALS;
     if (raw === REMINDERS) return REMINDERS;
     if (raw === SAVED_SEARCHES) return SAVED_SEARCHES;
     if (raw === MATCHING) return MATCHING;
@@ -312,6 +343,11 @@
       applicationsRefreshDirty = false;
       applicationsFocusTarget = null;
     }
+    if (leaving === MATERIALS && name !== MATERIALS) {
+      materialsViewGeneration++;
+      materialsListRequestSeq++;
+      materialsDetailRequestSeq++;
+    }
     if (leaving === SAVED_SEARCHES && name !== SAVED_SEARCHES) {
       savedSearchState.metadataSeq++;
       savedSearchState.selectionGeneration++;
@@ -330,6 +366,9 @@
     if (name === APPLICATIONS && leaving !== APPLICATIONS) {
       applicationsViewGeneration++;
       applicationsRefreshDirty = false;
+    }
+    if (name === MATERIALS && leaving !== MATERIALS) {
+      materialsViewGeneration++;
     }
     if (name === REVIEW && leaving !== REVIEW) {
       reviewViewGeneration++;
@@ -369,6 +408,8 @@
       await renderReviewedView();
     } else if (view === APPLICATIONS) {
       await renderApplicationsView();
+    } else if (view === MATERIALS) {
+      await renderMaterialsView();
     } else if (view === SAVED_SEARCHES) {
       await renderSavedSearchesView();
     } else if (view === MATCHING) {
@@ -665,6 +706,965 @@
     });
     box.appendChild(retry);
     statusNode.parentNode.insertBefore(box, statusNode.nextSibling);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Materials workspace (#materials)
+  // ---------------------------------------------------------------------------
+
+  var MATERIAL_CATEGORIES = [
+    { value: "resume", label: "Resume" },
+    { value: "cover_letter_base", label: "Cover letter base" },
+    { value: "portfolio", label: "Portfolio" },
+    { value: "supporting_document", label: "Supporting document" },
+    { value: "other", label: "Other" },
+  ];
+
+  function materialCategoryLabel(value) {
+    var found = MATERIAL_CATEGORIES.find(function (category) {
+      return category.value === value;
+    });
+    return found ? found.label : displayText(value);
+  }
+
+  function materialOpaqueId(value) {
+    return typeof value === "string" && /^[0-9a-f]{32}$/.test(value)
+      ? value
+      : null;
+  }
+
+  function materialByteSize(value) {
+    if (!isFiniteNumber(value) || value < 0) return "—";
+    if (value < 1024) return String(value) + " bytes";
+    if (value < 1024 * 1024) return (value / 1024).toFixed(1) + " KiB";
+    return (value / (1024 * 1024)).toFixed(1) + " MiB";
+  }
+
+  function strictMaterialHeader(value) {
+    return encodeURIComponent(String(value)).replace(/[!'()*]/g, function (char) {
+      return "%" + char.charCodeAt(0).toString(16).toUpperCase();
+    });
+  }
+
+  function materialWrite(url, method, body, headers) {
+    return writeJson(url, {
+      method: method,
+      headers: Object.assign({ Accept: "application/json" }, headers || {}),
+      body: body,
+    });
+  }
+
+  function materialJsonWrite(url, method, revision, payload) {
+    return materialWrite(
+      url,
+      method,
+      payload === undefined ? undefined : JSON.stringify(payload),
+      {
+        "Content-Type": "application/json",
+        "X-CareerOS-Material-Revision": String(revision),
+      }
+    );
+  }
+
+  function materialUpload(url, file, revision, createMetadata) {
+    var headers = {
+      "Content-Type": "application/octet-stream",
+      "X-CareerOS-Display-Filename": strictMaterialHeader(file.name),
+      "X-CareerOS-Declared-Media-Type": file.type || "application/octet-stream",
+    };
+    if (revision !== null) {
+      headers["X-CareerOS-Material-Revision"] = String(revision);
+    }
+    if (createMetadata) {
+      headers["X-CareerOS-Material-Name"] = strictMaterialHeader(createMetadata.name);
+      headers["X-CareerOS-Material-Category"] = createMetadata.category;
+    }
+    return materialWrite(url, "POST", file, headers);
+  }
+
+  function materialsCurrent(generation) {
+    return generation === materialsViewGeneration && visibleView() === MATERIALS;
+  }
+
+  function announceMaterials(message, isError) {
+    var status = document.getElementById("materials-status");
+    if (!status) return;
+    status.setAttribute("role", isError ? "alert" : "status");
+    status.className = isError ? "status materials-error" : "status";
+    status.textContent = message || "";
+  }
+
+  function materialsRegionError(region, message, error, retryAction) {
+    clearText(region);
+    var box = el("div", { className: "error-box" });
+    box.setAttribute("role", "alert");
+    box.appendChild(el("p", { textContent: message }));
+    if (error && error.message) {
+      box.appendChild(el("p", { className: "error-detail", textContent: error.message }));
+    }
+    var retry = el("button", { type: "button", className: "retry-button", textContent: "Retry refresh" });
+    retry.setAttribute("data-materials-refresh", "true");
+    retry.addEventListener("click", retryAction);
+    box.appendChild(retry);
+    region.appendChild(box);
+  }
+
+  function materialCategorySelect(id, selected) {
+    var select = el("select", { id: id });
+    select.name = "category";
+    select.required = true;
+    MATERIAL_CATEGORIES.forEach(function (category) {
+      var option = el("option", { textContent: category.label });
+      option.value = category.value;
+      option.selected = category.value === selected;
+      select.appendChild(option);
+    });
+    return select;
+  }
+
+  function materialField(labelText, control) {
+    var field = el("div", { className: "material-field" });
+    var label = el("label", { textContent: labelText });
+    label.setAttribute("for", control.id);
+    field.appendChild(label);
+    field.appendChild(control);
+    return field;
+  }
+
+  function buildMaterialImportForm(generation) {
+    var section = el("section", { className: "material-import material-panel" });
+    section.appendChild(el("h2", { textContent: "Import material" }));
+    var form = el("form", { className: "material-form", id: "material-import-form" });
+    var fieldset = el("fieldset");
+    fieldset.appendChild(el("legend", { textContent: "New material" }));
+    var name = el("input", { type: "text", id: "material-import-name" });
+    name.name = "name";
+    name.required = true;
+    name.maxLength = 160;
+    var category = materialCategorySelect("material-import-category", "resume");
+    var file = el("input", { type: "file", id: "material-import-file" });
+    file.name = "file";
+    file.required = true;
+    fieldset.appendChild(materialField("Name", name));
+    fieldset.appendChild(materialField("Category", category));
+    fieldset.appendChild(materialField("Local file", file));
+    form.appendChild(fieldset);
+    form.appendChild(el("p", {
+      className: "field-hint",
+      textContent: "The file is copied into private CareerOS-managed storage. Its contents are not previewed or analyzed.",
+    }));
+    var submit = el("button", { type: "submit", className: "primary-button", textContent: "Import material" });
+    submit.id = "material-import-submit";
+    form.appendChild(submit);
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      importMaterial(form, generation);
+    });
+    section.appendChild(form);
+    section.appendChild(el("div", { id: "material-import-reconcile" }));
+    renderMaterialsImportReconcileState();
+    return section;
+  }
+
+  function renderMaterialsImportReconcileState() {
+    var region = document.getElementById("material-import-reconcile");
+    var submit = document.getElementById("material-import-submit");
+    if (submit) {
+      submit.disabled = Boolean(
+        materialsCreateReconcileRequired || materialsOperationActive ||
+        materialsReconcileActive
+      );
+    }
+    if (!region) return;
+    clearText(region);
+    if (!materialsCreateReconcileRequired) return;
+    var note = el("div", { className: "material-draft-note" });
+    note.setAttribute("role", "status");
+    note.appendChild(el("p", {
+      textContent: "The previous import outcome is ambiguous. CareerOS must check the authoritative first page before another import can be submitted.",
+    }));
+    var retry = el("button", {
+      type: "button",
+      className: "material-secondary-button",
+      textContent: "Retry authoritative first-page check",
+    });
+    retry.id = "material-import-reconcile-retry";
+    retry.setAttribute("data-materials-refresh", "true");
+    retry.disabled = Boolean(materialsOperationActive || materialsReconcileActive);
+    retry.addEventListener("click", function () {
+      materialsReconcileNotice = {
+        pending: "Checking the authoritative first page before another import…",
+        success: "The authoritative first page was refreshed. Review the library before explicitly submitting another import.",
+        failure: "The authoritative first page could not be refreshed. Retry this check before submitting another import.",
+        isError: true,
+      };
+      requestMaterialsReconciliation({ firstPage: true, focusId: "material-import-name" });
+    });
+    note.appendChild(retry);
+    region.appendChild(note);
+  }
+
+  function buildMaterialsShell(generation) {
+    var content = document.getElementById("materials-content");
+    clearText(content);
+
+    var filters = el("fieldset", { className: "materials-filter" });
+    filters.appendChild(el("legend", { textContent: "Library view" }));
+    var active = el("button", { type: "button", textContent: "Active only" });
+    active.id = "materials-active-only";
+    active.setAttribute("aria-pressed", String(!materialsState.includeRetired));
+    var all = el("button", { type: "button", textContent: "Active and retired" });
+    all.id = "materials-include-retired";
+    all.setAttribute("aria-pressed", String(materialsState.includeRetired));
+    function changeFilter(includeRetired) {
+      if (materialsState.includeRetired === includeRetired) return;
+      materialsState.includeRetired = includeRetired;
+      materialsState.offset = 0;
+      materialsState.selectedId = null;
+      materialsState.detail = null;
+      buildMaterialsShell(generation);
+      loadMaterialsList(generation, "materials-list-heading");
+    }
+    active.addEventListener("click", function () { changeFilter(false); });
+    all.addEventListener("click", function () { changeFilter(true); });
+    filters.appendChild(active);
+    filters.appendChild(all);
+    content.appendChild(filters);
+    content.appendChild(buildMaterialImportForm(generation));
+
+    var layout = el("div", { className: "materials-layout" });
+    var list = el("section", { className: "materials-list material-panel", id: "materials-list-region" });
+    list.setAttribute("aria-live", "polite");
+    var detail = el("section", { className: "materials-detail material-panel", id: "materials-detail-region" });
+    detail.setAttribute("aria-live", "polite");
+    detail.appendChild(el("h2", { textContent: "Material details" }));
+    detail.appendChild(el("p", { className: "empty-state", textContent: "Choose a material to inspect its exact version history." }));
+    layout.appendChild(list);
+    layout.appendChild(detail);
+    content.appendChild(layout);
+  }
+
+  function validMaterialList(data) {
+    return isObject(data) && Array.isArray(data.items) &&
+      isFiniteNumber(data.total) && isFiniteNumber(data.offset) &&
+      isFiniteNumber(data.limit);
+  }
+
+  function validMaterialDetail(data) {
+    return isObject(data) && materialOpaqueId(data.material_id) !== null &&
+      typeof data.name === "string" && typeof data.category === "string" &&
+      typeof data.status === "string" && isFiniteNumber(data.revision) &&
+      isFiniteNumber(data.version_count) && Array.isArray(data.versions);
+  }
+
+  async function loadMaterialsList(generation, focusId) {
+    var request = ++materialsListRequestSeq;
+    var region = document.getElementById("materials-list-region");
+    if (!region) return false;
+    clearText(region);
+    region.appendChild(el("p", { className: "status", textContent: "Loading materials…" }));
+    var url = "/materials?offset=" + materialsState.offset +
+      "&limit=" + materialsState.limit +
+      "&include_retired=" + String(materialsState.includeRetired);
+    try {
+      var data = await fetchJson(url);
+      if (!materialsCurrent(generation) || request !== materialsListRequestSeq) return false;
+      if (!validMaterialList(data)) {
+        throw new Error("The materials list response did not match the expected shape.");
+      }
+      if (data.total === 0 && materialsState.offset !== 0) {
+        materialsState.offset = 0;
+        return loadMaterialsList(generation, focusId);
+      }
+      if (data.total > 0 && materialsState.offset >= data.total) {
+        materialsState.offset = Math.floor((data.total - 1) / materialsState.limit) * materialsState.limit;
+        return loadMaterialsList(generation, focusId);
+      }
+      materialsState.list = data;
+      renderMaterialsList(region, data, generation);
+      if (focusId) {
+        var focus = document.getElementById(focusId);
+        if (focus) focus.focus();
+      }
+      return true;
+    } catch (error) {
+      if (!materialsCurrent(generation) || request !== materialsListRequestSeq) return false;
+      materialsRegionError(region, "The materials list could not be loaded.", error, function () {
+        if (materialsOperationActive && materialsOperationActive.settled) {
+          requestMaterialsReconciliation({
+            firstPage: materialsCreateReconcileRequired,
+            focusId: "materials-list-heading",
+          });
+        } else {
+          loadMaterialsList(generation, "materials-list-heading");
+        }
+      });
+      return false;
+    }
+  }
+
+  function renderMaterialsList(region, data, generation) {
+    clearText(region);
+    var heading = el("h2", { id: "materials-list-heading", textContent: "Library" });
+    heading.tabIndex = -1;
+    region.appendChild(heading);
+    region.appendChild(el("p", {
+      className: "field-hint",
+      textContent: materialsState.includeRetired
+        ? "Showing active and retired materials."
+        : "Showing active materials only.",
+    }));
+    if (data.items.length === 0) {
+      region.appendChild(el("p", { className: "empty-state", textContent: "No materials in this view." }));
+    } else {
+      var list = el("ul", { className: "material-list" });
+      data.items.forEach(function (item) {
+        var id = materialOpaqueId(item && item.material_id);
+        if (id === null || typeof item.name !== "string") return;
+        var row = el("li", { className: "material-list-item" });
+        var inspect = el("button", { type: "button", className: "material-select" });
+        inspect.setAttribute("aria-pressed", String(materialsState.selectedId === id));
+        inspect.appendChild(el("strong", { textContent: item.name }));
+        inspect.appendChild(el("span", {
+          textContent: materialCategoryLabel(item.category) + " · " +
+            (item.status === "retired" ? "Retired" : "Active") + " · " +
+            countValue(item.version_count) + " version" + (item.version_count === 1 ? "" : "s"),
+        }));
+        inspect.appendChild(el("span", { textContent: "Updated " + displayDate(item.updated_at) }));
+        inspect.addEventListener("click", function () {
+          materialsState.selectedId = id;
+          materialsState.detail = null;
+          renderMaterialsList(region, data, generation);
+          loadMaterialDetail(generation, "material-detail-heading");
+        });
+        row.appendChild(inspect);
+        list.appendChild(row);
+      });
+      region.appendChild(list);
+    }
+
+    var controls = el("div", { className: "materials-pagination" });
+    var previous = el("button", { type: "button", textContent: "Previous" });
+    previous.id = "materials-previous";
+    previous.disabled = materialsState.offset === 0;
+    var next = el("button", { type: "button", textContent: "Next" });
+    next.id = "materials-next";
+    next.disabled = materialsState.offset + materialsState.limit >= data.total;
+    var first = data.total === 0 ? 0 : materialsState.offset + 1;
+    var last = Math.min(materialsState.offset + data.items.length, data.total);
+    controls.appendChild(previous);
+    controls.appendChild(el("span", { textContent: first + "–" + last + " of " + data.total }));
+    controls.appendChild(next);
+    previous.addEventListener("click", function () {
+      materialsState.offset = Math.max(0, materialsState.offset - materialsState.limit);
+      loadMaterialsList(generation, "materials-list-heading");
+    });
+    next.addEventListener("click", function () {
+      materialsState.offset += materialsState.limit;
+      loadMaterialsList(generation, "materials-list-heading");
+    });
+    region.appendChild(controls);
+    if (materialsWriteBlocked()) setMaterialsControlsDisabled(true);
+  }
+
+  async function loadMaterialDetail(generation, focusId) {
+    var request = ++materialsDetailRequestSeq;
+    var region = document.getElementById("materials-detail-region");
+    var id = materialOpaqueId(materialsState.selectedId);
+    if (!region || id === null) return false;
+    clearText(region);
+    region.appendChild(el("p", { className: "status", textContent: "Loading material details…" }));
+    try {
+      var data = await fetchJson("/materials/" + id);
+      if (!materialsCurrent(generation) || request !== materialsDetailRequestSeq || materialsState.selectedId !== id) return false;
+      if (!validMaterialDetail(data) || data.material_id !== id) {
+        throw new Error("The material detail response did not match the expected shape.");
+      }
+      materialsState.detail = data;
+      renderMaterialDetail(region, data, generation);
+      if (focusId) {
+        var focus = document.getElementById(focusId);
+        if (focus) focus.focus();
+      }
+      return true;
+    } catch (error) {
+      if (!materialsCurrent(generation) || request !== materialsDetailRequestSeq || materialsState.selectedId !== id) return false;
+      materialsRegionError(region, "The material details could not be loaded.", error, function () {
+        if (materialsOperationActive && materialsOperationActive.settled) {
+          requestMaterialsReconciliation({
+            firstPage: materialsCreateReconcileRequired,
+            focusId: "material-detail-heading",
+          });
+        } else {
+          loadMaterialDetail(generation, "material-detail-heading");
+        }
+      });
+      return false;
+    }
+  }
+
+  function renderMaterialDetail(region, data, generation) {
+    clearText(region);
+    var heading = el("h2", { id: "material-detail-heading", textContent: data.name });
+    heading.tabIndex = -1;
+    region.appendChild(heading);
+    region.appendChild(el("p", {
+      className: data.status === "retired" ? "material-status retired" : "material-status active",
+      textContent: data.status === "retired" ? "Status: Retired" : "Status: Active",
+    }));
+    region.appendChild(el("p", {
+      className: "material-meta",
+      textContent: materialCategoryLabel(data.category) + " · " +
+        data.version_count + " version" + (data.version_count === 1 ? "" : "s") +
+        " · Updated " + displayDate(data.updated_at),
+    }));
+
+    var editDraft = materialsEditDraft && materialsEditDraft.retained &&
+      materialsEditDraft.materialId === data.material_id ? materialsEditDraft : null;
+    if (editDraft) {
+      var draftNotice = el("div", { className: "material-draft-note" });
+      draftNotice.setAttribute("role", "status");
+      draftNotice.appendChild(el("p", {
+        textContent: "The attempted edit was not confirmed. The authoritative state was refreshed and your unsent edit is retained in memory. Review it, then save again explicitly.",
+      }));
+      region.appendChild(draftNotice);
+    }
+    region.appendChild(buildMaterialEditForm(data, editDraft, generation));
+
+    var lifecycle = el("div", { className: "material-lifecycle" });
+    var lifecycleButton = el("button", {
+      type: "button",
+      className: "material-secondary-button",
+      textContent: data.status === "retired" ? "Restore material" : "Retire material",
+    });
+    lifecycleButton.id = "material-retirement-action";
+    lifecycleButton.addEventListener("click", function () {
+      changeMaterialRetirement(data, generation);
+    });
+    lifecycle.appendChild(lifecycleButton);
+    region.appendChild(lifecycle);
+
+    if (data.status === "active") {
+      region.appendChild(buildAddVersionForm(data, generation));
+    } else if (materialsVersionDraft && materialsVersionDraft.retained &&
+      materialsVersionDraft.materialId === data.material_id) {
+      region.appendChild(buildRetiredVersionDraftNotice(data, generation));
+    }
+    region.appendChild(buildMaterialVersionHistory(data));
+    if (materialsWriteBlocked()) setMaterialsControlsDisabled(true);
+  }
+
+  function buildMaterialEditForm(data, draft, generation) {
+    var form = el("form", { className: "material-form material-edit-form", id: "material-edit-form" });
+    var fieldset = el("fieldset");
+    fieldset.appendChild(el("legend", { textContent: "Rename or recategorize" }));
+    var name = el("input", { type: "text", id: "material-edit-name" });
+    name.required = true;
+    name.maxLength = 160;
+    name.value = draft ? draft.name : data.name;
+    var category = materialCategorySelect("material-edit-category", draft ? draft.category : data.category);
+    fieldset.appendChild(materialField("Name", name));
+    fieldset.appendChild(materialField("Category", category));
+    form.appendChild(fieldset);
+    form.appendChild(el("button", { type: "submit", className: "primary-button", textContent: "Save metadata" }));
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      updateMaterialMetadata(data, name.value, category.value, generation);
+    });
+    return form;
+  }
+
+  function buildAddVersionForm(data, generation) {
+    var form = el("form", { className: "material-form material-version-form", id: "material-version-form" });
+    var fieldset = el("fieldset");
+    fieldset.appendChild(el("legend", { textContent: "Add immutable version" }));
+    var file = el("input", { type: "file", id: "material-version-file" });
+    file.name = "file";
+    var retained = materialsVersionDraft && materialsVersionDraft.retained &&
+      materialsVersionDraft.materialId === data.material_id
+      ? materialsVersionDraft.file
+      : null;
+    file.required = !retained;
+    fieldset.appendChild(materialField("New local file", file));
+    form.appendChild(fieldset);
+    if (retained) {
+      form.appendChild(el("p", {
+        className: "material-draft-note",
+        textContent: "An unsent file is retained only in memory after the failed attempt. Choose a replacement or explicitly submit the retained file again.",
+      }));
+    }
+    form.appendChild(el("button", { type: "submit", className: "primary-button", textContent: "Add version" }));
+    if (retained) {
+      var discard = el("button", {
+        type: "button",
+        className: "material-secondary-button",
+        textContent: "Discard retained file",
+      });
+      discard.id = "material-version-draft-discard";
+      discard.addEventListener("click", function () {
+        discardMaterialVersionDraft(data, generation, "material-version-file");
+      });
+      form.appendChild(discard);
+    }
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var currentDraft = materialsVersionDraft &&
+        materialsVersionDraft.materialId === data.material_id
+        ? materialsVersionDraft.file
+        : null;
+      var selected = file.files && file.files.length === 1 ? file.files[0] : currentDraft;
+      if (!selected) {
+        file.setCustomValidity("Choose a file.");
+        file.reportValidity();
+        return;
+      }
+      file.setCustomValidity("");
+      addMaterialVersion(data, selected, generation);
+    });
+    file.addEventListener("change", function () {
+      file.setCustomValidity("");
+      if (file.files && file.files.length === 1) {
+        materialsVersionDraft = {
+          materialId: data.material_id,
+          file: file.files[0],
+          operationId: null,
+          retained: true,
+        };
+      }
+    });
+    return form;
+  }
+
+  function buildRetiredVersionDraftNotice(data, generation) {
+    var note = el("section", { className: "material-draft-note material-version-retired-draft" });
+    note.setAttribute("role", "status");
+    note.appendChild(el("h3", { textContent: "Retained version file" }));
+    note.appendChild(el("p", {
+      textContent: "A selected file is retained only in memory. This retired material cannot accept a version; restore it to make the retained file available for explicit submission.",
+    }));
+    var discard = el("button", {
+      type: "button",
+      className: "material-secondary-button",
+      textContent: "Discard retained file",
+    });
+    discard.id = "material-version-draft-discard";
+    discard.addEventListener("click", function () {
+      discardMaterialVersionDraft(data, generation, "material-retirement-action");
+    });
+    note.appendChild(discard);
+    return note;
+  }
+
+  function discardMaterialVersionDraft(data, generation, focusId) {
+    if (!materialsCurrent(generation) || !materialsVersionDraft ||
+      materialsVersionDraft.materialId !== data.material_id) return;
+    materialsVersionDraft = null;
+    var region = document.getElementById("materials-detail-region");
+    if (region) renderMaterialDetail(region, data, generation);
+    var focus = document.getElementById(focusId);
+    if (focus) focus.focus();
+  }
+
+  function buildMaterialVersionHistory(data) {
+    var section = el("section", { className: "material-history" });
+    section.appendChild(el("h3", { textContent: "Exact version history" }));
+    section.appendChild(el("p", {
+      className: "download-warning",
+      textContent: "Downloading creates an unmanaged copy outside CareerOS. Every download is an attachment; no document is shown in the page.",
+    }));
+    var list = el("ol", { className: "material-version-list" });
+    data.versions.forEach(function (version) {
+      var versionId = materialOpaqueId(version && version.version_id);
+      if (versionId === null || !isFiniteNumber(version.version_number)) return;
+      var item = el("li", { className: "material-version-item" });
+      item.appendChild(el("h4", {
+        textContent: "Version " + version.version_number + (version.is_current ? " · Current" : ""),
+      }));
+      item.appendChild(el("p", { textContent: displayText(version.display_filename) }));
+      item.appendChild(el("p", {
+        className: "material-meta",
+        textContent: materialByteSize(version.byte_size) + " · Declared type: " +
+          displayText(version.declared_media_type) + " · Added " + displayDate(version.created_at),
+      }));
+      var download = el("a", {
+        className: "material-download",
+        href: "/material-versions/" + versionId + "/content",
+        textContent: "Download exact version " + version.version_number,
+      });
+      download.setAttribute("download", "");
+      item.appendChild(download);
+      list.appendChild(item);
+    });
+    section.appendChild(list);
+    return section;
+  }
+
+  function setMaterialsControlsDisabled(disabled) {
+    var content = document.getElementById("materials-content");
+    if (!content) return;
+    content.querySelectorAll("button, input, select").forEach(function (control) {
+      if (control.getAttribute("data-materials-refresh") === "true") return;
+      if (disabled) {
+        if (!control.hasAttribute("data-materials-was-disabled")) {
+          control.setAttribute("data-materials-was-disabled", String(control.disabled));
+        }
+        control.disabled = true;
+      } else if (control.hasAttribute("data-materials-was-disabled")) {
+        control.disabled = control.getAttribute("data-materials-was-disabled") === "true";
+        control.removeAttribute("data-materials-was-disabled");
+      }
+    });
+  }
+
+  function materialsWriteBlocked() {
+    return Boolean(materialsOperationActive || materialsReconcileActive);
+  }
+
+  function syncMaterialsOperationUi() {
+    if (visibleView() !== MATERIALS) return;
+    var busy = materialsWriteBlocked();
+    var view = document.getElementById("view-materials");
+    if (view) {
+      if (busy) view.setAttribute("aria-busy", "true");
+      else view.removeAttribute("aria-busy");
+    }
+    setMaterialsControlsDisabled(busy);
+    renderMaterialsImportReconcileState();
+    if (materialsReconcileActive && materialsReconcileNotice) {
+      announceMaterials(materialsReconcileNotice.pending, false);
+    } else if (materialsOperationActive && !materialsOperationActive.settled) {
+      announceMaterials(materialsOperationActive.message, false);
+    }
+  }
+
+  function beginMaterialsOperation(generation, kind, message) {
+    if (materialsWriteBlocked() || !materialsCurrent(generation) ||
+      (kind === "create" && materialsCreateReconcileRequired)) return null;
+    var operation = {
+      id: ++materialsOperationSeq,
+      generation: generation,
+      kind: kind,
+      message: message,
+      settled: false,
+    };
+    materialsOperationActive = operation;
+    syncMaterialsOperationUi();
+    return operation;
+  }
+
+  function releaseMaterialsOperation(operation, focusId) {
+    if (materialsOperationActive !== operation) return;
+    materialsOperationActive = null;
+    syncMaterialsOperationUi();
+    if (visibleView() === MATERIALS && focusId) {
+      var focus = document.getElementById(focusId);
+      if (focus) focus.focus();
+    }
+  }
+
+  async function refreshMaterialsAuthoritative(generation, detailFocus) {
+    var tasks = [loadMaterialsList(generation, null)];
+    if (materialOpaqueId(materialsState.selectedId) !== null) {
+      tasks.push(loadMaterialDetail(generation, detailFocus || null));
+    }
+    var results = await Promise.all(tasks);
+    return results.every(function (result) { return result; });
+  }
+
+  function requestMaterialsReconciliation(options) {
+    options = options || {};
+    materialsReconcileDirty = true;
+    materialsReconcileFirstPage = materialsReconcileFirstPage || Boolean(options.firstPage);
+    if (options.focusId) materialsReconcileFocusId = options.focusId;
+    syncMaterialsOperationUi();
+    return runMaterialsReconciliation();
+  }
+
+  function runMaterialsReconciliation() {
+    if (materialsReconcileActive) return materialsReconcileActive.promise;
+    if (!materialsReconcileDirty || visibleView() !== MATERIALS) {
+      return Promise.resolve(false);
+    }
+    var owner = {
+      id: ++materialsReconcileSeq,
+      generation: materialsViewGeneration,
+      firstPage: materialsReconcileFirstPage,
+      focusId: materialsReconcileFocusId,
+      notice: materialsReconcileNotice,
+      promise: null,
+    };
+    materialsReconcileDirty = false;
+    materialsReconcileFirstPage = false;
+    materialsReconcileFocusId = null;
+    if (owner.firstPage) materialsState.offset = 0;
+    materialsReconcileActive = owner;
+    syncMaterialsOperationUi();
+    owner.promise = (async function () {
+      var refreshed = await refreshMaterialsAuthoritative(owner.generation, null);
+      if (materialsReconcileActive !== owner) return false;
+      materialsReconcileActive = null;
+      if (!materialsCurrent(owner.generation)) {
+        materialsReconcileDirty = true;
+        materialsReconcileFirstPage = materialsReconcileFirstPage || owner.firstPage;
+        if (!materialsReconcileFocusId) materialsReconcileFocusId = owner.focusId;
+        syncMaterialsOperationUi();
+        if (visibleView() === MATERIALS) return runMaterialsReconciliation();
+        return false;
+      }
+      if (materialsReconcileDirty) {
+        syncMaterialsOperationUi();
+        return runMaterialsReconciliation();
+      }
+      if (!refreshed) {
+        materialsReconcileDirty = true;
+        materialsReconcileFirstPage = materialsReconcileFirstPage || owner.firstPage;
+        if (!materialsReconcileFocusId) materialsReconcileFocusId = owner.focusId;
+        syncMaterialsOperationUi();
+        if (owner.notice) announceMaterials(owner.notice.failure, true);
+        return false;
+      }
+      if (owner.firstPage) materialsCreateReconcileRequired = false;
+      if (owner.notice) {
+        announceMaterials(owner.notice.success, owner.notice.isError);
+      }
+      materialsReconcileNotice = null;
+      var operation = materialsOperationActive && materialsOperationActive.settled
+        ? materialsOperationActive
+        : null;
+      if (operation) releaseMaterialsOperation(operation, owner.focusId);
+      else syncMaterialsOperationUi();
+      return refreshed;
+    })();
+    return owner.promise;
+  }
+
+  function settleMaterialsOperation(operation, outcome) {
+    if (materialsOperationActive !== operation || operation.settled) {
+      return Promise.resolve(false);
+    }
+    operation.settled = true;
+    if (outcome.clearEditDraft && materialsEditDraft &&
+      materialsEditDraft.operationId === operation.id) {
+      materialsEditDraft = null;
+    }
+    if (outcome.retainEditDraft && materialsEditDraft &&
+      materialsEditDraft.operationId === operation.id) {
+      materialsEditDraft.pending = false;
+      materialsEditDraft.retained = true;
+    }
+    if (outcome.clearVersionDraft && materialsVersionDraft &&
+      materialsVersionDraft.operationId === operation.id) {
+      materialsVersionDraft = null;
+    }
+    if (outcome.retainVersionDraft && materialsVersionDraft &&
+      materialsVersionDraft.operationId === operation.id) {
+      materialsVersionDraft.pending = false;
+      materialsVersionDraft.retained = true;
+    }
+    if (outcome.createRequiresFirstPage) {
+      materialsCreateReconcileRequired = true;
+    }
+    if (outcome.createdId && materialsCurrent(operation.generation)) {
+      materialsState.selectedId = outcome.createdId;
+      materialsState.detail = null;
+      if (outcome.form) outcome.form.reset();
+    }
+    materialsReconcileNotice = outcome.notice;
+    return requestMaterialsReconciliation({
+      firstPage: outcome.firstPage,
+      focusId: outcome.focusId,
+    });
+  }
+
+  async function importMaterial(form, generation) {
+    var name = form.querySelector("#material-import-name");
+    var category = form.querySelector("#material-import-category");
+    var input = form.querySelector("#material-import-file");
+    var file = input && input.files && input.files.length === 1 ? input.files[0] : null;
+    if (!name || !category || !input || !file) return;
+    var operation = beginMaterialsOperation(generation, "create", "Importing material…");
+    if (!operation) return;
+    try {
+      var created = await materialUpload("/materials", file, null, {
+        name: name.value,
+        category: category.value,
+      });
+      var id = materialOpaqueId(created && created.material_id);
+      if (id === null) throw new Error("The import response did not match the expected shape.");
+      await settleMaterialsOperation(operation, {
+        createdId: id,
+        form: form,
+        firstPage: true,
+        focusId: materialsCurrent(generation) ? "material-detail-heading" : "materials-list-heading",
+        notice: {
+          pending: "Import completed. Refreshing the authoritative first page…",
+          success: "Material imported. The authoritative first page is refreshed.",
+          failure: "Material imported, but its authoritative state could not be refreshed. Use the refresh controls; do not resubmit the import.",
+          isError: false,
+        },
+      });
+    } catch (error) {
+      await settleMaterialsOperation(operation, {
+        createRequiresFirstPage: true,
+        firstPage: true,
+        focusId: "material-import-name",
+        notice: {
+          pending: "The import outcome is ambiguous. Checking the authoritative first page before another submission…",
+          success: "The import was not confirmed. The authoritative first page was refreshed. Review it before explicitly submitting again. " + error.message,
+          failure: "The import was not confirmed and the authoritative first page could not be refreshed. Retry the authoritative check before submitting again. " + error.message,
+          isError: true,
+        },
+      });
+    }
+  }
+
+  async function updateMaterialMetadata(data, name, category, generation) {
+    var id = materialOpaqueId(data.material_id);
+    if (id === null) return;
+    var operation = beginMaterialsOperation(generation, "edit", "Saving material metadata…");
+    if (!operation) return;
+    materialsEditDraft = {
+      materialId: id,
+      name: name,
+      category: category,
+      operationId: operation.id,
+      pending: true,
+      retained: false,
+    };
+    try {
+      await materialJsonWrite("/materials/" + id, "PATCH", data.revision, {
+        name: name,
+        category: category,
+      });
+      await settleMaterialsOperation(operation, {
+        clearEditDraft: true,
+        focusId: "material-edit-name",
+        notice: {
+          pending: "Metadata saved. Refreshing authoritative material state…",
+          success: "Material metadata saved and refreshed.",
+          failure: "Material metadata was saved, but the authoritative refresh failed. Retry the refresh only.",
+          isError: false,
+        },
+      });
+    } catch (error) {
+      await settleMaterialsOperation(operation, {
+        retainEditDraft: true,
+        focusId: "material-edit-name",
+        notice: {
+          pending: "The edit was not confirmed. Refreshing authoritative material state…",
+          success: (error.code === "material_revision_conflict"
+            ? "The material changed elsewhere. Authoritative metadata was refreshed; your unsent edit remains only in memory and must be saved again explicitly. "
+            : "The material edit was not confirmed. Authoritative metadata was refreshed; your unsent edit remains only in memory. ") + error.message,
+          failure: "The material edit was not confirmed and authoritative metadata could not be refreshed. Your unsent edit remains only in memory. " + error.message,
+          isError: true,
+        },
+      });
+    }
+  }
+
+  async function addMaterialVersion(data, file, generation) {
+    var id = materialOpaqueId(data.material_id);
+    if (id === null) return;
+    var operation = beginMaterialsOperation(generation, "version", "Adding material version…");
+    if (!operation) return;
+    materialsVersionDraft = {
+      materialId: id,
+      file: file,
+      operationId: operation.id,
+      pending: true,
+      retained: false,
+    };
+    try {
+      await materialUpload("/materials/" + id + "/versions", file, data.revision, null);
+      await settleMaterialsOperation(operation, {
+        clearVersionDraft: true,
+        focusId: "material-version-file",
+        notice: {
+          pending: "Version upload completed. Refreshing authoritative history…",
+          success: "The exact version history was refreshed.",
+          failure: "The upload completed, but the authoritative refresh failed. Retry the refresh only.",
+          isError: false,
+        },
+      });
+    } catch (error) {
+      await settleMaterialsOperation(operation, {
+        retainVersionDraft: true,
+        focusId: error.code === "material_retired"
+          ? "material-version-draft-discard"
+          : "material-version-file",
+        notice: {
+          pending: "The version upload was not confirmed. Refreshing authoritative history…",
+          success: (error.code === "material_revision_conflict"
+            ? "The material changed elsewhere. The authoritative history was refreshed. "
+            : "The version upload was not confirmed. The authoritative history was refreshed. ") +
+            "The selected file remains only in memory and requires an explicit submission. " + error.message,
+          failure: "The version upload was not confirmed and authoritative history could not be refreshed. The selected file remains only in memory. " + error.message,
+          isError: true,
+        },
+      });
+    }
+  }
+
+  async function changeMaterialRetirement(data, generation) {
+    var id = materialOpaqueId(data.material_id);
+    if (id === null) return;
+    var retiring = data.status !== "retired";
+    var operation = beginMaterialsOperation(
+      generation,
+      "retirement",
+      retiring ? "Retiring material…" : "Restoring material…"
+    );
+    if (!operation) return;
+    try {
+      await materialJsonWrite(
+        "/materials/" + id + "/retirement",
+        retiring ? "PUT" : "DELETE",
+        data.revision,
+        undefined
+      );
+      await settleMaterialsOperation(operation, {
+        focusId: "material-retirement-action",
+        notice: {
+          pending: "Retirement change completed. Refreshing authoritative material state…",
+          success: retiring ? "Material retired and refreshed." : "Material restored and refreshed.",
+          failure: "The retirement change completed, but the authoritative refresh failed. Retry the refresh only.",
+          isError: false,
+        },
+      });
+    } catch (error) {
+      await settleMaterialsOperation(operation, {
+        focusId: "material-retirement-action",
+        notice: {
+          pending: "The retirement change was not confirmed. Refreshing authoritative material state…",
+          success: "The retirement change was not confirmed. Authoritative material state was refreshed. Review the current status; if it does not match your intended state, use the current control explicitly. " + error.message,
+          failure: "The retirement change was not confirmed and authoritative material state could not be refreshed. Retry the refresh before another change. " + error.message,
+          isError: true,
+        },
+      });
+    }
+  }
+
+  async function renderMaterialsView() {
+    var generation = materialsViewGeneration;
+    var status = document.getElementById("materials-status");
+    if (!materialsWriteBlocked() && !materialsReconcileDirty) {
+      setLoading(status, "Loading Materials workspace…");
+    }
+    buildMaterialsShell(generation);
+    syncMaterialsOperationUi();
+    var tasks = [loadMaterialsList(generation, null)];
+    if (materialOpaqueId(materialsState.selectedId) !== null) {
+      tasks.push(loadMaterialDetail(generation, null));
+    }
+    await Promise.all(tasks);
+    if (!materialsCurrent(generation)) return;
+    if (materialsReconcileDirty) {
+      await runMaterialsReconciliation();
+    } else if (materialsWriteBlocked()) {
+      syncMaterialsOperationUi();
+    } else {
+      doneLoading(status);
+    }
   }
 
   // ---------------------------------------------------------------------------

@@ -48,8 +48,8 @@ def _index_names(connection: sqlite3.Connection) -> set[str]:
     return {row["name"] for row in rows}
 
 
-def test_schema_version_is_nine(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 9
+def test_schema_version_is_ten(tmp_path: Path) -> None:
+    assert SCHEMA_VERSION == 10
 
 
 def test_fresh_schema_has_review_tables(tmp_path: Path) -> None:
@@ -193,7 +193,7 @@ def test_v7_database_requires_explicit_migration_without_changes(
     assert counts_after == counts_before
 
 
-def test_explicit_v8_to_v9_migration_preserves_review_rows(tmp_path: Path) -> None:
+def test_explicit_v8_to_v10_migration_preserves_review_rows(tmp_path: Path) -> None:
     database_path = tmp_path / "careeros.sqlite3"
     with connect(database_path) as connection:
         initialize_schema(connection)
@@ -206,6 +206,9 @@ def test_explicit_v8_to_v9_migration_preserves_review_rows(tmp_path: Path) -> No
         )
         connection.executescript(
             """
+            DROP TABLE material_versions;
+            DROP TABLE materials;
+            DROP TABLE material_store;
             DROP TABLE application_requirement_items;
             DROP TABLE application_preparations;
             ALTER TABLE application_events DROP COLUMN note_redacted_at;

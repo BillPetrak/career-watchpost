@@ -1,7 +1,8 @@
 """Focused tests for the first frontend vertical slice (``/ui`` static shell).
 
-Covers the read-only zero-build dashboard: the three static-serving routes
-(``GET /ui`` -> ``index.html``, ``GET /ui/app.js``, ``GET /ui/style.css``)
+Covers the read-only zero-build dashboard: the four static-serving routes
+(``GET /ui`` -> ``index.html``, ``GET /ui/app.js``, ``GET /ui/favicon.svg``,
+``GET /ui/style.css``)
 served from packaged resources rather than the filesystem/cwd, the fact that
 static serving never requires or creates a database, the invariants that
 existing API reference endpoints remain unchanged and ``SCHEMA_VERSION`` stays
@@ -39,6 +40,7 @@ _STATIC_DIR = importlib.resources.files("careeros.api").joinpath("static")
 _HTML_NAME = "index.html"
 _JS_NAME = "app.js"
 _CSS_NAME = "style.css"
+_FAVICON_NAME = "favicon.svg"
 
 
 def _asset_bytes(name: str) -> bytes:
@@ -81,9 +83,10 @@ def test_ui_html_references_resolve_to_live_routes(current_app) -> None:
             r'<(?:link|script)\b[^>]*\b(?:href|src)="([^"]+)"', html
         )
     ]
-    assert urls, "HTML must reference at least one external CSS/JS asset"
+    assert urls, "HTML must reference at least one static asset"
 
     expected = {
+        "/ui/favicon.svg": "image/svg+xml",
         "/ui/style.css": "text/css",
         "/ui/app.js": "application/javascript",
     }
@@ -171,8 +174,8 @@ def test_reference_endpoints_unchanged(
             assert response.status_code == expected, endpoint
 
 
-def test_schema_version_is_9_for_m1() -> None:
-    assert SCHEMA_VERSION == 9
+def test_schema_version_is_10_for_m1() -> None:
+    assert SCHEMA_VERSION == 10
 
 
 def test_real_default_database_untouched(
@@ -222,7 +225,7 @@ def test_api_does_not_import_careeros_cli() -> None:
 
 
 def test_static_source_files_exist() -> None:
-    for name in (_HTML_NAME, _JS_NAME, _CSS_NAME):
+    for name in (_HTML_NAME, _JS_NAME, _CSS_NAME, _FAVICON_NAME):
         assert _STATIC_DIR.joinpath(name).is_file(), name
 
 

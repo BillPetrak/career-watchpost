@@ -88,8 +88,8 @@ def test_fresh_schema_has_application_tables(tmp_path: Path) -> None:
     }
 
 
-def test_schema_version_is_nine(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 9
+def test_schema_version_is_ten(tmp_path: Path) -> None:
+    assert SCHEMA_VERSION == 10
 
 
 def test_required_indexes_exist(tmp_path: Path) -> None:

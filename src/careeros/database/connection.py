@@ -21,7 +21,6 @@ def connect(database_path: Path = DEFAULT_DATABASE_PATH) -> sqlite3.Connection:
     connection = sqlite3.connect(database_path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
-
     return connection
 
 
@@ -35,4 +34,25 @@ def connect_read_only(database_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(uri, uri=True)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    from careeros.database.migrations.core import inspect_schema
+
+    if inspect_schema(connection) != "current":
+        connection.close()
+        raise ValueError("database schema is not current")
+    return connection
+
+
+def connect_current_rw(database_path: Path) -> sqlite3.Connection:
+    """Open an existing current database read/write without creating it."""
+    if not database_path.exists() or not database_path.is_file():
+        raise FileNotFoundError(database_path)
+    uri = f"file:{database_path.resolve()}?mode=rw"
+    connection = sqlite3.connect(uri, uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    from careeros.database.migrations.core import inspect_schema
+
+    if inspect_schema(connection) != "current":
+        connection.close()
+        raise ValueError("database schema is not current")
     return connection

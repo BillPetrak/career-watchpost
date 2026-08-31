@@ -877,7 +877,7 @@ def test_missing_database_all_five_endpoints(
     missing = tmp_path / "does-not-exist" / "db.sqlite3"
     _set_database(monkeypatch, missing)
 
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
     # Nothing is ever created for a missing database.
@@ -892,7 +892,7 @@ def test_uninitialized_database_all_five_endpoints_500(
     path.write_bytes(b"")  # present but uninitialized
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
 
@@ -918,8 +918,8 @@ def test_static_serving_requires_no_database(
     assert database.exists()
 
 
-def test_schema_version_is_9_for_m1() -> None:
-    assert SCHEMA_VERSION == 9
+def test_schema_version_is_10_for_m1() -> None:
+    assert SCHEMA_VERSION == 10
 
 
 def test_real_default_database_untouched(
@@ -966,7 +966,8 @@ def test_api_does_not_import_careeros_cli() -> None:
 def test_wheel_packaging_declares_all_static_assets() -> None:
     pyproject = _SRC.parent.joinpath("pyproject.toml").read_text(encoding="utf-8")
     assert (
-        '"careeros.api" = ["static/*.html", "static/*.js", "static/*.css"]' in pyproject
+        '"careeros.api" = ["static/*.html", "static/*.js", "static/*.css", '
+        '"static/*.svg"]' in pyproject
     )
 
 

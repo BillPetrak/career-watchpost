@@ -662,7 +662,7 @@ def test_review_decisions_missing_database_is_empty_without_creating_file(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -677,7 +677,7 @@ def test_review_decisions_uninitialized_database_is_500(
     _set_database(monkeypatch, database_path)
 
     before = database_path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
     assert database_path.read_bytes() == before
@@ -691,7 +691,7 @@ def test_review_decisions_malformed_database_is_500(
     _set_database(monkeypatch, database_path)
 
     before = database_path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
     assert database_path.read_bytes() == before

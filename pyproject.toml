@@ -39,7 +39,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"careeros.api" = ["static/*.html", "static/*.js", "static/*.css"]
+"careeros.api" = ["static/*.html", "static/*.js", "static/*.css", "static/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

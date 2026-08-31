@@ -529,7 +529,10 @@ def test_wheel_package_data_lists_static_assets() -> None:
         encoding="utf-8"
     )
     assert "[tool.setuptools.package-data]" in pyproject
-    line = '"careeros.api" = ["static/*.html", "static/*.js", "static/*.css"]'
+    line = (
+        '"careeros.api" = ["static/*.html", "static/*.js", "static/*.css", '
+        '"static/*.svg"]'
+    )
     assert line in pyproject
 
 
@@ -784,8 +787,8 @@ def test_invalid_decision_is_422_and_leaves_state_untouched(
 # --------------------------------------------------------------------------- #
 
 
-def test_schema_version_stays_9() -> None:
-    assert SCHEMA_VERSION == 9
+def test_schema_version_stays_10() -> None:
+    assert SCHEMA_VERSION == 10
 
 
 def test_no_careeros_cli_import() -> None:
@@ -845,7 +848,7 @@ def test_database_file_never_created_by_asset_or_mutation_routes(
 ) -> None:
     path = tmp_path / "missing.sqlite3"
     _set_database(monkeypatch, path)
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
     assert not path.exists()

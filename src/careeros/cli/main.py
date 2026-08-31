@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """CareerOS CLI entry point and command dispatch."""
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from careeros.cli.commands import (
     run_source_command,
 )
 from careeros.cli.commands.diagnose import print_diagnostics
+from careeros.cli.commands.materials import run_material_command
 from careeros.cli.parser import build_parser
 from careeros.database.admin import (
     backup as backup_database,
@@ -48,7 +50,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             if arguments.database_command == "backup":
                 backup_database(arguments.database, arguments.destination)
-                print(f"Backup created: {arguments.destination}")
+                print(f"SQLite backup created: {arguments.destination}")
+                print(
+                    "Managed material files were not included; preserve the matching materials root separately."
+                )
             elif arguments.database_command == "migrate":
                 migrate_database(
                     arguments.database,
@@ -56,12 +61,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     no_backup=arguments.no_backup,
                     acknowledge=arguments.acknowledge_data_loss_risk,
                 )
-                print("Database migrated to schema v9.")
+                print(
+                    "Database migrated to schema v10. Any generated pre-migration backup contains SQLite only; preserve the matching materials root separately."
+                )
             elif arguments.database_command == "restore":
                 if not arguments.confirm_replace:
                     parser.error("--confirm-replace is required")
                 restore_database(arguments.backup, arguments.database)
-                print("Database restored.")
+                print("SQLite database restored.")
+                print(
+                    "Managed material files were not restored; use the matching materials root."
+                )
             return 0
         except (OSError, sqlite3.Error, ValueError) as error:
             print(
@@ -72,7 +82,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if arguments.command == "serve":
         try:
-            serve(port=arguments.port, ipv6=arguments.ipv6, database=arguments.database)
+            serve(
+                port=arguments.port,
+                ipv6=arguments.ipv6,
+                database=arguments.database,
+                materials_root=arguments.materials_root,
+            )
             return 0
         except (OSError, sqlite3.Error, ValueError) as error:
             print(f"Server failed: {type(error).__name__}: {error}", file=sys.stderr)
@@ -80,6 +95,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if arguments.command == "collect":
         return run_collect_command(arguments, parser)
+
+    if arguments.command == "material":
+        return run_material_command(arguments)
 
     if arguments.command == "application":
         if arguments.application_command == "redact-note":

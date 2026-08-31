@@ -75,7 +75,7 @@ def run_collect(source: str, limit: int, database_path: Path) -> int:
                 collectors=COLLECTORS,
                 limit=limit,
             )
-    except (OSError, sqlite3.Error) as error:
+    except (OSError, sqlite3.Error, ValueError) as error:
         print(f"Collection failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
@@ -121,7 +121,7 @@ def run_collect_all(limit: int, database_path: Path) -> int:
                     f"{result.source} collection failed: {result.error}",
                     file=sys.stderr,
                 )
-    except (OSError, sqlite3.Error) as error:
+    except (OSError, sqlite3.Error, ValueError) as error:
         print(f"Collection failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
@@ -167,7 +167,7 @@ def run_collect_due(limit: int, database_path: Path) -> int:
                     f"{result.source} collection failed: {result.error}",
                     file=sys.stderr,
                 )
-    except (OSError, sqlite3.Error) as error:
+    except (OSError, sqlite3.Error, ValueError) as error:
         print(f"Collection failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
@@ -196,7 +196,7 @@ def run_collect_status(database_path: Path) -> int:
     try:
         with connect_read_only(database_path) as connection:
             statuses = build_statuses(connection, now=now)
-    except (OSError, sqlite3.Error) as error:
+    except (OSError, sqlite3.Error, ValueError) as error:
         print(f"Status failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
@@ -255,7 +255,7 @@ def run_collect_history(
                 limit=limit,
                 failed_only=failed,
             )
-    except (OSError, sqlite3.Error) as error:
+    except (OSError, sqlite3.Error, ValueError) as error:
         print(f"History failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 

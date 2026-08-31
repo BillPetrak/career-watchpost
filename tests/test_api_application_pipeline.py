@@ -243,5 +243,5 @@ def test_pipeline_missing_database_is_empty_without_creating_file(
     assert not path.exists()
 
 
-def test_schema_version_is_nine_for_m1() -> None:
-    assert SCHEMA_VERSION == 9
+def test_schema_version_is_ten_for_m1() -> None:
+    assert SCHEMA_VERSION == 10

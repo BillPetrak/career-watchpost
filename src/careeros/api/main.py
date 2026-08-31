@@ -180,8 +180,13 @@ paths), and saved-search ``description`` values are never exposed over HTTP.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.resources
+import os
 import sqlite3
+import stat
+import threading
+import urllib.parse
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -189,7 +194,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from careeros.api.deps import (
@@ -219,6 +224,9 @@ from careeros.api.schemas import (
     HealthResponse,
     Job,
     JobListResponse,
+    MaterialDetail,
+    MaterialListResponse,
+    MaterialUpdateRequest,
     RankedGroupItem,
     RankedJobItem,
     RankedJobsResponse,
@@ -286,6 +294,7 @@ from careeros.database.applications import (
     list_applications,
     preparation_summary_for_applications,
 )
+from careeros.database.connection import connect_current_rw, connect_read_only
 from careeros.database.groups import (
     GroupedJob,
     group_ids_for_jobs,
@@ -298,6 +307,31 @@ from careeros.database.jobs import get_job_by_id, list_jobs, search_jobs
 from careeros.database.reminders import ReminderListEntry, get_reminder
 from careeros.database.review import DecisionListItem
 from careeros.database.runs import list_runs
+from careeros.locking import CollectionLockConflict, collection_lock
+from careeros.materials.models import ConflictError, MaterialError, ValidationError
+from careeros.materials.models import (
+    NotFoundError as MaterialNotFoundError,
+)
+from careeros.materials.service import (
+    add_version,
+    create_material,
+    preflight_binding,
+    set_retirement,
+    update_material,
+    validate_metadata,
+)
+from careeros.materials.storage import (
+    open_bound_object,
+    remove_stage,
+    stage_stream,
+)
+from careeros.materials.upload import (
+    MAX_UPLOAD,
+    UploadHeaderError,
+    UploadMetadataError,
+    upload_admission,
+    validate_scope,
+)
 from careeros.preparations.service import (
     PreparationError,
     RevisionConflict,
@@ -396,8 +430,11 @@ from careeros.saved_searches.service import (
     rename_search,
     update_search,
 )
+from careeros.settings import materials_root
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 from careeros.today.service import build_today
+
+_MATERIAL_UPLOAD_SLOT = threading.Lock()
 
 
 class RequirementCreate(BaseModel):
@@ -464,7 +501,7 @@ MAX_FETCH_QUEUE = 1_000_000
 # attach to; this mirrors the export package's record cap without importing it.
 MAX_FETCH_DECISIONS = 1_000_000
 
-# Read-only static frontend (first frontend vertical slice). The three assets
+# Read-only static frontend (first frontend vertical slice). The four assets
 # live inside the ``careeros.api`` package under ``static/``, declared in
 # ``pyproject.toml`` under ``[tool.setuptools.package-data]`` so an installed
 # wheel carries them; ``importlib.resources`` reads them uniformly whether the
@@ -476,6 +513,7 @@ _UI_ASSETS_DIR = "static"
 _UI_MEDIA_TYPES: dict[str, str] = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "application/javascript; charset=utf-8",
+    "favicon.svg": "image/svg+xml",
     "style.css": "text/css; charset=utf-8",
 }
 
@@ -799,10 +837,13 @@ def _read_schema_version(connection: sqlite3.Connection) -> int | None:
         return None
 
 
-def create_app(database: Path | None = None) -> FastAPI:
+def create_app(
+    database: Path | None = None, materials_root_path: Path | None = None
+) -> FastAPI:
     """Build the CareerOS FastAPI application."""
 
     selected_database = database
+    selected_materials_root = materials_root_path or materials_root()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> Any:
@@ -810,7 +851,8 @@ def create_app(database: Path | None = None) -> FastAPI:
         from careeros.settings import database_path
 
         validate_startup_database(
-            selected_database if selected_database is not None else database_path()
+            selected_database if selected_database is not None else database_path(),
+            selected_materials_root,
         )
         yield
 
@@ -900,6 +942,15 @@ def create_app(database: Path | None = None) -> FastAPI:
         return Response(
             content=_read_ui_asset("app.js"),
             media_type=_UI_MEDIA_TYPES["app.js"],
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/ui/favicon.svg")
+    def ui_favicon() -> Response:
+        """Serve the dashboard's same-origin favicon."""
+        return Response(
+            content=_read_ui_asset("favicon.svg"),
+            media_type=_UI_MEDIA_TYPES["favicon.svg"],
             headers={"Cache-Control": "no-store"},
         )
 
@@ -3156,6 +3207,585 @@ def create_app(database: Path | None = None) -> FastAPI:
             return _prep_response(connection, job_id)
         except PreparationError as error:
             raise _prep_error(error) from error
+
+    def _material_projection(item: dict[str, Any]) -> dict[str, Any]:
+        versions = item.get("versions", [])
+        current = item.get("current_version")
+        for version in versions:
+            version["is_current"] = (
+                current is not None and version["version_id"] == current["version_id"]
+            )
+        if current is not None:
+            current["is_current"] = True
+        return item
+
+    @app.get("/materials", response_model=MaterialListResponse)
+    def materials_list(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: int = Query(0, ge=0),
+        limit: int = Query(20, ge=1, le=100),
+        include_retired: bool = False,
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        from careeros.database.materials import list_material_rows
+
+        rows = list_material_rows(
+            connection, include_retired=include_retired, limit=limit, offset=offset
+        )
+        items = []
+        for row in rows:
+            current = None
+            if row["current_id"] is not None:
+                current = {
+                    "version_id": row["current_id"],
+                    "version_number": row["current_number"],
+                    "display_filename": row["current_filename"],
+                    "declared_media_type": row["current_media_type"],
+                    "byte_size": row["current_byte_size"],
+                    "created_at": row["current_created_at"],
+                    "is_current": True,
+                }
+            items.append(
+                {
+                    "material_id": row["id"],
+                    "name": row["name"],
+                    "category": row["category"],
+                    "status": row["status"],
+                    "revision": row["revision"],
+                    "version_count": row["version_count"],
+                    "current_version": current,
+                    "retired_at": row["retired_at"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+        total = int(
+            connection.execute(
+                "SELECT count(*) FROM materials"
+                + (" WHERE status='active'" if not include_retired else "")
+            ).fetchone()[0]
+        )
+        return {"items": items, "total": total, "offset": offset, "limit": limit}
+
+    def _material_detail(
+        connection: sqlite3.Connection, material_id: str
+    ) -> dict[str, Any]:
+        from careeros.materials.service import get_material
+
+        return _material_projection(get_material(connection, material_id))
+
+    def _material_conflict(error: ConflictError) -> HTTPException:
+        detail: dict[str, object] = {"code": error.code}
+        if error.current_revision is not None:
+            detail["current_revision"] = error.current_revision
+        return HTTPException(status_code=409, detail=detail)
+
+    def _material_database() -> Path:
+        if selected_database is not None:
+            return selected_database
+        from careeros.settings import database_path
+
+        return database_path()
+
+    def _material_preflight() -> None:
+        """Validate the existing current DB/store before staging any bytes."""
+        database = _material_database()
+        if not database.is_file():
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        try:
+            connection = connect_read_only(database)
+            try:
+                preflight_binding(connection, selected_materials_root)
+            finally:
+                connection.close()
+        except (sqlite3.Error, ValueError):
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+        except MaterialError:
+            # Binding/storage failures are deliberately indistinguishable.
+            raise HTTPException(
+                status_code=409, detail="Material storage conflict"
+            ) from None
+        except OSError:
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+
+    def _material_revision(value: str | None) -> int:
+        if (
+            value is None
+            or not value.isascii()
+            or not value.isdigit()
+            or len(value) > 20
+            or int(value) < 1
+        ):
+            raise HTTPException(status_code=422, detail="Invalid material revision")
+        return int(value)
+
+    @app.get("/materials/{material_id}", response_model=MaterialDetail)
+    def materials_detail(
+        material_id: str,
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        try:
+            return _material_detail(connection, material_id)
+        except MaterialNotFoundError:
+            raise HTTPException(status_code=404, detail="Material not found") from None
+
+    @app.post("/materials", response_model=MaterialDetail, status_code=201)
+    async def materials_create(
+        request: Request,
+        response: Response,
+    ) -> dict[str, Any]:
+        try:
+            scoped, declared_length = validate_scope(request.scope)
+        except UploadMetadataError:
+            raise HTTPException(
+                status_code=422, detail="Invalid upload metadata"
+            ) from None
+        except UploadHeaderError:
+            raise HTTPException(
+                status_code=400, detail="Invalid upload headers"
+            ) from None
+        if request.headers.get("content-type") != "application/octet-stream":
+            raise HTTPException(
+                status_code=415, detail="Upload must use application/octet-stream"
+            )
+        if request.headers.get("x-careeros-write") != "1":
+            raise HTTPException(status_code=403, detail="Write request rejected")
+        name = scoped.get("x-careeros-material-name")
+        category = scoped.get("x-careeros-material-category")
+        filename = scoped.get("x-careeros-display-filename")
+        media_type = (
+            scoped.get("x-careeros-declared-media-type") or "application/octet-stream"
+        )
+        if declared_length is not None and declared_length > MAX_UPLOAD:
+            raise HTTPException(
+                status_code=413,
+                detail="Upload too large",
+                headers={"Connection": "close"},
+            )
+        if request.headers.get("content-encoding"):
+            raise HTTPException(
+                status_code=415, detail="Content encoding is unsupported"
+            )
+        if not all((name, category, filename)):
+            raise HTTPException(
+                status_code=422, detail="Required upload metadata is missing"
+            )
+        assert (
+            name is not None
+            and category is not None
+            and filename is not None
+            and media_type is not None
+        )
+        _material_preflight()
+        root = selected_materials_root
+        stage = None
+        admission = upload_admission()
+        try:
+            admission.__enter__()
+        except RuntimeError:
+            raise HTTPException(
+                status_code=503, detail="Material upload is temporarily busy"
+            ) from None
+        try:
+            validate_metadata(name, category, filename, media_type)
+            stage, size, digest = await stage_stream(root, request.stream())
+            database = _material_database()
+            if not database.is_file():
+                raise HTTPException(
+                    status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+                )
+            try:
+                with collection_lock(database, command="api material create"):
+                    connection: sqlite3.Connection | None = None
+                    connection = connect_current_rw(database)
+                    try:
+                        result = create_material(
+                            connection,
+                            root,
+                            name=name,
+                            category=category,
+                            filename=filename,
+                            media_type=media_type,
+                            stage=stage,
+                            size=size,
+                            sha256=digest,
+                        )
+                    finally:
+                        if connection is not None:
+                            connection.close()
+            except CollectionLockConflict:
+                raise HTTPException(
+                    status_code=503, detail=LOCK_CONTENTION_MESSAGE
+                ) from None
+            response.headers["Location"] = f"/materials/{result['material_id']}"
+            return _material_projection(result)
+        except HTTPException:
+            if stage is not None:
+                try:
+                    remove_stage(stage)
+                except MaterialError:
+                    pass
+            raise
+        except MaterialError as error:
+            if stage is not None:
+                try:
+                    remove_stage(stage)
+                except MaterialError:
+                    pass
+            if isinstance(error, ValidationError) and error.args == ("file too large",):
+                raise HTTPException(
+                    status_code=413,
+                    detail="Upload too large",
+                    headers={"Connection": "close"},
+                ) from error
+            if isinstance(error, ConflictError):
+                raise _material_conflict(error) from None
+            if isinstance(error, ValidationError):
+                raise HTTPException(
+                    status_code=422, detail="Invalid material upload"
+                ) from None
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+        except UploadHeaderError:
+            raise HTTPException(
+                status_code=400, detail="Invalid upload headers"
+            ) from None
+        except sqlite3.Error as error:
+            if _is_transient_sqlite_error(error):
+                raise HTTPException(
+                    status_code=503, detail=LOCK_CONTENTION_MESSAGE
+                ) from None
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+        except OSError:
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+        except ValueError:
+            if stage is not None:
+                try:
+                    remove_stage(stage)
+                except BaseException:
+                    pass
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+        finally:
+            if stage is not None:
+                try:
+                    remove_stage(stage)
+                except BaseException:
+                    pass
+            admission.__exit__(None, None, None)
+
+    @app.post("/materials/{material_id}/versions", response_model=MaterialDetail)
+    async def material_version_create(
+        material_id: str, request: Request, response: Response
+    ) -> dict[str, Any]:
+        try:
+            scoped, declared_length = validate_scope(request.scope)
+        except UploadMetadataError:
+            raise HTTPException(
+                status_code=422, detail="Invalid upload metadata"
+            ) from None
+        except UploadHeaderError:
+            raise HTTPException(
+                status_code=400, detail="Invalid upload headers"
+            ) from None
+        if request.headers.get("content-type") != "application/octet-stream":
+            raise HTTPException(
+                status_code=415, detail="Upload must use application/octet-stream"
+            )
+        if request.headers.get("x-careeros-write") != "1":
+            raise HTTPException(status_code=403, detail="Write request rejected")
+        revision = scoped.get("x-careeros-material-revision")
+        filename = scoped.get("x-careeros-display-filename")
+        media_type = (
+            scoped.get("x-careeros-declared-media-type") or "application/octet-stream"
+        )
+        if declared_length is not None and declared_length > MAX_UPLOAD:
+            raise HTTPException(
+                status_code=413,
+                detail="Upload too large",
+                headers={"Connection": "close"},
+            )
+        if request.headers.get("content-encoding"):
+            raise HTTPException(
+                status_code=415, detail="Content encoding is unsupported"
+            )
+        if (
+            revision is None
+            or not revision.isascii()
+            or not revision.isdigit()
+            or len(revision) > 20
+            or int(revision) < 1
+            or filename is None
+        ):
+            raise HTTPException(
+                status_code=422, detail="Required upload metadata is missing"
+            )
+        _material_preflight()
+        stage = None
+        admission = upload_admission()
+        try:
+            admission.__enter__()
+        except RuntimeError:
+            raise HTTPException(
+                status_code=503, detail="Material upload is temporarily busy"
+            ) from None
+        try:
+            validate_metadata("x", "resume", filename, media_type)
+            stage, size, digest = await stage_stream(
+                selected_materials_root, request.stream()
+            )
+            database = _material_database()
+            with collection_lock(database, command="api material version"):
+                connection: sqlite3.Connection | None = None
+                connection = connect_current_rw(database)
+                try:
+                    result, status = add_version(
+                        connection,
+                        selected_materials_root,
+                        material_id,
+                        expected_revision=int(revision),
+                        filename=filename,
+                        media_type=media_type,
+                        stage=stage,
+                        size=size,
+                        sha256=digest,
+                    )
+                finally:
+                    if connection is not None:
+                        connection.close()
+            response.status_code = status
+            return _material_projection(result)
+        except CollectionLockConflict:
+            raise HTTPException(
+                status_code=503, detail=LOCK_CONTENTION_MESSAGE
+            ) from None
+        except MaterialNotFoundError:
+            raise HTTPException(status_code=404, detail="Material not found") from None
+        except MaterialError as error:
+            if isinstance(error, ValidationError) and error.args == ("file too large",):
+                raise HTTPException(
+                    status_code=413,
+                    detail="Upload too large",
+                    headers={"Connection": "close"},
+                ) from None
+            if isinstance(error, ValidationError):
+                raise HTTPException(
+                    status_code=422, detail="Invalid material upload"
+                ) from None
+            if isinstance(error, ConflictError):
+                raise _material_conflict(error) from None
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+        except UploadHeaderError:
+            raise HTTPException(
+                status_code=400, detail="Invalid upload headers"
+            ) from None
+        except sqlite3.Error as error:
+            if _is_transient_sqlite_error(error):
+                raise HTTPException(
+                    status_code=503, detail=LOCK_CONTENTION_MESSAGE
+                ) from None
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+        except OSError:
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+        except ValueError:
+            if stage is not None:
+                try:
+                    remove_stage(stage)
+                except BaseException:
+                    pass
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+        finally:
+            admission.__exit__(None, None, None)
+            if stage is not None:
+                try:
+                    remove_stage(stage)
+                except BaseException:
+                    pass
+
+    @app.patch("/materials/{material_id}", response_model=MaterialDetail)
+    def material_update(
+        material_id: str,
+        body: MaterialUpdateRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Material-Revision"
+        ),
+    ) -> dict[str, Any]:
+        expected_revision = _material_revision(revision)
+        try:
+            return _material_projection(
+                update_material(
+                    connection,
+                    material_id,
+                    expected_revision=expected_revision,
+                    name=body.name,
+                    category=body.category,
+                )
+            )
+        except MaterialNotFoundError:
+            raise HTTPException(status_code=404, detail="Material not found") from None
+        except ConflictError as error:
+            raise _material_conflict(error) from None
+        except ValidationError:
+            raise HTTPException(
+                status_code=422, detail="Invalid material update"
+            ) from None
+
+    @app.put("/materials/{material_id}/retirement", response_model=MaterialDetail)
+    def material_retire(
+        material_id: str,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Material-Revision"
+        ),
+    ) -> dict[str, Any]:
+        expected_revision = _material_revision(revision)
+        try:
+            return _material_projection(
+                set_retirement(
+                    connection,
+                    material_id,
+                    expected_revision=expected_revision,
+                    retired=True,
+                )
+            )
+        except MaterialNotFoundError:
+            raise HTTPException(status_code=404, detail="Material not found") from None
+        except ConflictError as error:
+            raise _material_conflict(error) from None
+
+    @app.delete("/materials/{material_id}/retirement", response_model=MaterialDetail)
+    def material_restore(
+        material_id: str,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        revision: str | None = Header(
+            default=None, alias="X-CareerOS-Material-Revision"
+        ),
+    ) -> dict[str, Any]:
+        expected_revision = _material_revision(revision)
+        try:
+            return _material_projection(
+                set_retirement(
+                    connection,
+                    material_id,
+                    expected_revision=expected_revision,
+                    retired=False,
+                )
+            )
+        except MaterialNotFoundError:
+            raise HTTPException(status_code=404, detail="Material not found") from None
+        except ConflictError as error:
+            raise _material_conflict(error) from None
+
+    @app.get("/material-versions/{version_id}/content")
+    def material_content(
+        version_id: str,
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+    ) -> StreamingResponse:
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        row = connection.execute(
+            "SELECT byte_size,display_filename,storage_key,sha256 "
+            "FROM material_versions WHERE id=?",
+            (version_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Material version not found")
+        try:
+            store = connection.execute(
+                "SELECT store_id FROM material_store WHERE singleton=1"
+            ).fetchone()
+            if store is None:
+                raise OSError
+            fd = open_bound_object(
+                selected_materials_root,
+                str(store["store_id"]),
+                str(row["storage_key"]),
+            )
+            st = os.fstat(fd)
+            if (
+                not stat.S_ISREG(st.st_mode)
+                or st.st_uid != os.getuid()
+                or stat.S_IMODE(st.st_mode) != 0o600
+                or st.st_nlink != 1
+                or st.st_size != row["byte_size"]
+            ):
+                raise OSError
+            digest = hashlib.sha256()
+            while chunk := os.read(fd, 1024 * 1024):
+                digest.update(chunk)
+            post = os.fstat(fd)
+            if digest.hexdigest() != row["sha256"] or (
+                st.st_dev,
+                st.st_ino,
+                st.st_size,
+                st.st_mode,
+                st.st_uid,
+                st.st_nlink,
+                st.st_mtime_ns,
+                st.st_ctime_ns,
+            ) != (
+                post.st_dev,
+                post.st_ino,
+                post.st_size,
+                post.st_mode,
+                post.st_uid,
+                post.st_nlink,
+                post.st_mtime_ns,
+                post.st_ctime_ns,
+            ):
+                raise OSError
+            os.lseek(fd, 0, os.SEEK_SET)
+        except (OSError, MaterialError):
+            if "fd" in locals():
+                os.close(fd)
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+
+        def iterator() -> Iterator[bytes]:
+            try:
+                while chunk := os.read(fd, 1024 * 1024):
+                    yield chunk
+            finally:
+                os.close(fd)
+
+        safe_name = "material-version.bin"
+        encoded_name = urllib.parse.quote(str(row["display_filename"]), safe="")
+        return StreamingResponse(
+            iterator(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Length": str(row["byte_size"]),
+                "Content-Disposition": (
+                    f'attachment; filename="{safe_name}"; '
+                    f"filename*=UTF-8''{encoded_name}"
+                ),
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     return app
 

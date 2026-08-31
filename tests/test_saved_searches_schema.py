@@ -23,8 +23,8 @@ def _index_names(connection: sqlite3.Connection) -> set[str]:
     return {row["name"] for row in rows}
 
 
-def test_schema_version_is_nine_for_m1() -> None:
-    assert SCHEMA_VERSION == 9
+def test_schema_version_is_ten_for_m1() -> None:
+    assert SCHEMA_VERSION == 10
 
 
 def test_fresh_schema_has_saved_searches_table(tmp_path: Path) -> None:

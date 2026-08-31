@@ -798,7 +798,7 @@ def test_missing_database_empty_200_creates_no_artifacts(
     missing = tmp_path / "sub" / "missing.sqlite3"
     _set_database(monkeypatch, missing)
 
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
     assert not (tmp_path / "sub").exists()
@@ -827,7 +827,7 @@ def test_uninitialized_database_is_500(
     path.write_bytes(b"")
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
 
@@ -839,7 +839,7 @@ def test_malformed_database_is_privacy_safe_500(
     malformed.write_bytes(b"this is not a sqlite database file at all")
     _set_database(monkeypatch, malformed)
 
-    with pytest.raises(ValueError, match="current schema v9"):
+    with pytest.raises(ValueError, match="current schema v10"):
         with TestClient(app):
             pass
 
@@ -1010,8 +1010,8 @@ def test_real_default_database_untouched(
     assert not real.is_file() or real.stat().st_mtime_ns == before
 
 
-def test_schema_version_is_current_v9() -> None:
-    assert SCHEMA_VERSION == 9
+def test_schema_version_is_current_v10() -> None:
+    assert SCHEMA_VERSION == 10
 
 
 def test_api_does_not_import_careeros_cli() -> None:

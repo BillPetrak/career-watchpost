@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "database" / "careeros.sqlite3"
 
 ENV_DATABASE = "CAREEROS_DATABASE"
+ENV_MATERIALS_ROOT = "CAREEROS_MATERIALS_ROOT"
 
 
 def database_path() -> Path:
@@ -31,9 +32,19 @@ def database_path() -> Path:
     return Path(value).expanduser().resolve()
 
 
+def materials_root() -> Path:
+    value = os.environ.get(ENV_MATERIALS_ROOT)
+    if value:
+        return Path(value).expanduser().absolute()
+    data_home = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
+    return (data_home / "careeros" / "materials").absolute()
+
+
 __all__: tuple[str, ...] = (
     "DEFAULT_DATABASE_PATH",
     "ENV_DATABASE",
+    "ENV_MATERIALS_ROOT",
     "PROJECT_ROOT",
     "database_path",
+    "materials_root",
 )

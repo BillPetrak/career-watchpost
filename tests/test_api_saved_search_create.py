@@ -892,11 +892,11 @@ def test_missing_database_refuses_startup_without_creating_anything(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+    with pytest.raises(ValueError, match="current schema v10") as exc_info:
         with TestClient(app):
             pass
 
-    assert str(exc_info.value) == "CareerOS requires a current schema v9 database"
+    assert str(exc_info.value) == "CareerOS requires a current schema v10 database"
     assert not database_path.exists()
     assert not database_path.parent.exists()
     assert not Path(str(database_path) + ".lock").exists()
@@ -910,11 +910,11 @@ def test_uninitialized_database_refuses_startup_no_ddl(
     _set_database(monkeypatch, empty)
 
     before = empty.read_bytes()
-    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+    with pytest.raises(ValueError, match="current schema v10") as exc_info:
         with TestClient(app):
             pass
 
-    assert str(exc_info.value) == "CareerOS requires a current schema v9 database"
+    assert str(exc_info.value) == "CareerOS requires a current schema v10 database"
     assert empty.read_bytes() == before == b""
 
 
@@ -926,12 +926,12 @@ def test_malformed_database_refuses_startup_privately(
     _set_database(monkeypatch, garbage)
 
     before = garbage.read_bytes()
-    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+    with pytest.raises(ValueError, match="current schema v10") as exc_info:
         with TestClient(app):
             pass
 
     message = str(exc_info.value)
-    assert message == "CareerOS requires a current schema v9 database"
+    assert message == "CareerOS requires a current schema v10 database"
     assert garbage.read_bytes() == before
     for leaked in (
         "sqlite3",
@@ -1175,7 +1175,7 @@ def test_privacy_leak_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     malformed = tmp_path / "garbage.sqlite3"
     malformed.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, malformed)
-    with pytest.raises(ValueError, match="current schema v9") as exc_info:
+    with pytest.raises(ValueError, match="current schema v10") as exc_info:
         with TestClient(app):
             pass
     startup_messages.append(str(exc_info.value))
@@ -1225,7 +1225,7 @@ def test_privacy_leak_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
             assert leaked not in response.text, (
                 f"{leaked!r} leaked in {response.status_code} response"
             )
-    assert startup_messages == ["CareerOS requires a current schema v9 database"]
+    assert startup_messages == ["CareerOS requires a current schema v10 database"]
     for leaked in (
         _SENTINEL_PROFILE_PATH,
         _SENTINEL_DESCRIPTION,
@@ -1385,7 +1385,7 @@ def test_prior_non_saved_search_endpoints_unchanged(
 # --------------------------------------------------------------------------- #
 
 
-def test_schema_version_stays_current_v9(
+def test_schema_version_stays_current_v10(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "careeros.sqlite3"
@@ -1395,13 +1395,13 @@ def test_schema_version_stays_current_v9(
     with TestClient(app) as client:
         health = client.get("/health")
 
-    assert health.json()["schema_version"] == SCHEMA_VERSION == 9
+    assert health.json()["schema_version"] == SCHEMA_VERSION == 10
     with connect(path) as connection:
         row = connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
         ).fetchone()
     assert row is not None
-    assert row["value"] == "9"
+    assert row["value"] == "10"
 
 
 # --------------------------------------------------------------------------- #

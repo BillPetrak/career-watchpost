@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -250,6 +250,71 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_review_events_job
             ON review_events(job_id, created_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS material_store (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            store_id TEXT NOT NULL UNIQUE CHECK (
+                length(store_id) = 32 AND store_id = lower(store_id)
+                AND store_id NOT GLOB '*[^0-9a-f]*'
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) > 0)
+        );
+
+        CREATE TABLE IF NOT EXISTS materials (
+            id TEXT PRIMARY KEY CHECK (
+                length(id) = 32 AND id = lower(id)
+                AND id NOT GLOB '*[^0-9a-f]*'
+            ),
+            name TEXT NOT NULL CHECK (
+                length(name) BETWEEN 1 AND 160 AND name = trim(name)
+            ),
+            category TEXT NOT NULL CHECK (category IN
+                ('resume','cover_letter_base','portfolio','supporting_document','other')),
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            status TEXT NOT NULL DEFAULT 'active' CHECK (
+                status IN ('active','retired')
+            ),
+            retired_at TEXT,
+            created_at TEXT NOT NULL CHECK (length(created_at) > 0),
+            updated_at TEXT NOT NULL CHECK (length(updated_at) > 0),
+            CHECK ((status = 'active' AND retired_at IS NULL) OR
+                   (status = 'retired' AND retired_at IS NOT NULL))
+        );
+        CREATE INDEX IF NOT EXISTS idx_materials_status_updated
+            ON materials(status, updated_at DESC, id);
+
+        CREATE TABLE IF NOT EXISTS material_versions (
+            id TEXT PRIMARY KEY CHECK (
+                length(id) = 32 AND id = lower(id)
+                AND id NOT GLOB '*[^0-9a-f]*'
+            ),
+            material_id TEXT NOT NULL REFERENCES materials(id) ON DELETE RESTRICT,
+            version_number INTEGER NOT NULL CHECK (version_number BETWEEN 1 AND 100),
+            display_filename TEXT NOT NULL CHECK (
+                length(display_filename) BETWEEN 1 AND 255
+            ),
+            declared_media_type TEXT NOT NULL CHECK (
+                length(declared_media_type) BETWEEN 3 AND 127
+            ),
+            byte_size INTEGER NOT NULL CHECK (byte_size BETWEEN 1 AND 26214400),
+            sha256 TEXT NOT NULL CHECK (
+                length(sha256) = 64 AND sha256 = lower(sha256)
+                AND sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            storage_key TEXT NOT NULL CHECK (
+                length(storage_key) = 64 AND storage_key = lower(storage_key)
+                AND storage_key NOT GLOB '*[^0-9a-f]*'
+            ),
+            created_at TEXT NOT NULL CHECK (length(created_at) > 0)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_material_versions_number
+            ON material_versions(material_id, version_number);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_material_versions_content
+            ON material_versions(material_id, sha256);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_material_versions_storage_key
+            ON material_versions(storage_key);
+        CREATE INDEX IF NOT EXISTS idx_material_versions_material
+            ON material_versions(material_id, version_number DESC);
         """
     )
 

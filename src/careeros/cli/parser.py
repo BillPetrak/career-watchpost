@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Argument-parser construction for the CareerOS CLI.
 
 All parser definitions, defaults, choices, and help text live here. This module
@@ -17,6 +18,13 @@ from careeros.review.models import DECISION_VALUES, QUEUE_STATES
 from careeros.saved_searches.models import SEARCH_MODES
 
 
+def _positive(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CareerOS command-line parser."""
     parser = argparse.ArgumentParser(
@@ -32,15 +40,24 @@ def build_parser() -> argparse.ArgumentParser:
     database_commands = database_parser.add_subparsers(
         dest="database_command", required=True
     )
-    backup_parser = database_commands.add_parser("backup")
+    backup_parser = database_commands.add_parser(
+        "backup",
+        help="Back up the SQLite database only; managed material files are not included.",
+    )
     backup_parser.add_argument("destination", type=Path)
     backup_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
-    migrate_parser = database_commands.add_parser("migrate")
+    migrate_parser = database_commands.add_parser(
+        "migrate",
+        help="Migrate the SQLite database only; managed material files are not migrated.",
+    )
     migrate_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
     migrate_parser.add_argument("--backup", type=Path)
     migrate_parser.add_argument("--no-backup", action="store_true")
     migrate_parser.add_argument("--acknowledge-data-loss-risk", action="store_true")
-    restore_parser = database_commands.add_parser("restore")
+    restore_parser = database_commands.add_parser(
+        "restore",
+        help="Restore the SQLite database only; managed material files are not restored.",
+    )
     restore_parser.add_argument("backup", type=Path)
     restore_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
     restore_parser.add_argument("--confirm-replace", action="store_true")
@@ -50,6 +67,53 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--port", type=int, default=8000)
     serve_parser.add_argument("--ipv6", action="store_true")
     serve_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    serve_parser.add_argument("--materials-root", type=Path)
+
+    material_parser = subparsers.add_parser(
+        "material", help="Manage private reusable materials."
+    )
+    material_commands = material_parser.add_subparsers(
+        dest="material_command", required=True
+    )
+    ml = material_commands.add_parser("list")
+    ml.add_argument("--include-retired", action="store_true")
+    ml.add_argument("--limit", type=_positive, default=20)
+    ml.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    ms = material_commands.add_parser("show")
+    ms.add_argument("material_id")
+    ms.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    mi = material_commands.add_parser("import")
+    mi.add_argument("source", type=Path)
+    mi.add_argument("--name", required=True)
+    mi.add_argument("--category", required=True)
+    mi.add_argument("--media-type", default="application/octet-stream")
+    mi.add_argument("--display-filename")
+    mi.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    mi.add_argument("--materials-root", type=Path)
+    mv = material_commands.add_parser("add-version")
+    mv.add_argument("material_id")
+    mv.add_argument("source", type=Path)
+    mv.add_argument("--expected-revision", type=_positive, required=True)
+    mv.add_argument("--media-type", default="application/octet-stream")
+    mv.add_argument("--display-filename")
+    mv.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    mv.add_argument("--materials-root", type=Path)
+    for command in ("update", "retire", "restore"):
+        p = material_commands.add_parser(command)
+        p.add_argument("material_id")
+        p.add_argument("--expected-revision", type=_positive, required=True)
+        if command == "update":
+            p.add_argument("--name")
+            p.add_argument("--category")
+        p.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    me = material_commands.add_parser("export-version")
+    me.add_argument("version_id")
+    me.add_argument("destination", type=Path)
+    me.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    me.add_argument("--materials-root", type=Path)
+    ma = material_commands.add_parser("audit")
+    ma.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    ma.add_argument("--materials-root", type=Path)
 
     subparsers.add_parser(
         "diagnose",
