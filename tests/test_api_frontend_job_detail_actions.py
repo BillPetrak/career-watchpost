@@ -444,7 +444,9 @@ def test_repeated_review_mutation_failures_replace_not_append() -> None:
     # Reviewed, Applications, Today, and Preparation each have their own
     # mutation catch path in addition to the existing detail, reminder,
     # application, and queue paths.
-    assert js.count("replaceSectionError(") == 14
+    # Application Package adds independent conflict, finalization,
+    # reconciliation, rebase, and deletion error boundaries.
+    assert js.count("replaceSectionError(") == 22
     for name in ("applyReviewDecision", "clearReviewDecision"):
         start = js.index(f"async function {name}")
         end = js.index("async function", start + len(name) + 30)
@@ -471,7 +473,17 @@ def test_method_set_is_exactly_post_put_patch_delete_in_order() -> None:
     # POST /report (Review view), POST /reminders (create), PUT (review/
     # application/reminder lifecycle), PATCH (reminder edit), DELETE (review
     # clear + reminder delete) -- in source order.
-    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
+    assert methods == [
+        "POST",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
+    ]
 
 
 def test_forbidden_endpoints_remain_absent() -> None:
@@ -527,13 +539,15 @@ def test_no_private_fields_filesystem_profile_or_storage_access() -> None:
         "/data/",
         ".source_job_id",
         "score_components",
-        ".reasons",
         "reminder.message",
         "notification_summary",
         "last_error",
         "notes",
     ):
         assert forbidden not in js, forbidden
+    # Package completeness reasons are an explicit safe API projection and are
+    # rendered in server order; this is distinct from private ranking reasons.
+    assert "completeness.reasons.forEach" in js
 
 
 def test_decision_actions_css_present() -> None:
@@ -705,7 +719,7 @@ def test_missing_database_is_500_and_nothing_is_created(
     path = tmp_path / "nested" / "careeros.sqlite3"
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v10"):
+    with pytest.raises(ValueError, match="current schema v11"):
         with TestClient(app):
             pass
     assert not path.exists()
@@ -751,7 +765,7 @@ def test_lock_contention_maps_to_503(
 
 
 def test_schema_version_stays_current() -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_no_careeros_cli_import() -> None:

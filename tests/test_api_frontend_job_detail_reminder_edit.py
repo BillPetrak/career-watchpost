@@ -36,8 +36,8 @@ stale-response protection via the per-navigation ``detailRequestSeq`` token
 (which ``navigate()`` also invalidates the moment the user LEAVES the Job
 Detail view, so an in-flight reminder save/refresh can never update the DOM
 after navigation away); ``patchJson`` is defined once and called once, always against
-``/reminders/{id}``; ``PATCH`` is the only new HTTP method (the method-set
-invariant is ``["POST", "POST", "PUT", "PATCH", "DELETE"]``); no storage APIs,
+``/reminders/{id}``; ``PATCH`` remains the reminder-edit method within the
+current global inventory including package-owned mutations; no storage APIs,
 unsafe HTML sinks, private fields, or client-side sorting; the shared schema
 version, no-``careeros.cli``-import, real-default-database, and static-asset
 invariants.
@@ -747,13 +747,23 @@ def test_no_private_filesystem_profile_or_log_access() -> None:
         assert forbidden not in combined, forbidden
 
 
-def test_method_set_is_exactly_post_post_put_patch_delete_in_order() -> None:
+def test_global_http_method_inventory_includes_package_mutations() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    # POST /report (Review view), POST /reminders (create), PUT (review/
-    # application/reminder lifecycle), PATCH (reminder edit), DELETE (review
-    # clear + reminder delete) -- in source order.
-    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
+    # The first five declarations are the legacy report/reminder/review/
+    # application methods. The final four are package-local removal, answer,
+    # answer-removal, and material-selection mutations, in source order.
+    assert methods == [
+        "POST",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
+    ]
 
 
 def test_patch_json_defined_once_called_once_against_reminders() -> None:
@@ -990,7 +1000,7 @@ def test_patch_missing_database_is_500_and_nothing_created(
     path = tmp_path / "nested" / "careeros.sqlite3"
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v10"):
+    with pytest.raises(ValueError, match="current schema v11"):
         with TestClient(app):
             pass
     assert not path.exists()
@@ -1042,7 +1052,7 @@ def test_patch_lock_contention_maps_to_503(
 
 
 def test_schema_version_stays_current() -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_no_careeros_cli_import() -> None:

@@ -851,6 +851,161 @@ main {
 .preparation-action:disabled { cursor: not-allowed; opacity: .55; }
 .preparation-summary { font-weight: 600; }
 
+/* Job-specific Application Package. This private nested workspace follows the
+   Preparation visual language without sharing global Materials state. */
+.package-draft-region,
+.package-authority-state,
+.package-completeness,
+.package-requirement,
+.package-selected-history,
+.package-chooser-panel {
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.package-version-summary,
+.package-completeness-category,
+.package-current-note,
+.package-pipeline-summary p {
+  font-weight: 600;
+}
+
+.package-authority-state p,
+.package-completeness p,
+.package-requirement p {
+  margin: 5px 0;
+}
+
+.package-completeness h4,
+.package-requirements h4,
+.package-history h3,
+.package-detail-heading,
+.package-requirement h5,
+.package-chooser-panel h6,
+.package-chooser-detail h6 {
+  margin: 0 0 8px;
+}
+
+.package-completeness-reasons,
+.package-requirement-list,
+.package-history-list {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.package-history-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.package-history-item + .package-history-item {
+  margin-top: 7px;
+}
+
+.package-history-select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.package-history-select[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.package-answer-form {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.package-answer-form label {
+  font-weight: 600;
+}
+
+.package-answer-form textarea {
+  width: 100%;
+  min-height: 92px;
+  padding: 7px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font: inherit;
+  resize: vertical;
+}
+
+.package-answer-text {
+  padding: 9px;
+  overflow-wrap: anywhere;
+  border-left: 3px solid var(--color-border);
+  white-space: pre-wrap;
+}
+
+.package-material-chooser {
+  margin-top: 10px;
+}
+
+.package-primary-action,
+.package-secondary-action,
+.package-destructive-action,
+.package-answer-form button,
+.package-lifecycle-actions button,
+.package-material-actions button {
+  padding: 7px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.package-primary-action {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.package-destructive-action {
+  border-color: var(--color-error) !important;
+  color: var(--color-error) !important;
+}
+
+.application-package-section button:disabled,
+.application-package-section textarea:disabled,
+.application-package-section select:disabled {
+  opacity: .6;
+  cursor: default;
+}
+
+.package-blocking-reason,
+.package-authority-state .warning-note {
+  color: var(--color-error);
+}
+
+.package-current-note {
+  color: var(--color-ok);
+}
+
+.package-pipeline-summary {
+  margin: 8px 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.package-pipeline-fields {
+  margin: 0;
+}
+
 /* Narrow / mobile layout. */
 @media (max-width: 600px) {
   main {
@@ -886,6 +1041,27 @@ main {
   }
 
   .saved-search-layout { grid-template-columns: 1fr; }
+
+  .package-lifecycle-actions,
+  .package-material-actions,
+  .package-answer-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .package-lifecycle-actions button,
+  .package-material-actions button,
+  .package-answer-actions button,
+  .package-answer-form button,
+  .package-primary-action,
+  .package-secondary-action,
+  .package-destructive-action {
+    width: 100%;
+  }
+
+  .package-history-pagination {
+    flex-wrap: wrap;
+  }
 }
 
 /* Private Materials library. The list/detail split collapses cleanly through

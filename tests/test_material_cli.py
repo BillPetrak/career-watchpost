@@ -5,7 +5,7 @@ import pytest
 from careeros.cli.commands.materials import run_material_command
 from careeros.cli.parser import build_parser
 from careeros.database.connection import connect_current_rw, connect_read_only
-from careeros.database.schema import initialize_schema
+from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 
 
 def db(tmp_path: Path) -> Path:
@@ -98,7 +98,7 @@ def test_rw_connection_rejects_v9_without_mutation(tmp_path: Path) -> None:
             ).fetchone()[0]
             == "9"
         )
-    assert before == "10"
+    assert before == str(SCHEMA_VERSION)
 
 
 def test_import_and_export_round_trip_are_cli_operations(

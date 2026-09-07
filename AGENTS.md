@@ -2078,7 +2078,7 @@ there is no explanation endpoint or persistence. Grouped explanations belong
 to the union-scored opportunity and retain the exact response member count.
 ## R3 M2 private Materials library
 
-`SCHEMA_VERSION` is 10. Materials are global reusable private records with
+`SCHEMA_VERSION` is 11. Materials are global reusable private records with
 immutable versions; they are not owned by jobs or applications. Managed bytes
 live outside the checkout under an XDG-configured root, with a DB/root marker
 pair, mode 0700 directories, mode 0600 files, no arbitrary durable paths, and
@@ -2086,7 +2086,7 @@ no destructive deletion or history erasure. Browser uploads are raw bounded
 `application/octet-stream` streams; multipart, parsing, OCR, indexing,
 preview, cloud storage, and AI generation are out of scope.
 
-Material writes require an explicit current-v10 database and enforce the
+Material writes require an explicit current-v11 database and enforce the
 managed-root A–G binding state machine; the first successful import may safely
 create and bind an absent/empty root. Startup and read-only commands never
 migrate or initialize databases or create roots. Scheduled `collect due`
@@ -2094,7 +2094,7 @@ retains its existing fresh-database bootstrap behavior, but never migrates or
 changes an existing old-schema database. Use temporary databases and roots for
 development and tests. SQLite backup/restore/migration operations contain
 database pages only; managed material bytes and their root must be preserved
-separately as a matching pair. Production v9 to v10 migration is an explicit
+separately as a matching pair. Production migration to v11 is an explicit
 post-commit user decision.
 
 Material commands are available as `careeros material list`, `show`, `import`,
@@ -2103,3 +2103,31 @@ The audit is read-only, certifies only a stable snapshot, and returns 0 for a
 coherent store, 1 for stable inconsistency, and 75 for contention/repeated
 instability. Private names, hashes, storage keys, local paths, and content do
 not appear in ordinary diagnostics or URLs.
+
+## R3 M3 job-specific Application Packages
+
+Schema v11 adds one logical Application Package per concrete tracked
+`applications.id`, with at most one mutable draft and at most 100 retained
+versions. Drafts snapshot the semantic job tuple and current M1 requirements;
+finalized versions preserve immutable requirements, exact Material-version
+manifests, confirmed answers, approval, and ordered completeness reasons.
+Package state never references duplicate groups and never mutates M1
+acknowledgements, Application status/events, Review, reminders, jobs, or
+Materials.
+
+Package and Preparation revisions are independent CAS authorities. Rebase is
+explicit and uses the frozen compatibility matrix; semantic job changes require
+the user to clear and renew M1 review/ready acknowledgement after the captured
+reconfirmation time. Approval binds to the exact current draft revision without
+incrementing it. Finalization hashes each distinct selected exact Material once
+before acquiring the collection lock, retains safe descriptors/root identity,
+then uses `BEGIN IMMEDIATE` and a complete server-side reread before atomically
+freezing the same version row. A retry against the frozen version and revisions
+is idempotent and does not repeat preflight mutation hooks.
+
+The package HTTP surface is Job Detail-centric. Summary, history, and Pipeline
+are answer-free; only explicit version detail returns answers. Pipeline exposes
+only `has_draft`, approval-for-current-revision, finalized count, and latest
+finalization time—it never claims byte-verified completeness. There is no M3
+CLI, generic export, filesystem package store, Material deletion, submission,
+outreach, or frontend implementation in the backend work package.

@@ -767,11 +767,11 @@ def test_missing_database_refuses_startup_without_creating_file(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v10") as exc_info:
+    with pytest.raises(ValueError, match="current schema v11") as exc_info:
         with TestClient(app):
             pass
 
-    assert str(exc_info.value) == "CareerOS requires a current schema v10 database"
+    assert str(exc_info.value) == "CareerOS requires a current schema v11 database"
     assert not database_path.exists()
     assert not database_path.parent.exists()
 
@@ -784,11 +784,11 @@ def test_uninitialized_database_refuses_startup_without_mutation(
     _set_database(monkeypatch, database_path)
 
     before = database_path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v10") as exc_info:
+    with pytest.raises(ValueError, match="current schema v11") as exc_info:
         with TestClient(app):
             pass
 
-    assert str(exc_info.value) == "CareerOS requires a current schema v10 database"
+    assert str(exc_info.value) == "CareerOS requires a current schema v11 database"
     assert database_path.read_bytes() == before == b""
 
 
@@ -800,12 +800,12 @@ def test_malformed_database_refuses_startup_without_mutation(
     _set_database(monkeypatch, database_path)
 
     before = database_path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v10") as exc_info:
+    with pytest.raises(ValueError, match="current schema v11") as exc_info:
         with TestClient(app):
             pass
 
     message = str(exc_info.value)
-    assert message == "CareerOS requires a current schema v10 database"
+    assert message == "CareerOS requires a current schema v11 database"
     assert database_path.read_bytes() == before
     assert str(database_path) not in message
     assert "not a database" not in message

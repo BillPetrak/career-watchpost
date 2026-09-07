@@ -110,7 +110,7 @@ def test_fingerprint_covers_schema_version(tmp_path):
     connection = connect(_database(tmp_path / "db"))
     before = fingerprint(connection)
     connection.execute(
-        "UPDATE schema_metadata SET value='11' WHERE key='schema_version'"
+        "UPDATE schema_metadata SET value='10' WHERE key='schema_version'"
     )
     assert fingerprint(connection) != before
     connection.close()
@@ -339,7 +339,7 @@ def test_repeated_schema_instability_returns_fixed_75(tmp_path, monkeypatch):
     def capture(database_arg, root_arg):
         nonlocal calls
         calls += 1
-        version = "9" if calls in (2, 4) else "10"
+        version = "10" if calls in (2, 4) else "11"
         with sqlite3.connect(database) as writer:
             writer.execute(
                 "UPDATE schema_metadata SET value=? WHERE key='schema_version'",

@@ -12,7 +12,7 @@ def test_preparation_job_detail_contract_and_ordering() -> None:
     assert 'preparation: "/applications/" + jobId + "/preparation"' in source
     assert (
         'var keys = ["job", "group", "application", "preparation", '
-        '"review", "reminders"];' in source
+        '"package", "review", "reminders"];' in source
     )
     assert (
         'fillDetailSection(content, job, "application", results.application);' in source
@@ -20,6 +20,7 @@ def test_preparation_job_detail_contract_and_ordering() -> None:
     assert (
         'fillDetailSection(content, job, "preparation", results.preparation);' in source
     )
+    assert 'fillDetailSection(content, job, "package", results.package);' in source
     assert "Preparation is unavailable until you explicitly track" in source
     assert "X-CareerOS-Preparation-Revision" in source
     assert '"X-CareerOS-Write": "1"' in source

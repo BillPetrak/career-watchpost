@@ -201,6 +201,14 @@ def marker_id(root: Path) -> str | None:
 
 
 def marker_id_fd(rfd: int) -> str | None:
+    result = marker_binding_evidence_fd(rfd)
+    return None if result is None else result[0]
+
+
+def marker_binding_evidence_fd(
+    rfd: int,
+) -> tuple[str, tuple[int, int, int, int, int, int, int, int]] | None:
+    """Read one marker safely and retain evidence that identifies that file."""
     try:
         fd = os.open(
             MARKER,
@@ -210,20 +218,43 @@ def marker_id_fd(rfd: int) -> str | None:
     except FileNotFoundError:
         return None
     try:
-        _check(os.fstat(fd), 0o600, regular=True)
-        if os.fstat(fd).st_size > 128:
+        before = os.fstat(fd)
+        _check(before, 0o600, regular=True)
+        if before.st_size > 128:
             raise StorageError("unsafe materials storage")
         raw = b""
         while chunk := os.read(fd, 4096):
             raw += chunk
             if len(raw) > 128:
                 raise StorageError("unsafe materials storage")
+        after = os.fstat(fd)
     finally:
         os.close(fd)
+    evidence = (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mode,
+        before.st_uid,
+        before.st_nlink,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    if evidence != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mode,
+        after.st_uid,
+        after.st_nlink,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ):
+        raise StorageError("unsafe materials storage")
     match = re.fullmatch(rb"careeros-material-store-v1:([0-9a-f]{32})\n", raw)
     if not match:
         raise StorageError("unsafe materials storage")
-    return match.group(1).decode()
+    return match.group(1).decode(), evidence
 
 
 def _populated(rfd: int) -> bool:
@@ -835,14 +866,28 @@ def open_bound_object(root: Path, store_id: str, key: str) -> int:
     configured path is checked once more after opening the object, but a
     replacement after that check cannot redirect the already-open object FD.
     """
+    fd, rfd, _marker_evidence = open_bound_object_with_root(root, store_id, key)
+    os.close(rfd)
+    return fd
+
+
+def open_bound_object_with_root(
+    root: Path, store_id: str, key: str
+) -> tuple[int, int, tuple[int, int, int, int, int, int, int, int]]:
+    """Open an object while retaining its validated root and marker evidence."""
     if not re.fullmatch(r"[0-9a-f]{64}", key):
         raise StorageError("invalid storage object")
     rfd = _rootfd(root)
     ofd = afd = bfd = -1
     fd = -1
+    retain_root = False
     try:
         if ensure_binding_fd(rfd, root, store_id) != store_id:
             raise StorageError("materials storage binding unavailable")
+        binding = marker_binding_evidence_fd(rfd)
+        if binding is None or binding[0] != store_id:
+            raise StorageError("materials storage binding unavailable")
+        marker_evidence = binding[1]
         ofd = _odir(rfd, "objects")
         afd = _odir(ofd, key[:2])
         bfd = _odir(afd, key[2:4])
@@ -859,7 +904,15 @@ def open_bound_object(root: Path, store_id: str, key: str) -> int:
             os.close(configured)
         if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
             raise StorageError("materials storage binding unavailable")
-        return fd
+        current_binding = marker_binding_evidence_fd(rfd)
+        if (
+            current_binding is None
+            or current_binding[0] != store_id
+            or current_binding[1] != marker_evidence
+        ):
+            raise StorageError("materials storage binding unavailable")
+        retain_root = True
+        return fd, rfd, marker_evidence
     except OSError as exc:
         if fd >= 0:
             os.close(fd)
@@ -869,9 +922,11 @@ def open_bound_object(root: Path, store_id: str, key: str) -> int:
             os.close(fd)
         raise
     finally:
-        for descriptor in (bfd, afd, ofd, rfd):
+        for descriptor in (bfd, afd, ofd):
             if descriptor >= 0:
                 os.close(descriptor)
+        if rfd >= 0 and not retain_root:
+            os.close(rfd)
 
 
 def root_identity(root: Path) -> tuple[int, int]:

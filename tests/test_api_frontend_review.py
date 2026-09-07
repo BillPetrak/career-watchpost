@@ -23,8 +23,8 @@ being preserved with no client re-sorting or re-ranking; candidate_count being
 displayed from the response rather than derived from visible arrays; match/score
 shown only where returned; empty-section handling; safe external links with
 unsafe URL suppression; no private fields being rendered; no
-profile_path/filesystem/storage usage; no unsafe HTML sinks; the method set
-being exactly POST /report plus the Job Detail review-decision PUT/DELETE
+profile_path/filesystem/storage usage; no unsafe HTML sinks; the current global
+method inventory including approved local workflow and Application Package
 mutations; Home/Jobs/unknown-hash/skip-link behaviour remaining intact;
 static serving, SCHEMA_VERSION, the no-``careeros.cli`` import guarantee, the
 untouched real default database, repeated-request determinism, and narrow
@@ -489,12 +489,22 @@ def test_no_filesystem_or_config_access_from_frontend() -> None:
 def test_app_js_methods_are_report_post_and_workflow_mutations() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
+    assert methods == [
+        "POST",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
+    ]
     assert '"/report?grouped="' in js
     # The Job Detail view legitimately GETs the /applications?job_id={id},
     # /review-decisions?job_id={id}, and /reminders?job_id={id} route families
-    # and PUTs/DELETEs only the review-decision route (plus the PATCH reminder
-    # edit); no other computation or mutation endpoint is ever called.
+    # and mutates only approved local workflow routes, including Application
+    # Package routes; no unrelated computation/workflow endpoint is called.
     for forbidden in (
         "/saved-searches",
         "/ranked-jobs",
@@ -536,7 +546,7 @@ def test_missing_database_returns_friendly_empty_report(
     database_path = tmp_path / "missing" / "careeros.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v10"):
+    with pytest.raises(ValueError, match="current schema v11"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -617,7 +627,7 @@ def test_ui_assets_still_serve_with_correct_types(
 
 
 def test_schema_version_stays_ten() -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_no_careeros_cli_import_under_api() -> None:

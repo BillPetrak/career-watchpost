@@ -194,6 +194,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -202,6 +203,8 @@ from careeros.api.deps import (
     LOCK_CONTENTION_MESSAGE,
     read_only_connection,
     read_only_connection_for,
+    unlocked_writable_connection,
+    unlocked_writable_connection_for,
     writable_connection,
     writable_connection_for,
 )
@@ -218,6 +221,7 @@ from careeros.api.schemas import (
     ClearReviewDecisionResponse,
     CollectionRun,
     CollectionRunListResponse,
+    EmptyPackageRequest,
     Group,
     GroupListResponse,
     GroupSummaryResponse,
@@ -226,7 +230,17 @@ from careeros.api.schemas import (
     JobListResponse,
     MaterialDetail,
     MaterialListResponse,
+    MaterialSelectionRequest,
     MaterialUpdateRequest,
+    PackageAnswerRequest,
+    PackageApprovalRequest,
+    PackageConfirmationRequest,
+    PackageDeletionRequest,
+    PackageDraftDetail,
+    PackageFinalizationRequest,
+    PackageFinalizedDetail,
+    PackageRebaseRequest,
+    PackageSummaryResponse,
     RankedGroupItem,
     RankedJobItem,
     RankedJobsResponse,
@@ -275,6 +289,39 @@ from careeros.api.schemas import (
     TodayShortlistSection,
 )
 from careeros.api.security import SecurityMiddleware
+from careeros.application_packages.service import (
+    PackageConflict,
+    PackageError,
+    package_lifecycle_for_applications,
+    package_summary,
+    remove_material_selection,
+    set_material_selection,
+    version_detail,
+)
+from careeros.application_packages.service import (
+    confirm_answer as confirm_package_answer,
+)
+from careeros.application_packages.service import (
+    delete_version as delete_package_version,
+)
+from careeros.application_packages.service import (
+    finalize as finalize_package,
+)
+from careeros.application_packages.service import (
+    open_draft as open_package_draft,
+)
+from careeros.application_packages.service import (
+    rebase as rebase_package,
+)
+from careeros.application_packages.service import (
+    remove_answer as remove_package_answer,
+)
+from careeros.application_packages.service import (
+    set_answer as set_package_answer,
+)
+from careeros.application_packages.service import (
+    set_approval as set_package_approval,
+)
 from careeros.applications.models import APPLICATION_STATUSES, validate_status
 from careeros.applications.service import (
     ApplicationFilter,
@@ -430,7 +477,7 @@ from careeros.saved_searches.service import (
     rename_search,
     update_search,
 )
-from careeros.settings import materials_root
+from careeros.settings import database_path, materials_root
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 from careeros.today.service import build_today
 
@@ -892,8 +939,14 @@ def create_app(
         def bound_writable_connection() -> Iterator[sqlite3.Connection]:
             yield from writable_connection_for(selected_database)
 
+        def bound_unlocked_writable_connection() -> Iterator[sqlite3.Connection]:
+            yield from unlocked_writable_connection_for(selected_database)
+
         app.dependency_overrides[read_only_connection] = bound_read_only_connection
         app.dependency_overrides[writable_connection] = bound_writable_connection
+        app.dependency_overrides[unlocked_writable_connection] = (
+            bound_unlocked_writable_connection
+        )
 
     @app.exception_handler(sqlite3.Error)
     async def _database_error_handler(
@@ -906,6 +959,21 @@ def create_app(
         return JSONResponse(
             status_code=500, content={"detail": DATABASE_UNAVAILABLE_MESSAGE}
         )
+
+    @app.exception_handler(RequestValidationError)
+    async def _request_validation_handler(
+        request: Request, exc: RequestValidationError
+    ) -> Response:
+        if "package" in request.url.path:
+            code = (
+                "invalid_package_pagination"
+                if request.method == "GET" and request.url.path.endswith("/package")
+                else "invalid_package_request"
+            )
+            return JSONResponse(status_code=422, content={"detail": code})
+        from fastapi.exception_handlers import request_validation_exception_handler
+
+        return await request_validation_exception_handler(request, exc)
 
     @app.get("/health", response_model=HealthResponse)
     def health(
@@ -1286,12 +1354,16 @@ def create_app(
             [item.application.id for item in result.items],
             now=datetime.now(UTC).isoformat(),
         )
+        packages = package_lifecycle_for_applications(
+            connection, [item.application.id for item in result.items]
+        )
         return ApplicationPipelineResponse(
             items=[
                 ApplicationPipelineItem.model_validate(
                     {
                         **application_item_dict(item),
                         "preparation": preparation.get(item.application.id),
+                        "package": packages.get(item.application.id),
                     }
                 )
                 for item in result.items
@@ -2970,6 +3042,457 @@ def create_app(
                 feedback=None,
             )
         )
+
+    def _package_revision(value: str | None) -> int:
+        if value is None:
+            raise HTTPException(status_code=428, detail="package_revision_required")
+        try:
+            revision = int(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="invalid_package_revision"
+            ) from exc
+        if revision < 0:
+            raise HTTPException(status_code=422, detail="invalid_package_revision")
+        return revision
+
+    def _package_preparation_revision(value: str | None) -> int:
+        if value is None:
+            raise HTTPException(status_code=428, detail="preparation_revision_required")
+        try:
+            revision = int(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="invalid_preparation_revision"
+            ) from exc
+        if revision < 0:
+            raise HTTPException(status_code=422, detail="invalid_preparation_revision")
+        return revision
+
+    def _package_error(error: PackageError) -> HTTPException:
+        if isinstance(error, PackageConflict):
+            return HTTPException(
+                status_code=409,
+                detail={
+                    "code": error.code,
+                    "current_revision": error.current_revision,
+                },
+            )
+        code = str(error)
+        if code in {
+            "job_not_found",
+            "application_not_tracked",
+            "package_version_not_found",
+            "package_requirement_not_found",
+            "material_version_not_found",
+        }:
+            return HTTPException(status_code=404, detail=code)
+        if code == "invalid_package_answer":
+            return HTTPException(status_code=422, detail=code)
+        return HTTPException(status_code=409, detail=code)
+
+    def _package_detail(
+        connection: sqlite3.Connection, version_id: str
+    ) -> dict[str, Any]:
+        return version_detail(connection, version_id, root=selected_materials_root)
+
+    @app.get("/applications/{job_id}/package", response_model=PackageSummaryResponse)
+    def application_package_summary(
+        job_id: int,
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: Annotated[int, Query(ge=0)] = 0,
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=404, detail="job_not_found")
+        try:
+            return package_summary(connection, job_id, offset=offset, limit=limit)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.put("/applications/{job_id}/package/draft", response_model=PackageDraftDetail)
+    def application_package_open_draft(
+        job_id: int,
+        payload: EmptyPackageRequest,
+        response: Response,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            preparation_revision = _package_preparation_revision(preparation_header)
+            draft, created = open_package_draft(
+                connection,
+                job_id,
+                preparation_revision=preparation_revision,
+            )
+            response.status_code = 201 if created else 200
+            response.headers["Location"] = (
+                f"/application-package-versions/{draft['id']}"
+            )
+            return _package_detail(connection, str(draft["id"]))
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.get(
+        "/application-package-versions/{version_id}",
+        response_model=PackageDraftDetail | PackageFinalizedDetail,
+    )
+    def application_package_version_detail(
+        version_id: str,
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=404, detail="package_version_not_found")
+        try:
+            return _package_detail(connection, version_id)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    def _package_headers(
+        package_header: str | None, preparation_header: str | None
+    ) -> tuple[int, int]:
+        return (
+            _package_revision(package_header),
+            _package_preparation_revision(preparation_header),
+        )
+
+    @app.put(
+        "/application-package-versions/{version_id}/material-selections/{requirement_id}",
+        response_model=PackageDraftDetail,
+    )
+    def application_package_select_material(
+        version_id: str,
+        requirement_id: str,
+        payload: MaterialSelectionRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            package_revision, preparation_revision = _package_headers(
+                package_header, preparation_header
+            )
+            set_material_selection(
+                connection,
+                version_id,
+                requirement_id,
+                payload.material_version_id,
+                package_revision=package_revision,
+                preparation_revision=preparation_revision,
+            )
+            return _package_detail(connection, version_id)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.delete(
+        "/application-package-versions/{version_id}/material-selections/{requirement_id}",
+        response_model=PackageDraftDetail,
+    )
+    def application_package_remove_material(
+        version_id: str,
+        requirement_id: str,
+        payload: EmptyPackageRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            package_revision, preparation_revision = _package_headers(
+                package_header, preparation_header
+            )
+            remove_material_selection(
+                connection,
+                version_id,
+                requirement_id,
+                package_revision=package_revision,
+                preparation_revision=preparation_revision,
+            )
+            return _package_detail(connection, version_id)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.put(
+        "/application-package-versions/{version_id}/answers/{requirement_id}",
+        response_model=PackageDraftDetail,
+    )
+    def application_package_set_answer(
+        version_id: str,
+        requirement_id: str,
+        payload: PackageAnswerRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            package_revision, preparation_revision = _package_headers(
+                package_header, preparation_header
+            )
+            set_package_answer(
+                connection,
+                version_id,
+                requirement_id,
+                payload.text,
+                package_revision=package_revision,
+                preparation_revision=preparation_revision,
+            )
+            return _package_detail(connection, version_id)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.delete(
+        "/application-package-versions/{version_id}/answers/{requirement_id}",
+        response_model=PackageDraftDetail,
+    )
+    def application_package_remove_answer(
+        version_id: str,
+        requirement_id: str,
+        payload: EmptyPackageRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            package_revision, preparation_revision = _package_headers(
+                package_header, preparation_header
+            )
+            remove_package_answer(
+                connection,
+                version_id,
+                requirement_id,
+                package_revision=package_revision,
+                preparation_revision=preparation_revision,
+            )
+            return _package_detail(connection, version_id)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.put(
+        "/application-package-versions/{version_id}/answers/{requirement_id}/confirmation",
+        response_model=PackageDraftDetail,
+    )
+    def application_package_confirm_answer(
+        version_id: str,
+        requirement_id: str,
+        payload: PackageConfirmationRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            package_revision, preparation_revision = _package_headers(
+                package_header, preparation_header
+            )
+            confirm_package_answer(
+                connection,
+                version_id,
+                requirement_id,
+                confirmed=payload.confirmed,
+                package_revision=package_revision,
+                preparation_revision=preparation_revision,
+            )
+            return _package_detail(connection, version_id)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.delete(
+        "/application-package-versions/{version_id}/answers/{requirement_id}/confirmation",
+        response_model=PackageDraftDetail,
+    )
+    def application_package_clear_answer_confirmation(
+        version_id: str,
+        requirement_id: str,
+        payload: EmptyPackageRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            package_revision, preparation_revision = _package_headers(
+                package_header, preparation_header
+            )
+            confirm_package_answer(
+                connection,
+                version_id,
+                requirement_id,
+                confirmed=False,
+                package_revision=package_revision,
+                preparation_revision=preparation_revision,
+            )
+            return _package_detail(connection, version_id)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.put(
+        "/application-package-versions/{version_id}/rebase",
+        response_model=PackageDraftDetail,
+    )
+    def application_package_rebase(
+        version_id: str,
+        payload: PackageRebaseRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            package_revision, preparation_revision = _package_headers(
+                package_header, preparation_header
+            )
+            rebase_package(
+                connection,
+                version_id,
+                package_revision=package_revision,
+                preparation_revision=preparation_revision,
+            )
+            return _package_detail(connection, version_id)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.put(
+        "/application-package-versions/{version_id}/approval",
+        response_model=PackageDraftDetail,
+    )
+    def application_package_approve(
+        version_id: str,
+        payload: PackageApprovalRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            package_revision, preparation_revision = _package_headers(
+                package_header, preparation_header
+            )
+            set_package_approval(
+                connection,
+                version_id,
+                approved=payload.approved,
+                package_revision=package_revision,
+                preparation_revision=preparation_revision,
+                root=selected_materials_root,
+            )
+            return _package_detail(connection, version_id)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.delete(
+        "/application-package-versions/{version_id}/approval",
+        response_model=PackageDraftDetail,
+    )
+    def application_package_clear_approval(
+        version_id: str,
+        payload: EmptyPackageRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            package_revision, preparation_revision = _package_headers(
+                package_header, preparation_header
+            )
+            set_package_approval(
+                connection,
+                version_id,
+                approved=False,
+                package_revision=package_revision,
+                preparation_revision=preparation_revision,
+                root=selected_materials_root,
+            )
+            return _package_detail(connection, version_id)
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.put(
+        "/application-package-versions/{version_id}/finalization",
+        response_model=PackageFinalizedDetail,
+    )
+    def application_package_finalize(
+        version_id: str,
+        payload: PackageFinalizationRequest,
+        connection: Annotated[
+            sqlite3.Connection, Depends(unlocked_writable_connection)
+        ],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+        preparation_header: str | None = Header(
+            default=None, alias="X-CareerOS-Preparation-Revision"
+        ),
+    ) -> dict[str, Any]:
+        try:
+            package_revision, preparation_revision = _package_headers(
+                package_header, preparation_header
+            )
+            return finalize_package(
+                connection,
+                version_id,
+                package_revision=package_revision,
+                preparation_revision=preparation_revision,
+                root=selected_materials_root,
+                database_path=selected_database or database_path(),
+            )
+        except CollectionLockConflict as error:
+            raise HTTPException(
+                status_code=503, detail=LOCK_CONTENTION_MESSAGE
+            ) from error
+        except PackageError as error:
+            raise _package_error(error) from error
+
+    @app.delete("/application-package-versions/{version_id}", status_code=204)
+    def application_package_delete_version(
+        version_id: str,
+        payload: PackageDeletionRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        package_header: str | None = Header(
+            default=None, alias="X-CareerOS-Package-Revision"
+        ),
+    ) -> Response:
+        try:
+            delete_package_version(
+                connection,
+                version_id,
+                package_revision=_package_revision(package_header),
+            )
+            return Response(status_code=204)
+        except PackageError as error:
+            raise _package_error(error) from error
 
     def _preparation_revision(value: str | None) -> int:
         if value is None:

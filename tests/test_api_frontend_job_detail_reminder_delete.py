@@ -301,7 +301,7 @@ def test_confirm_before_delete() -> None:
         'if (!window.confirm("Delete this reminder? This cannot be undone.")) return;'
         in js
     )
-    assert js.count("window.confirm(") == 2
+    assert js.count("window.confirm(") == 3
 
 
 def test_cancel_is_a_true_noop() -> None:
@@ -477,7 +477,7 @@ def test_no_private_fields_or_unsafe_sinks() -> None:
         assert forbidden not in js, forbidden
     # Native confirmation gates reminder deletion and preparation requirement
     # deletion; the reminder retry path itself never confirms again.
-    assert js.count("window.confirm(") == 2
+    assert js.count("window.confirm(") == 3
     assert js.replace("window.confirm(", "").count("confirm(") == 0
 
 
@@ -505,7 +505,17 @@ def test_method_set_is_exactly_post_post_put_patch_delete_in_order() -> None:
     # application/reminder lifecycle), PATCH (reminder edit), DELETE (review
     # clear + reminder delete) -- in source order. The reminder delete reuses
     # the existing deleteJson.
-    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
+    assert methods == [
+        "POST",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
+    ]
 
 
 def test_server_ordering_preserved_no_client_sort() -> None:
@@ -634,7 +644,7 @@ def test_missing_database_is_500_and_nothing_is_created(
     path = tmp_path / "nested" / "careeros.sqlite3"
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v10"):
+    with pytest.raises(ValueError, match="current schema v11"):
         with TestClient(app):
             pass
     assert not path.exists()
@@ -678,7 +688,7 @@ def test_lock_contention_maps_to_503(
 
 
 def test_schema_version_stays_current() -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_no_careeros_cli_import() -> None:

@@ -4,7 +4,7 @@ CareerOS is a privacy-first career intelligence platform.
 
 ## Private reusable Materials (R3 M2)
 
-CareerOS schema v10 includes a local Materials library for reusable private
+CareerOS schema v11 includes a local Materials library for reusable private
 documents. Versions are immutable and globally reusable; no material belongs
 to a job or application. File bytes remain outside SQLite in a managed XDG
 root outside the Git checkout. The root is private and marker-bound to the
@@ -15,7 +15,23 @@ for administration, `export-version` for an explicit verified copy, and
 `audit` for a read-only consistency check. Development and migration tests
 must use temporary databases and roots. CareerOS never implicitly migrates an
 old database or creates a Materials root during startup/read-only operations;
-production v9 to v10 migration is a separate explicit decision.
+production migration to v11 is a separate explicit decision.
+
+Schema v11 also adds job-specific Application Packages for tracked jobs. A
+logical package retains at most one mutable draft plus immutable finalized
+versions. Drafts snapshot the concrete job and Preparation requirements, bind
+Material requirements to exact library versions, and keep user-authored
+answers private to explicit version-detail responses. Approval binds to the
+current draft revision; finalization verifies current Preparation/job authority
+and selected Material bytes before atomically freezing that same version row.
+Package finalization never changes Application status, Review decisions,
+reminders, Preparation acknowledgements, jobs, or Material bytes.
+
+The HTTP lifecycle is available under
+`/applications/{job_id}/package` and `/application-package-versions/{id}`.
+Unsafe operations require `X-CareerOS-Write: 1`; semantic draft mutations use
+independent package and Preparation revision headers. Pipeline responses expose
+only answer-free lifecycle facts. There is no package CLI or generic export.
 
 Its first working module will be an AI-assisted job discovery and
 recommendation system that collects job advertisements, normalizes them,

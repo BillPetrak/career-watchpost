@@ -179,10 +179,210 @@ class ApplicationItem(BaseModel):
     job: Job
 
 
+class PackageModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class EmptyPackageRequest(PackageModel):
+    pass
+
+
+class MaterialSelectionRequest(PackageModel):
+    material_version_id: str
+
+
+class PackageAnswerRequest(PackageModel):
+    text: str
+
+
+class PackageConfirmationRequest(PackageModel):
+    confirmed: Literal[True]
+
+
+class PackageRebaseRequest(PackageModel):
+    rebase: Literal[True]
+
+
+class PackageApprovalRequest(PackageModel):
+    approved: Literal[True]
+
+
+class PackageFinalizationRequest(PackageModel):
+    finalize: Literal[True]
+
+
+class PackageDeletionRequest(PackageModel):
+    confirm: Literal[True]
+
+
+class PackageLifecycle(PackageModel):
+    has_draft: bool
+    draft_approved_for_current_revision: bool
+    finalized_count: int
+    latest_finalized_at: str | None
+
+
+class PackageDraftSummary(PackageModel):
+    version_id: str
+    version_number: int
+    revision: int
+    preparation_revision: int
+    preparation_stale: bool
+    job_stale: bool
+    job_reconfirmation_required: bool
+    approval_status: Literal["not_approved", "stale", "current"]
+    created_at: str
+    updated_at: str
+
+
+class PackageHistoryItem(PackageModel):
+    version_id: str
+    version_number: int
+    revision: int
+    preparation_revision: int
+    approved_at: str
+    finalized_at: str
+
+
+class PackageHistoryPage(PackageModel):
+    items: list[PackageHistoryItem]
+    total: int
+    offset: int
+    limit: int
+
+
+class PackageSummaryResponse(PackageModel):
+    application_id: int
+    job_id: int
+    package_id: str | None
+    draft: PackageDraftSummary | None
+    history: PackageHistoryPage
+
+
+class PackageFork(PackageModel):
+    version_id: str
+    version_number: int
+
+
+class PackageJobSnapshot(PackageModel):
+    job_id: int
+    source: str
+    source_job_id: str | None
+    title: str
+    company: str | None
+    location: str | None
+    url: str | None
+    employment_type: str | None
+    remote_status: str | None
+    published_at: str | None
+    updated_at: str
+    description_present: bool
+
+
+class PackageRequirement(PackageModel):
+    requirement_id: str
+    kind: Literal["material", "link", "question", "task", "deadline", "other"]
+    label: str
+    detail: str | None
+    required: bool
+    fulfillment_state: Literal["open", "satisfied", "not_applicable"]
+    deadline_at: str | None
+    sort_order: int
+    origin: Literal["manual"]
+    capture_method: Literal["manual"]
+    confirmed: bool
+    created_at: str
+    updated_at: str
+
+
+class PackageMaterialSelection(PackageModel):
+    requirement_id: str
+    material_version_id: str
+    material_id: str
+    material_name: str
+    material_category: Literal[
+        "resume", "cover_letter_base", "portfolio", "supporting_document", "other"
+    ]
+    version_number: int
+    display_filename: str
+    declared_media_type: str
+    byte_size: int
+    origin: Literal["manual"]
+    capture_method: Literal["manual"]
+    current_availability: Literal["available", "retired", "unavailable"]
+    created_at: str
+    updated_at: str
+
+
+class PackageAnswer(PackageModel):
+    requirement_id: str
+    text: str
+    origin: Literal["manual"]
+    capture_method: Literal["manual"]
+    confirmed: bool
+    confirmed_at: str | None
+    created_at: str
+    updated_at: str
+
+
+class PackageCompletenessReason(PackageModel):
+    position: int
+    code: str
+    blocking: bool
+    requirement_id: str | None
+    message: str
+
+
+class PackageCompleteness(PackageModel):
+    category: Literal["stale", "incomplete", "complete"]
+    blocking_count: int
+    evaluated_at: str
+    reasons: list[PackageCompletenessReason]
+
+
+class PackageApproval(PackageModel):
+    status: Literal["not_approved", "stale", "current"]
+    approved_revision: int | None
+    approved_at: str | None
+
+
+class PackageVersionCommon(PackageModel):
+    package_id: str
+    application_id: int
+    job_id: int
+    version_id: str
+    version_number: int
+    revision: int
+    preparation_revision: int
+    forked_from: PackageFork | None
+    job_reconfirmation_required_at: str | None
+    created_at: str
+    updated_at: str
+    job_snapshot: PackageJobSnapshot
+    approval: PackageApproval
+    requirements: list[PackageRequirement]
+    material_selections: list[PackageMaterialSelection]
+    answers: list[PackageAnswer]
+    completeness: PackageCompleteness
+
+
+class PackageDraftDetail(PackageVersionCommon):
+    state: Literal["draft"]
+    preparation_stale: bool
+    job_stale: bool
+    job_reconfirmation_required: bool
+
+
+class PackageFinalizedDetail(PackageVersionCommon):
+    state: Literal["finalized"]
+    finalized_at: str
+
+
 class ApplicationPipelineItem(ApplicationItem):
     """Pipeline-only application projection with compact preparation state."""
 
     preparation: dict[str, object] | None = None
+    package: PackageLifecycle | None = None
 
 
 class ApplicationListResponse(BaseModel):

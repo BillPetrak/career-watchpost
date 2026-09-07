@@ -10,7 +10,7 @@ from careeros.collectors.arbeitnow import CollectedJob
 from careeros.database.connection import connect
 from careeros.database.groups import ensure_grouped
 from careeros.database.jobs import save_jobs
-from careeros.database.schema import initialize_schema
+from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.review.service import set_decision
 from tests.support import TestClient
 
@@ -96,7 +96,7 @@ def test_flat_pagination_and_validation(monkeypatch, tmp_path):
 def test_missing_database_is_read_only(monkeypatch, tmp_path):
     path = tmp_path / "missing" / "reviewed.sqlite3"
     monkeypatch.setenv("CAREEROS_DATABASE", str(path))
-    with pytest.raises(ValueError, match="current schema v10"):
+    with pytest.raises(ValueError, match="current schema v11"):
         with TestClient(app):
             pass
     assert not path.exists()
@@ -207,9 +207,6 @@ def test_reviewed_read_does_not_invoke_other_workflows(monkeypatch, tmp_path):
         response = client.get("/reviewed-opportunities")
     assert response.status_code == 200
     with connect(path) as connection:
-        assert (
-            connection.execute(
-                "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
-            ).fetchone()[0]
-            == "10"
-        )
+        assert connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+        ).fetchone()[0] == str(SCHEMA_VERSION)

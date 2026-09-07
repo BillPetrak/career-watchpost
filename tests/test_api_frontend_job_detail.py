@@ -388,11 +388,11 @@ def test_open_original_action_retained_and_safe() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# C. Request model: exactly five canonical read GETs, concurrent, no N+1
+# C. Request model: seven canonical read GETs, concurrent, no N+1
 # --------------------------------------------------------------------------- #
 
 
-def test_five_canonical_route_families_built_once() -> None:
+def test_seven_canonical_route_families_built_once() -> None:
     js = _js()
     assert "function jobDetailUrls(jobId)" in js
     assert 'var base = "/jobs/" + jobId;' in js
@@ -400,13 +400,15 @@ def test_five_canonical_route_families_built_once() -> None:
         "job: base",
         'group: base + "/group"',
         'application: "/applications?job_id=" + jobId',
+        'preparation: "/applications/" + jobId + "/preparation"',
+        'package: "/applications/" + jobId + "/package?offset="',
         'review: "/review-decisions?job_id=" + jobId',
         'reminders: "/reminders?job_id=" + jobId',
     ):
         assert route in js, route
     assert (
         'var keys = ["job", "group", "application", "preparation", '
-        '"review", "reminders"];' in js
+        '"package", "review", "reminders"];' in js
     )
 
 
@@ -432,15 +434,27 @@ def test_no_per_member_n_plus_one_fetches() -> None:
 
 def test_only_workflow_mutations_permitted() -> None:
     js = _js()
-    # The only frontend mutations are the Job Detail workflow actions: PUT and
+    # Frontend mutations are the Job Detail workflow actions: PUT and
     # DELETE /review-decisions/{id}, PUT /applications/{id}, and the reminder
     # POST /reminders plus PATCH /reminders/{id} (edit),
     # PUT /reminders/{id}/complete, PUT /reminders/{id}/reopen, and
     # DELETE /reminders/{id}. The computation-only POST /report remains the
     # Review view's sole POST, and every forbidden mutation/computation route
-    # stays absent.
+    # stays absent. The additional literal request descriptors belong to the
+    # package answer/material mutation definitions; packageWrite applies the
+    # authoritative method and both independent CAS headers.
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
+    assert methods == [
+        "POST",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
+    ]
     for forbidden in (
         "/saved-searches",
         "/ranked-jobs",
@@ -542,7 +556,9 @@ def test_group_failure_is_section_error_not_absence() -> None:
     # reminder-DELETE, reminder-edit-PATCH, Today reminder-completion mutation,
     # and Saved Search execution reconciles (a Saved Search 404 refreshes its
     # metadata); every other rejection is a plain section error.
-    assert js.count("status === 404") == 6
+    # Package adds one normal untracked-application absence and one
+    # post-deletion authoritative reconciliation branch.
+    assert js.count("status === 404") == 8
     assert "status === 404" not in _render_application_slice(js)
     assert "status === 404" not in _render_review_slice(js)
 
@@ -877,7 +893,7 @@ def test_missing_database_all_five_endpoints(
     missing = tmp_path / "does-not-exist" / "db.sqlite3"
     _set_database(monkeypatch, missing)
 
-    with pytest.raises(ValueError, match="current schema v10"):
+    with pytest.raises(ValueError, match="current schema v11"):
         with TestClient(app):
             pass
     # Nothing is ever created for a missing database.
@@ -892,7 +908,7 @@ def test_uninitialized_database_all_five_endpoints_500(
     path.write_bytes(b"")  # present but uninitialized
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v10"):
+    with pytest.raises(ValueError, match="current schema v11"):
         with TestClient(app):
             pass
 
@@ -919,7 +935,7 @@ def test_static_serving_requires_no_database(
 
 
 def test_schema_version_is_10_for_m1() -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_real_default_database_untouched(

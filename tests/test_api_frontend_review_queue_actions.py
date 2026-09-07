@@ -31,7 +31,8 @@ checks through the FastAPI TestClient for the exact contract the view sends):
   server order; a grouped representative decision removes the whole group
   while an undecided flat twin stays; two close-together decisions converge;
   an invalid decision is a canonical 422 that changes nothing;
-- regressions: the two intended ``postReportJson`` call sites, method set unchanged,
+- regressions: the intended ``postReportJson`` call sites and current global
+  method inventory including package-owned mutations,
   forbidden endpoints absent, Job Detail review/application actions untouched,
   no unsafe HTML sinks/storage/private fields, reused CSS classes,
   ``SCHEMA_VERSION`` stays 9, the real default database is never touched,
@@ -449,10 +450,20 @@ def test_queue_refresh_failure_has_refresh_only_retry() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_method_set_is_unchanged() -> None:
+def test_global_http_method_inventory_includes_package_mutations() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
+    assert methods == [
+        "POST",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
+    ]
 
 
 def test_forbidden_endpoints_remain_absent() -> None:
@@ -509,12 +520,18 @@ def test_no_unsafe_sinks_storage_or_private_fields() -> None:
         "candidate_profile",
         ".sqlite",
         "score_components",
-        ".reasons",
         "notification_summary",
         "last_error",
         "notes",
     ):
         assert forbidden not in js, forbidden
+    # Package completeness reasons are server-authoritative public workflow
+    # data. No ranking/profile/internal ``reasons`` property may be accessed.
+    assert re.findall(r"\b[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.reasons\b", js) == [
+        "data.completeness.reasons",
+        "completeness.reasons",
+        "completeness.reasons",
+    ]
 
 
 def test_existing_decision_css_reused_without_new_styles() -> None:
@@ -788,7 +805,7 @@ def test_invalid_decision_is_422_and_leaves_state_untouched(
 
 
 def test_schema_version_stays_10() -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_no_careeros_cli_import() -> None:
@@ -848,7 +865,7 @@ def test_database_file_never_created_by_asset_or_mutation_routes(
 ) -> None:
     path = tmp_path / "missing.sqlite3"
     _set_database(monkeypatch, path)
-    with pytest.raises(ValueError, match="current schema v10"):
+    with pytest.raises(ValueError, match="current schema v11"):
         with TestClient(app):
             pass
     assert not path.exists()

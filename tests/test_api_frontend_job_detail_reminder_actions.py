@@ -695,7 +695,9 @@ def test_no_private_fields_or_unsafe_sinks() -> None:
         assert forbidden not in js, forbidden
     # Native confirmation gates both destructive reminder deletion and
     # destructive requirement deletion; retries and other paths do not confirm.
-    assert js.count("window.confirm(") == 2
+    # Reminder deletion, Preparation requirement deletion, and package-version
+    # deletion each have an explicit native confirmation gate.
+    assert js.count("window.confirm(") == 3
     assert js.replace("window.confirm(", "").count("confirm(") == 0
 
 
@@ -722,7 +724,17 @@ def test_method_set_is_exactly_post_post_put_patch_delete_in_order() -> None:
     # POST /report (Review view), POST /reminders (create), PUT (review/
     # application/reminder lifecycle), PATCH (reminder edit), DELETE (review
     # clear + reminder delete) -- in source order.
-    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
+    assert methods == [
+        "POST",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
+    ]
 
 
 def test_render_section_by_key_routes_reminders() -> None:
@@ -1080,7 +1092,7 @@ def test_missing_database_is_500_and_nothing_is_created(
     path = tmp_path / "nested" / "careeros.sqlite3"
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v10"):
+    with pytest.raises(ValueError, match="current schema v11"):
         with TestClient(app):
             pass
     assert not path.exists()
@@ -1136,7 +1148,7 @@ def test_lock_contention_maps_to_503(
 
 
 def test_schema_version_stays_current() -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_no_careeros_cli_import() -> None:

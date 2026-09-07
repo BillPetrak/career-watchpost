@@ -97,11 +97,35 @@ def writable_connection() -> Iterator[sqlite3.Connection]:
     yield from writable_connection_for(database_path())
 
 
+def unlocked_writable_connection_for(path: Path) -> Iterator[sqlite3.Connection]:
+    """Yield an existing writable DB without pre-acquiring the writer lock.
+
+    This dependency is reserved for two-phase operations whose expensive
+    read-only preflight must finish before the service acquires coordination.
+    """
+    if not path.is_file():
+        raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+    uri = f"{path.resolve().as_uri()}?mode=rw"
+    connection = sqlite3.connect(uri, uri=True, check_same_thread=False)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+def unlocked_writable_connection() -> Iterator[sqlite3.Connection]:
+    yield from unlocked_writable_connection_for(database_path())
+
+
 __all__: tuple[str, ...] = (
     "DATABASE_UNAVAILABLE_MESSAGE",
     "LOCK_CONTENTION_MESSAGE",
     "read_only_connection",
     "read_only_connection_for",
+    "unlocked_writable_connection",
+    "unlocked_writable_connection_for",
     "writable_connection",
     "writable_connection_for",
 )

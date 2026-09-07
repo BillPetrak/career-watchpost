@@ -6,6 +6,15 @@ from careeros.database.schema import initialize_schema
 def test_v9_to_v10(tmp_path):
     c = connect(tmp_path / "db")
     initialize_schema(c)
+    for table in (
+        "package_completeness_reasons",
+        "package_answers",
+        "package_material_selections",
+        "application_package_requirement_snapshots",
+        "application_package_versions",
+        "application_packages",
+    ):
+        c.execute("DROP TABLE " + table)
     for t in ("material_versions", "materials", "material_store"):
         c.execute("drop table " + t)
     c.execute("update schema_metadata set value='9'")
@@ -28,6 +37,15 @@ def test_v8_to_v10_failure_rolls_back_intermediate_step(tmp_path, monkeypatch):
     initialize_schema(c)
     c.executescript(
         """
+        DROP TABLE package_completeness_reasons;
+        DROP TABLE package_answers;
+        DROP TABLE package_material_selections;
+        DROP TABLE application_package_requirement_snapshots;
+        DROP TABLE application_package_versions;
+        DROP TABLE application_packages;
+        DROP TABLE material_versions;
+        DROP TABLE materials;
+        DROP TABLE material_store;
         DROP TABLE application_requirement_items;
         DROP TABLE application_preparations;
         ALTER TABLE application_events DROP COLUMN note_redacted_at;
@@ -41,7 +59,7 @@ def test_v8_to_v10_failure_rolls_back_intermediate_step(tmp_path, monkeypatch):
     def fail_after_v9(_connection):
         raise RuntimeError("injected migration failure")
 
-    monkeypatch.setattr(core, "_apply_9_to_10", fail_after_v9)
+    monkeypatch.setitem(core.MIGRATIONS, 9, fail_after_v9)
     try:
         migrate(c)
     except RuntimeError:

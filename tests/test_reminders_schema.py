@@ -60,7 +60,7 @@ def test_fresh_schema_has_reminders_table(tmp_path: Path) -> None:
 
 
 def test_schema_version_is_ten(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_reminder_indexes_exist(tmp_path: Path) -> None:

@@ -175,7 +175,7 @@ def test_reference_endpoints_unchanged(
 
 
 def test_schema_version_is_10_for_m1() -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_real_default_database_untouched(
@@ -262,7 +262,9 @@ def test_js_uses_only_intended_endpoints() -> None:
 
 def test_js_mutation_methods_are_only_post_put_patch_delete() -> None:
     js = _asset_bytes(_JS_NAME).decode("utf-8")
-    # The frontend's explicit HTTP methods are exactly five: POST for the
+    # The shared helpers plus package request descriptors use only the four
+    # approved mutation methods. Package descriptors appear after the five
+    # generic helper declarations and carry their exact route-specific method.
     # computation-only POST /report (Review view form submission) and the
     # non-idempotent reminder create POST /reminders, PUT for the Job Detail
     # Review-section and Application-section mutations, PATCH for the
@@ -271,7 +273,17 @@ def test_js_mutation_methods_are_only_post_put_patch_delete() -> None:
     # Detail reads) stays an implicit GET through the GET-only fetchJson
     # helper, which carries no method option.
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
+    assert methods == [
+        "POST",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
+    ]
     # The POST target is the /report path with the grouped/limit query pair the
     # Review view sends; a path-only "/report/" suffix is never used.
     assert '"/report?grouped="' in js

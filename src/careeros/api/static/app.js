@@ -12,8 +12,10 @@
   // on each Review Queue card (the same canonical endpoint the Job Detail
   // Review section uses; there is no client-side ranking or re-ranking and no
   // optimistic removal), -- for
-  // the Job Detail view (#job/<id>) -- exactly five read GET endpoints
+  // the Job Detail view (#job/<id>) -- exactly seven independent read GET endpoints
   // (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications?job_id={id},
+  // GET /applications/{id}/preparation,
+  // GET /applications/{id}/package?offset=0&limit=20,
   // GET /review-decisions?job_id={id}, GET /reminders?job_id={id}), -- for
   // the Reminders overview view (#reminders) -- exactly three read GET
   // /reminders queries (overdue, due soon, and upcoming later, derived from a
@@ -106,6 +108,25 @@
   // it before awaiting so a response for an older page can never overwrite the
   // currently visible job.
   var detailRequestSeq = 0;
+
+  // Application Package is a private, Job Detail-scoped workspace. Every
+  // request and mutation has its own identity in addition to the enclosing
+  // detail generation. No value here is persisted, copied into navigation, or
+  // shared with the global Materials workspace.
+  var packageSectionRequestSeq = 0;
+  var packageOperationSeq = 0;
+  var packageOperationActive = null;
+  var packageDraftIntent = null;
+  var packageHistoryOffset = 0;
+  var packageHistoryLimit = 20;
+  var packageHistoryRequestSeq = 0;
+  var packageSelectedFinalizedId = null;
+  var packageChooserRequestSeq = 0;
+  var packageChooserDetailRequestSeq = 0;
+  var packageChooserState = null;
+  var packageFinalizationReconcile = null;
+  var packageReconciliationAttemptSeq = 0;
+  var packageReconciliationBusyOwner = null;
 
   // Stale-response guard for the Reminders overview view (#reminders): every
   // full render of the view increments this token, and every async operation
@@ -223,6 +244,25 @@
   // against programmatic/edge re-entry and rapid-click duplicates.
   var reminderOperationActive = false;
 
+  function clearPackagePrivateState() {
+    packageSectionRequestSeq++;
+    packageHistoryRequestSeq++;
+    packageChooserRequestSeq++;
+    packageChooserDetailRequestSeq++;
+    packageOperationSeq++;
+    packageOperationActive = null;
+    packageDraftIntent = null;
+    packageHistoryOffset = 0;
+    packageHistoryLimit = 20;
+    packageSelectedFinalizedId = null;
+    packageChooserState = null;
+    packageFinalizationReconcile = null;
+    packageReconciliationAttemptSeq++;
+    packageReconciliationBusyOwner = null;
+    var packageSection = document.querySelector(".application-package-section");
+    if (packageSection) clearText(packageSection);
+  }
+
   // Today is an independent, server-classified attention view.  These
   // generation/owner tokens keep overlapping refreshes and stale navigation
   // continuations from replacing a newer render.
@@ -309,6 +349,7 @@
     // here as well as on every Job Detail entry.
     if (leaving === JOB && name !== JOB) {
       detailRequestSeq++;
+      clearPackagePrivateState();
     }
     if (leaving === REMINDERS && name !== REMINDERS) {
       remindersRequestSeq++;
@@ -524,6 +565,7 @@
       error.status = response.status;
       throw error;
     }
+    if (response.status === 204) return null;
     return response.json();
   }
 
@@ -578,9 +620,49 @@
     });
   }
 
+  var PUBLIC_PACKAGE_ERROR_CODES = {
+    application_not_tracked: true,
+    invalid_package_answer: true,
+    invalid_package_request: true,
+    invalid_package_revision: true,
+    invalid_preparation_revision: true,
+    job_not_found: true,
+    material_retired: true,
+    material_version_not_found: true,
+    package_answer_missing: true,
+    package_approval_missing: true,
+    package_approval_stale: true,
+    package_incomplete: true,
+    package_job_reconfirmation_required: true,
+    package_job_stale: true,
+    package_preparation_stale: true,
+    package_requirement_incompatible: true,
+    package_requirement_not_found: true,
+    package_revision_conflict: true,
+    package_revision_required: true,
+    package_version_immutable: true,
+    package_version_limit_reached: true,
+    package_version_not_found: true,
+    package_version_referenced: true,
+    preparation_revision_conflict: true,
+    preparation_revision_required: true,
+    selected_material_unavailable: true,
+  };
+
+  function isPackageHttpRoute(url) {
+    return /^\/applications\/\d+\/package(?:[/?]|$)/.test(url) ||
+      /^\/application-package-versions\//.test(url);
+  }
+
+  function isPublicPackageErrorCode(value) {
+    return typeof value === "string" && PUBLIC_PACKAGE_ERROR_CODES[value] === true;
+  }
+
   async function readHttpError(url, response) {
     var message = "Request to " + url + " failed (HTTP " + response.status + ").";
     var errorCode = null;
+    var currentRevision = null;
+    var packageRoute = isPackageHttpRoute(url);
     try {
       var payload = await response.json();
       if (
@@ -588,16 +670,27 @@
         typeof payload.detail === "string" &&
         payload.detail.length > 0
       ) {
-        message += " " + payload.detail;
+        if (!packageRoute || isPublicPackageErrorCode(payload.detail)) {
+          message += " " + payload.detail;
+        }
+        if (packageRoute && isPublicPackageErrorCode(payload.detail)) {
+          errorCode = payload.detail;
+        }
       } else if (isObject(payload) && isObject(payload.detail) && typeof payload.detail.code === "string") {
-        message += " " + payload.detail.code;
-        errorCode = payload.detail.code;
+        if (!packageRoute || isPublicPackageErrorCode(payload.detail.code)) {
+          message += " " + payload.detail.code;
+          errorCode = payload.detail.code;
+          if (isFiniteNumber(payload.detail.current_revision) && payload.detail.current_revision >= 0) {
+            currentRevision = payload.detail.current_revision;
+          }
+        }
       }
     } catch (_notJson) {
       // Non-JSON error body: keep the generic HTTP message.
     }
     var error = new Error(message);
     if (errorCode) error.code = errorCode;
+    if (currentRevision !== null) error.currentRevision = currentRevision;
     return error;
   }
 
@@ -3449,6 +3542,21 @@
     return isObject(item) && typeof item.current_status === "string" ? item.current_status : "";
   }
 
+  function buildPipelinePackageLifecycle(value) {
+    var summary = el("div", { className: "package-pipeline-summary" });
+    if (!isObject(value)) {
+      summary.appendChild(el("p", { textContent: "Application package: Not started" }));
+      return summary;
+    }
+    var fields = el("dl", { className: "job-fields package-pipeline-fields" });
+    addField(fields, "Package draft", value.has_draft === true ? "Open" : "None");
+    addField(fields, "Draft approval", value.has_draft === true && value.draft_approved_for_current_revision === true ? "Current" : "Not current");
+    addField(fields, "Finalized packages", String(countValue(value.finalized_count)));
+    addField(fields, "Latest finalized", displayDate(value.latest_finalized_at));
+    summary.appendChild(fields);
+    return summary;
+  }
+
   function buildApplicationPipelineCard(item) {
     if (!isObject(item) || !isFiniteNumber(item.job_id) || item.job_id < 1) return null;
     var job = applicationItemJob(item);
@@ -3470,6 +3578,7 @@
       var prep = el("p", { className: "preparation-summary", textContent: "Preparation: " + prepLabel(item.preparation.category) + " · Blocking: " + countValue(item.preparation.blocking_count) });
       card.appendChild(prep);
     }
+    card.appendChild(buildPipelinePackageLifecycle(item.package));
     var actions = el("div", { className: "job-actions" });
     var details = jobDetailsLink({ id: item.job_id });
     if (details) {
@@ -4144,8 +4253,10 @@
   // ---------------------------------------------------------------------------
   // Job Detail view (#job/<id>)
   //
-  // Loads one stored job's detail through exactly five read GET endpoints
+  // Loads one stored job's detail through exactly seven read GET endpoints
   // (GET /jobs/{id}, GET /jobs/{id}/group, GET /applications?job_id={id},
+  // GET /applications/{id}/preparation,
+  // GET /applications/{id}/package?offset=0&limit=20,
   // GET /review-decisions?job_id={id}, GET /reminders?job_id={id}), issued
   // concurrently via Promise.allSettled. The application and review reads use
   // the job-scoped list endpoints, so the normal absent state is an empty 200
@@ -4167,6 +4278,7 @@
       group: base + "/group",
       application: "/applications?job_id=" + jobId,
       preparation: "/applications/" + jobId + "/preparation",
+      package: "/applications/" + jobId + "/package?offset=" + packageHistoryOffset + "&limit=" + packageHistoryLimit,
       review: "/review-decisions?job_id=" + jobId,
       reminders: "/reminders?job_id=" + jobId,
     };
@@ -4174,7 +4286,7 @@
 
   async function loadJobDetailData(jobId) {
     var urls = jobDetailUrls(jobId);
-    var keys = ["job", "group", "application", "preparation", "review", "reminders"];
+    var keys = ["job", "group", "application", "preparation", "package", "review", "reminders"];
     var settled = await Promise.allSettled(
       keys.map(function (key) {
         return fetchJson(urls[key]);
@@ -4252,6 +4364,7 @@
   }
 
   async function renderJobDetail(jobId) {
+    clearPackagePrivateState();
     var seq = ++detailRequestSeq;
     reviewOperationActive = false;
     applicationOperationActive = false;
@@ -4304,6 +4417,7 @@
     fillDetailSection(content, job, "group", results.group);
     fillDetailSection(content, job, "application", results.application);
     fillDetailSection(content, job, "preparation", results.preparation);
+    fillDetailSection(content, job, "package", results.package);
     fillDetailSection(content, job, "review", results.review);
     fillDetailSection(content, job, "reminders", results.reminders);
   }
@@ -4401,12 +4515,15 @@
     if (sectionKey === "group") return "Opportunity";
     if (sectionKey === "application") return "Application";
     if (sectionKey === "preparation") return "Preparation";
+    if (sectionKey === "package") return "Application package";
     if (sectionKey === "review") return "Review";
     return "Reminders";
   }
 
   function fillDetailSection(content, job, sectionKey, settled) {
-    var container = el("section", { className: "chunk" });
+    var sectionClass = "chunk detail-" + sectionKey + "-section";
+    if (sectionKey === "package") sectionClass += " application-package-section";
+    var container = el("section", { className: sectionClass });
     container.appendChild(el("h2", { textContent: sectionHeading(sectionKey) }));
     var body = el("div", { className: "section-body" });
     container.appendChild(body);
@@ -4441,6 +4558,8 @@
       renderApplication(body, job, settled, retry);
     } else if (sectionKey === "preparation") {
       renderPreparation(body, job, settled, retry);
+    } else if (sectionKey === "package") {
+      renderApplicationPackage(body, job, settled, retry);
     } else if (sectionKey === "review") {
       renderReview(body, job, settled, retry);
     } else {
@@ -4922,6 +5041,13 @@
       renderPreparation(body, job, latest, function () { retrySection(body.parentNode, body, job, "preparation"); });
       var target = focus && document.getElementById(focus);
       if (target) target.focus();
+      if (url.indexOf("/requirements-review") !== -1 || url.indexOf("/ready-confirmation") !== -1) {
+        var packageContainer = document.querySelector(".application-package-section");
+        var packageBody = packageContainer && packageContainer.querySelector(".section-body");
+        if (packageBody && operation.generation === detailRequestSeq && isCurrentDetailJob(job.id)) {
+          await loadPackageSummaryPage(packageBody, job, packageHistoryOffset, "package-draft-heading");
+        }
+      }
     } catch (error) {
       if (operation.generation !== detailRequestSeq || !isCurrentDetailJob(job.id)) return;
       var conflict = error && error.status === 409 &&
@@ -4949,6 +5075,999 @@
       }
     }
     finally { if (operation.generation === detailRequestSeq && isCurrentDetailJob(job.id)) body.parentNode.removeAttribute("aria-busy"); if (operation.generation === detailRequestSeq) preparationOperationActive = false; }
+  }
+
+  // Application Package is an independently loaded, server-authoritative Job
+  // Detail workspace. Draft answers and chooser state live only in memory for
+  // the current detail generation; finalized versions are rendered read-only.
+  function packageSummaryUrl(jobId, offset) {
+    return "/applications/" + jobId + "/package?offset=" + offset + "&limit=" + packageHistoryLimit;
+  }
+
+  function packageVersionUrl(versionId) {
+    return "/application-package-versions/" + encodeURIComponent(versionId);
+  }
+
+  function validPackageSummary(data) {
+    return isObject(data) && isFiniteNumber(data.job_id) &&
+      (data.package_id === null || materialOpaqueId(data.package_id) !== null) &&
+      (data.draft === null || (isObject(data.draft) && materialOpaqueId(data.draft.version_id) !== null)) &&
+      isObject(data.history) && Array.isArray(data.history.items) &&
+      isFiniteNumber(data.history.total) && isFiniteNumber(data.history.offset) &&
+      isFiniteNumber(data.history.limit);
+  }
+
+  function validPackageDetail(data, versionId) {
+    return isObject(data) && data.version_id === versionId &&
+      materialOpaqueId(data.version_id) !== null &&
+      (data.state === "draft" || data.state === "finalized") &&
+      isFiniteNumber(data.revision) && isFiniteNumber(data.preparation_revision) &&
+      Array.isArray(data.requirements) && Array.isArray(data.material_selections) &&
+      Array.isArray(data.answers) && isObject(data.approval) &&
+      isObject(data.completeness) && Array.isArray(data.completeness.reasons);
+  }
+
+  function packageOperationCurrent(operation) {
+    return packageOperationActive === operation &&
+      operation.detailSeq === detailRequestSeq &&
+      isCurrentDetailJob(operation.jobId);
+  }
+
+  function beginPackageOperation(job, versionId, kind) {
+    if (packageOperationActive !== null || packageReconcileCurrent(packageFinalizationReconcile)) return null;
+    var operation = {
+      id: ++packageOperationSeq,
+      jobId: job.id,
+      detailSeq: detailRequestSeq,
+      versionId: versionId,
+      kind: kind,
+    };
+    packageOperationActive = operation;
+    return operation;
+  }
+
+  function packageHeaders(packageRevision, preparationRevision, includePreparation) {
+    var headers = {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    };
+    if (packageRevision !== null) {
+      headers["X-CareerOS-Package-Revision"] = String(packageRevision);
+    }
+    if (includePreparation) {
+      headers["X-CareerOS-Preparation-Revision"] = String(preparationRevision);
+    }
+    return headers;
+  }
+
+  function packageWrite(url, method, packageRevision, preparationRevision, payload, includePreparation) {
+    return writeJson(url, {
+      method: method,
+      headers: packageHeaders(packageRevision, preparationRevision, includePreparation),
+      body: JSON.stringify(payload),
+    });
+  }
+
+  function packageErrorIsConflict(error) {
+    return error && error.status === 409 && (
+      error.code === "package_revision_conflict" ||
+      error.code === "preparation_revision_conflict"
+    );
+  }
+
+  function setPackageControlSemanticDisabled(control, disabled) {
+    control.setAttribute("data-package-semantic-disabled", String(disabled));
+    control.disabled = disabled;
+  }
+
+  function packageControlSemanticDisabled(control) {
+    return control.getAttribute("data-package-semantic-disabled") === "true";
+  }
+
+  function setPackageControlsDisabled(body, disabled) {
+    body.querySelectorAll("button, textarea, select").forEach(function (control) {
+      var reconciliationRetry = control.className.split(/\s+/).indexOf("package-reconciliation-retry") !== -1;
+      control.disabled = packageControlSemanticDisabled(control) || (disabled && !reconciliationRetry);
+    });
+    if (disabled) body.parentNode.setAttribute("aria-busy", "true");
+    else if (packageReconciliationBusyOwner === null && packageOperationActive === null) body.parentNode.removeAttribute("aria-busy");
+  }
+
+  function restorePackageControlState(body) {
+    var unresolved = packageReconcileCurrent(packageFinalizationReconcile);
+    var disabled = packageOperationActive !== null || packageReconciliationBusyOwner !== null || unresolved;
+    body.querySelectorAll("button, textarea, select").forEach(function (control) {
+      var reconciliationRetry = control.className.split(/\s+/).indexOf("package-reconciliation-retry") !== -1;
+      control.disabled = packageControlSemanticDisabled(control) || (disabled && !(unresolved && reconciliationRetry));
+    });
+    if (packageOperationActive !== null || packageReconciliationBusyOwner !== null) {
+      body.parentNode.setAttribute("aria-busy", "true");
+    } else {
+      body.parentNode.removeAttribute("aria-busy");
+    }
+  }
+
+  function replaceFocusedPackageError(body, message, error, retryAction) {
+    replaceSectionError(body, message, error, retryAction);
+    var box = body.querySelector(".error-box");
+    var retry = box && box.querySelector(".retry-button");
+    if (retry) retry.focus();
+  }
+
+  function renderApplicationPackage(body, job, settled, retry) {
+    body.setAttribute("aria-live", "polite");
+    var sectionRequest = ++packageSectionRequestSeq;
+    if (settled.status === "rejected") {
+      if (settled.reason && settled.reason.status === 404) {
+        body.appendChild(el("p", {
+          className: "empty-note",
+          textContent: "Application package is unavailable until this job is tracked in Application.",
+        }));
+        return;
+      }
+      body.appendChild(sectionErrorBox("The application package could not be loaded.", settled.reason, retry));
+      return;
+    }
+    if (!validPackageSummary(settled.value) || settled.value.job_id !== job.id) {
+      body.appendChild(sectionErrorBox("The application package response did not match the expected shape.", null, retry));
+      return;
+    }
+    renderPackageSummary(body, job, settled.value, sectionRequest);
+  }
+
+  async function renderPackageSummary(body, job, data, sectionRequest) {
+    body.appendChild(el("p", {
+      className: "field-hint",
+      textContent: "Packages are local preparation records. Finalizing a package does not submit an application or contact an employer.",
+    }));
+    var draftRegion = el("div", { className: "package-draft-region" });
+    body.appendChild(draftRegion);
+    if (data.draft === null) {
+      draftRegion.appendChild(el("p", { className: "empty-note", textContent: "No open package draft." }));
+      var open = el("button", { type: "button", className: "package-primary-action", textContent: "Open application package draft" });
+      open.id = "package-open-draft";
+      open.addEventListener("click", function () { openPackageDraft(body, job); });
+      draftRegion.appendChild(open);
+    } else {
+      draftRegion.appendChild(el("p", {
+        className: "package-version-summary",
+        textContent: "Draft version " + data.draft.version_number + " · Revision " + data.draft.revision,
+      }));
+      var detailRegion = el("div", { className: "package-version-detail", id: "package-draft-detail" });
+      detailRegion.appendChild(el("p", { className: "status", textContent: "Loading draft details…" }));
+      draftRegion.appendChild(detailRegion);
+      await loadPackageVersionDetail(detailRegion, body, job, data.draft.version_id, sectionRequest, false);
+    }
+    renderPackageHistory(body, job, data, sectionRequest);
+  }
+
+  function renderPackageHistory(body, job, data, sectionRequest) {
+    var history = data.history;
+    var section = el("section", { className: "package-history" });
+    var heading = el("h3", { textContent: "Finalized history", id: "package-history-heading" });
+    heading.tabIndex = -1;
+    section.appendChild(heading);
+    if (history.items.length === 0) {
+      section.appendChild(el("p", { className: "empty-note", textContent: "No finalized package versions." }));
+    } else {
+      var list = el("ul", { className: "package-history-list" });
+      history.items.forEach(function (item) {
+        var versionId = materialOpaqueId(item && item.version_id);
+        if (versionId === null || !isFiniteNumber(item.version_number)) return;
+        var row = el("li", { className: "package-history-item" });
+        var select = el("button", {
+          type: "button",
+          className: "package-history-select",
+          textContent: "Version " + item.version_number + " · Finalized " + displayDate(item.finalized_at),
+        });
+        select.setAttribute("data-package-version-id", versionId);
+        select.setAttribute("aria-pressed", String(packageSelectedFinalizedId === versionId));
+        select.addEventListener("click", function () {
+          packageSelectedFinalizedId = versionId;
+          renderPackageHistorySelection(section, body, job, versionId);
+        });
+        row.appendChild(select);
+        list.appendChild(row);
+      });
+      section.appendChild(list);
+    }
+    var controls = el("div", { className: "materials-pagination package-history-pagination" });
+    var previous = el("button", { type: "button", textContent: "Previous" });
+    setPackageControlSemanticDisabled(previous, history.offset <= 0);
+    var next = el("button", { type: "button", textContent: "Next" });
+    setPackageControlSemanticDisabled(next, history.offset + history.limit >= history.total);
+    var first = history.total === 0 ? 0 : history.offset + 1;
+    var last = Math.min(history.offset + history.items.length, history.total);
+    controls.appendChild(previous);
+    controls.appendChild(el("span", { textContent: first + "–" + last + " of " + history.total }));
+    controls.appendChild(next);
+    previous.addEventListener("click", function () {
+      packageSelectedFinalizedId = null;
+      loadPackageSummaryPage(body, job, Math.max(0, history.offset - history.limit), "package-history-heading");
+    });
+    next.addEventListener("click", function () {
+      packageSelectedFinalizedId = null;
+      loadPackageSummaryPage(body, job, history.offset + history.limit, "package-history-heading");
+    });
+    section.appendChild(controls);
+    var selected = el("div", { className: "package-selected-history", id: "package-selected-history" });
+    selected.setAttribute("aria-live", "polite");
+    section.appendChild(selected);
+    body.appendChild(section);
+    if (packageSelectedFinalizedId && history.items.some(function (item) { return item.version_id === packageSelectedFinalizedId; })) {
+      renderPackageHistorySelection(section, body, job, packageSelectedFinalizedId);
+    }
+  }
+
+  async function renderPackageHistorySelection(section, body, job, versionId) {
+    var request = ++packageHistoryRequestSeq;
+    var detailSeq = detailRequestSeq;
+    section.querySelectorAll(".package-history-select").forEach(function (button) {
+      button.setAttribute("aria-pressed", String(button.getAttribute("data-package-version-id") === versionId));
+    });
+    var region = section.querySelector(".package-selected-history");
+    if (!region) return;
+    clearText(region);
+    region.appendChild(el("p", { className: "status", textContent: "Loading finalized package…" }));
+    try {
+      var data = await fetchJson(packageVersionUrl(versionId));
+      if (request !== packageHistoryRequestSeq || detailSeq !== detailRequestSeq ||
+          packageSelectedFinalizedId !== versionId || !isCurrentDetailJob(job.id)) return;
+      if (!validPackageDetail(data, versionId) || data.state !== "finalized") {
+        throw new Error("The finalized package response did not match the expected shape.");
+      }
+      renderPackageVersionDetail(region, body, job, data, true);
+      var heading = region.querySelector(".package-detail-heading");
+      if (heading) heading.focus();
+    } catch (error) {
+      if (request !== packageHistoryRequestSeq || detailSeq !== detailRequestSeq ||
+          packageSelectedFinalizedId !== versionId || !isCurrentDetailJob(job.id)) return;
+      clearText(region);
+      region.appendChild(sectionErrorBox("The finalized package could not be loaded.", error, function () {
+        renderPackageHistorySelection(section, body, job, versionId);
+      }));
+    }
+  }
+
+  async function loadPackageVersionDetail(region, body, job, versionId, sectionRequest, history) {
+    var detailSeq = detailRequestSeq;
+    try {
+      var data = await fetchJson(packageVersionUrl(versionId));
+      if (detailSeq !== detailRequestSeq || !isCurrentDetailJob(job.id)) return;
+      if (!history && sectionRequest !== packageSectionRequestSeq) return;
+      if (!validPackageDetail(data, versionId)) {
+        throw new Error("The package version response did not match the expected shape.");
+      }
+      renderPackageVersionDetail(region, body, job, data, history);
+    } catch (error) {
+      if (detailSeq !== detailRequestSeq || !isCurrentDetailJob(job.id)) return;
+      if (!history && sectionRequest !== packageSectionRequestSeq) return;
+      clearText(region);
+      region.appendChild(sectionErrorBox("The package version could not be loaded.", error, function () {
+        clearText(region);
+        region.appendChild(el("p", { className: "status", textContent: "Loading package version…" }));
+        loadPackageVersionDetail(region, body, job, versionId, sectionRequest, history);
+      }));
+    }
+  }
+
+  async function loadPackageSummaryPage(body, job, offset, focusId) {
+    var request = ++packageSectionRequestSeq;
+    var detailSeq = detailRequestSeq;
+    packageHistoryOffset = offset;
+    packageChooserState = null;
+    setPackageControlsDisabled(body, true);
+    try {
+      var data = await fetchJson(packageSummaryUrl(job.id, offset));
+      if (request !== packageSectionRequestSeq || detailSeq !== detailRequestSeq || !isCurrentDetailJob(job.id)) return false;
+      if (!validPackageSummary(data) || data.job_id !== job.id) {
+        throw new Error("The application package response did not match the expected shape.");
+      }
+      clearText(body);
+      await renderPackageSummary(body, job, data, request);
+      var target = focusId && document.getElementById(focusId);
+      if (target) target.focus();
+      return true;
+    } catch (error) {
+      if (request !== packageSectionRequestSeq || detailSeq !== detailRequestSeq || !isCurrentDetailJob(job.id)) return false;
+      clearText(body);
+      body.appendChild(sectionErrorBox("The application package could not be refreshed.", error, function () {
+        loadPackageSummaryPage(body, job, offset, focusId);
+      }));
+      return false;
+    } finally {
+      if (request === packageSectionRequestSeq && detailSeq === detailRequestSeq && isCurrentDetailJob(job.id)) {
+        restorePackageControlState(body);
+      }
+    }
+  }
+
+  async function currentPreparation(job, operation) {
+    var settled = await fetchDetailSection("preparation", job.id);
+    if (!packageOperationCurrent(operation)) return null;
+    if (settled.status === "rejected") throw settled.reason;
+    if (!isObject(settled.value) || !isFiniteNumber(settled.value.revision)) {
+      throw new Error("The preparation response did not match the expected shape.");
+    }
+    return settled.value;
+  }
+
+  async function openPackageDraft(body, job) {
+    var operation = beginPackageOperation(job, null, "open-draft");
+    if (operation === null) return;
+    setPackageControlsDisabled(body, true);
+    try {
+      var preparation = await currentPreparation(job, operation);
+      if (preparation === null) return;
+      await packageWrite(
+        "/applications/" + job.id + "/package/draft",
+        "PUT", null, preparation.revision, {}, true
+      );
+      if (!packageOperationCurrent(operation)) return;
+      packageHistoryOffset = 0;
+      await loadPackageSummaryPage(body, job, 0, "package-draft-heading");
+    } catch (error) {
+      if (!packageOperationCurrent(operation)) return;
+      if (packageErrorIsConflict(error) && error.code === "preparation_revision_conflict") {
+        await refreshPreparationForPackage(job, operation.detailSeq);
+        if (!packageOperationCurrent(operation)) return;
+        var packageRefreshed = await loadPackageSummaryPage(body, job, packageHistoryOffset, null);
+        if (!packageOperationCurrent(operation)) return;
+        if (packageRefreshed) {
+          replaceFocusedPackageError(
+            body,
+            "Preparation changed before the package draft could be opened. Current Preparation and package authority were refreshed; use a new explicit Open action.",
+            error,
+            function () {
+              var open = document.getElementById("package-open-draft");
+              if (open) open.focus();
+            }
+          );
+        }
+      } else {
+        replaceSectionError(body, "The package draft could not be opened.", error, function () {
+          openPackageDraft(body, job);
+        });
+      }
+    } finally {
+      if (packageOperationActive === operation) {
+        packageOperationActive = null;
+        if (operation.detailSeq === detailRequestSeq && isCurrentDetailJob(job.id)) restorePackageControlState(body);
+      }
+    }
+  }
+
+  function packageReasonText(reason) {
+    if (!isObject(reason)) return "";
+    return typeof reason.message === "string" && reason.message.length > 0
+      ? reason.message
+      : displayText(reason.code);
+  }
+
+  function packageApprovalLabel(value) {
+    if (value === "current") return "Current for this package revision";
+    if (value === "stale") return "Stale after a package change";
+    return "Not approved";
+  }
+
+  function renderPackageVersionDetail(region, body, job, data, history) {
+    clearText(region);
+    var finalized = data.state === "finalized";
+    var heading = el("h3", {
+      className: "package-detail-heading",
+      textContent: (finalized ? "Finalized" : "Draft") + " version " + data.version_number,
+    });
+    heading.id = finalized ? "package-finalized-heading-" + data.version_id : "package-draft-heading";
+    heading.tabIndex = -1;
+    region.appendChild(heading);
+    var fields = el("dl", { className: "job-fields package-version-fields" });
+    addField(fields, "State", finalized ? "Finalized (read-only)" : "Draft");
+    addField(fields, "Package revision", String(data.revision));
+    addField(fields, "Preparation revision", String(data.preparation_revision));
+    addField(fields, "Approval", packageApprovalLabel(data.approval.status));
+    if (finalized) addField(fields, "Finalized", displayDate(data.finalized_at));
+    region.appendChild(fields);
+
+    if (!finalized) {
+      var authority = el("div", { className: "package-authority-state" });
+      authority.appendChild(el("p", {
+        className: data.preparation_stale ? "warning-note" : "package-current-note",
+        textContent: data.preparation_stale ? "Preparation stale: this draft does not match the current Preparation revision." : "Preparation snapshot is current.",
+      }));
+      authority.appendChild(el("p", {
+        className: data.job_stale ? "warning-note" : "package-current-note",
+        textContent: data.job_stale ? "Job stale: the stored job changed after this draft snapshot." : "Job snapshot is current.",
+      }));
+      if (data.job_reconfirmation_required) {
+        authority.appendChild(el("p", {
+          className: "warning-note",
+          textContent: "Job reconfirmation required: after the semantic job change, explicitly renew the existing Preparation requirements review and Ready confirmation. Application Package does not change those M1 acknowledgements.",
+        }));
+      }
+      if (data.preparation_stale || data.job_stale) {
+        var rebase = el("button", { type: "button", className: "package-secondary-action", textContent: "Rebase draft explicitly" });
+        rebase.addEventListener("click", function () { rebasePackageDraft(body, job, data); });
+        authority.appendChild(rebase);
+      }
+      region.appendChild(authority);
+    }
+
+    renderPackageCompleteness(region, data.completeness);
+    if (packageDraftIntent && packageDraftIntent.jobId === job.id &&
+        packageDraftIntent.detailSeq === detailRequestSeq &&
+        packageDraftIntent.versionId === data.version_id) {
+      renderPackageDraftIntent(region, packageDraftIntent);
+    }
+    renderPackageRequirements(region, body, job, data, finalized);
+    renderPackageLifecycleActions(region, body, job, data, finalized, history);
+    if (packageOperationActive !== null || packageReconcileCurrent(packageFinalizationReconcile)) restorePackageControlState(body);
+  }
+
+  function renderPackageCompleteness(region, completeness) {
+    var box = el("section", { className: "package-completeness" });
+    box.appendChild(el("h4", { textContent: "Completeness" }));
+    box.appendChild(el("p", {
+      className: "package-completeness-category",
+      textContent: "Status: " + prepLabel(completeness.category) + " · Blocking: " + countValue(completeness.blocking_count),
+    }));
+    if (completeness.reasons.length > 0) {
+      var list = el("ol", { className: "package-completeness-reasons" });
+      completeness.reasons.forEach(function (reason) {
+        list.appendChild(el("li", {
+          className: reason && reason.blocking ? "package-blocking-reason" : "package-information-reason",
+          textContent: packageReasonText(reason),
+        }));
+      });
+      box.appendChild(list);
+    }
+    region.appendChild(box);
+  }
+
+  function packageSelectionFor(data, requirementId) {
+    return data.material_selections.find(function (selection) {
+      return isObject(selection) && selection.requirement_id === requirementId;
+    }) || null;
+  }
+
+  function packageAnswerFor(data, requirementId) {
+    return data.answers.find(function (answer) {
+      return isObject(answer) && answer.requirement_id === requirementId;
+    }) || null;
+  }
+
+  function renderPackageRequirements(region, body, job, data, finalized) {
+    var section = el("section", { className: "package-requirements" });
+    section.appendChild(el("h4", { textContent: "Package contents" }));
+    if (data.requirements.length === 0) {
+      section.appendChild(el("p", { className: "empty-note", textContent: "No preparation requirements were captured in this package version." }));
+    } else {
+      var list = el("ol", { className: "package-requirement-list" });
+      data.requirements.forEach(function (requirement) {
+        if (!isObject(requirement) || typeof requirement.requirement_id !== "string") return;
+        var requirementId = requirement.requirement_id;
+        var row = el("li", { className: "package-requirement" });
+        row.setAttribute("data-package-requirement-id", requirementId);
+        row.appendChild(el("h5", { textContent: displayText(requirement.label) }));
+        if (requirement.detail) row.appendChild(el("p", { textContent: displayText(requirement.detail) }));
+        row.appendChild(el("p", {
+          className: "requirement-meta",
+          textContent: prepLabel(requirement.kind) + " · " + (requirement.required ? "Required" : "Optional") + " · " + prepFulfillmentLabel(requirement.kind, requirement.fulfillment_state),
+        }));
+        if (requirement.kind === "material") {
+          renderPackageMaterialRequirement(row, body, job, data, requirement, finalized);
+        } else if (requirement.kind === "question") {
+          renderPackageAnswerRequirement(row, body, job, data, requirement, finalized);
+        }
+        list.appendChild(row);
+      });
+      section.appendChild(list);
+    }
+    region.appendChild(section);
+  }
+
+  function renderPackageMaterialRequirement(row, body, job, data, requirement, finalized) {
+    var requirementId = requirement.requirement_id;
+    var selection = packageSelectionFor(data, requirementId);
+    if (selection === null) {
+      row.appendChild(el("p", { className: "empty-note", textContent: "No exact Material version selected." }));
+    } else {
+      var fields = el("dl", { className: "job-fields package-selection-fields" });
+      addField(fields, "Material", displayText(selection.material_name));
+      addField(fields, "Category", materialCategoryLabel(selection.material_category));
+      addField(fields, "Exact version", String(selection.version_number));
+      addField(fields, "Filename", displayText(selection.display_filename));
+      addField(fields, "Size", materialByteSize(selection.byte_size));
+      addField(fields, "Availability", prepLabel(selection.current_availability));
+      row.appendChild(fields);
+    }
+    if (finalized) return;
+    var actions = el("div", { className: "status-actions package-material-actions" });
+    var choose = el("button", { type: "button", textContent: selection ? "Choose another exact version" : "Choose exact Material version" });
+    choose.addEventListener("click", function () {
+      openPackageMaterialChooser(row, body, job, data, requirement);
+    });
+    actions.appendChild(choose);
+    if (selection !== null) {
+      var remove = el("button", { type: "button", textContent: "Remove Material selection" });
+      remove.addEventListener("click", function () {
+        mutatePackageDraft(body, job, data, {
+          kind: "remove-material",
+          url: packageVersionUrl(data.version_id) + "/material-selections/" + encodeURIComponent(requirementId),
+          method: "DELETE",
+          payload: {},
+        });
+      });
+      actions.appendChild(remove);
+    }
+    row.appendChild(actions);
+    row.appendChild(el("div", { className: "package-material-chooser" }));
+  }
+
+  function renderPackageAnswerRequirement(row, body, job, data, requirement, finalized) {
+    var requirementId = requirement.requirement_id;
+    var answer = packageAnswerFor(data, requirementId);
+    if (finalized) {
+      row.appendChild(el("p", {
+        className: answer ? "package-answer-text" : "empty-note",
+        textContent: answer ? answer.text : "No answer captured.",
+      }));
+      if (answer) row.appendChild(el("p", {
+        className: answer.confirmed ? "package-current-note" : "warning-note",
+        textContent: answer.confirmed ? "Answer confirmed" : "Answer not confirmed",
+      }));
+      return;
+    }
+    var form = el("form", { className: "package-answer-form" });
+    var inputId = "package-answer-" + data.version_id + "-" + encodeURIComponent(requirementId);
+    var label = el("label", { textContent: answer ? "Edit private answer" : "Add private answer" });
+    label.setAttribute("for", inputId);
+    var text = el("textarea", { id: inputId });
+    text.value = answer ? answer.text : "";
+    text.maxLength = 10000;
+    text.required = true;
+    form.appendChild(label);
+    form.appendChild(text);
+    var save = el("button", { type: "submit", textContent: answer ? "Save answer" : "Add answer" });
+    form.appendChild(save);
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var intent = {
+        kind: "answer",
+        jobId: job.id,
+        detailSeq: detailRequestSeq,
+        versionId: data.version_id,
+        requirementId: requirementId,
+        text: text.value,
+      };
+      mutatePackageDraft(body, job, data, {
+        kind: "answer",
+        url: packageVersionUrl(data.version_id) + "/answers/" + encodeURIComponent(requirementId),
+        method: "PUT",
+        payload: { text: text.value },
+        intent: intent,
+      });
+    });
+    row.appendChild(form);
+    if (answer !== null) {
+      var actions = el("div", { className: "status-actions package-answer-actions" });
+      var confirm = el("button", { type: "button", textContent: answer.confirmed ? "Clear answer confirmation" : "Confirm answer" });
+      confirm.addEventListener("click", function () {
+        mutatePackageDraft(body, job, data, {
+          kind: answer.confirmed ? "unconfirm-answer" : "confirm-answer",
+          url: packageVersionUrl(data.version_id) + "/answers/" + encodeURIComponent(requirementId) + "/confirmation",
+          method: answer.confirmed ? "DELETE" : "PUT",
+          payload: answer.confirmed ? {} : { confirmed: true },
+        });
+      });
+      actions.appendChild(confirm);
+      var remove = el("button", { type: "button", className: "package-destructive-action", textContent: "Delete answer" });
+      remove.addEventListener("click", function () {
+        mutatePackageDraft(body, job, data, {
+          kind: "delete-answer",
+          url: packageVersionUrl(data.version_id) + "/answers/" + encodeURIComponent(requirementId),
+          method: "DELETE",
+          payload: {},
+        });
+      });
+      actions.appendChild(remove);
+      row.appendChild(actions);
+    }
+  }
+
+  function renderPackageDraftIntent(region, intent) {
+    var note = el("div", { className: "material-draft-note package-draft-intent" });
+    note.setAttribute("role", "alert");
+    note.appendChild(el("p", {
+      textContent: "The package changed elsewhere. The unsaved private answer is retained only in memory; authoritative state was refreshed and nothing was overwritten.",
+    }));
+    var restore = el("button", { type: "button", className: "retry-button", textContent: "Restore unsaved answer to editor" });
+    restore.addEventListener("click", function () {
+      var input = document.getElementById("package-answer-" + intent.versionId + "-" + encodeURIComponent(intent.requirementId));
+      if (!input || packageDraftIntent !== intent) return;
+      input.value = intent.text;
+      packageDraftIntent = null;
+      note.remove();
+      input.focus();
+    });
+    note.appendChild(restore);
+    region.appendChild(note);
+  }
+
+  async function mutatePackageDraft(body, job, data, request) {
+    var operation = beginPackageOperation(job, data.version_id, request.kind);
+    if (operation === null) return;
+    setPackageControlsDisabled(body, true);
+    try {
+      await packageWrite(request.url, request.method, data.revision, data.preparation_revision, request.payload, true);
+      if (!packageOperationCurrent(operation)) return;
+      if (request.kind === "answer") packageDraftIntent = null;
+      await loadPackageSummaryPage(body, job, packageHistoryOffset, "package-draft-heading");
+    } catch (error) {
+      if (!packageOperationCurrent(operation)) return;
+      if (request.kind === "answer" && error && error.status === 409) {
+        packageDraftIntent = request.intent;
+      }
+      if (packageErrorIsConflict(error)) {
+        if (error.code === "preparation_revision_conflict") {
+          await refreshPreparationForPackage(job, operation.detailSeq);
+        }
+        await loadPackageSummaryPage(body, job, packageHistoryOffset, null);
+        if (packageOperationCurrent(operation)) {
+          replaceFocusedPackageError(body, "The package changed before this action completed. Authoritative state was refreshed; retry explicitly.", error, function () {
+            if (request.kind === "answer" && packageDraftIntent) {
+              var input = document.getElementById("package-answer-" + data.version_id + "-" + encodeURIComponent(request.intent.requirementId));
+              if (input) input.focus();
+              return;
+            }
+            var heading = document.getElementById("package-draft-heading");
+            if (heading) heading.focus();
+          });
+        }
+      } else {
+        replaceSectionError(body, "The package change could not be saved.", error, function () {
+          mutatePackageDraft(body, job, data, request);
+        });
+      }
+    } finally {
+      if (packageOperationActive === operation) {
+        packageOperationActive = null;
+        if (operation.detailSeq === detailRequestSeq && isCurrentDetailJob(job.id)) restorePackageControlState(body);
+      }
+    }
+  }
+
+  async function refreshPreparationForPackage(job, seq) {
+    var container = document.querySelector(".detail-preparation-section");
+    var body = container && container.querySelector(".section-body");
+    if (!container || !body) return false;
+    var settled = await fetchDetailSection("preparation", job.id);
+    if (seq !== detailRequestSeq || !isCurrentDetailJob(job.id)) return false;
+    clearText(body);
+    renderSectionBody(container, body, job, "preparation", settled);
+    return settled.status === "fulfilled";
+  }
+
+  function packageChooserCurrent(state) {
+    return packageChooserState === state && state.detailSeq === detailRequestSeq &&
+      isCurrentDetailJob(state.jobId);
+  }
+
+  function openPackageMaterialChooser(row, body, job, data, requirement) {
+    packageChooserRequestSeq++;
+    packageChooserDetailRequestSeq++;
+    packageChooserState = {
+      jobId: job.id,
+      detailSeq: detailRequestSeq,
+      versionId: data.version_id,
+      requirementId: requirement.requirement_id,
+      offset: 0,
+      limit: 20,
+      selectedMaterialId: null,
+    };
+    var region = row.querySelector(".package-material-chooser");
+    if (!region) return;
+    clearText(region);
+    region.setAttribute("aria-live", "polite");
+    loadPackageChooserList(region, body, job, data, requirement, packageChooserState);
+  }
+
+  async function loadPackageChooserList(region, body, job, data, requirement, state) {
+    var request = ++packageChooserRequestSeq;
+    clearText(region);
+    region.appendChild(el("p", { className: "status", textContent: "Loading active Materials…" }));
+    try {
+      var listData = await fetchJson("/materials?offset=" + state.offset + "&limit=" + state.limit + "&include_retired=false");
+      if (request !== packageChooserRequestSeq || !packageChooserCurrent(state)) return;
+      if (!validMaterialList(listData)) throw new Error("The materials list response did not match the expected shape.");
+      renderPackageChooserList(region, body, job, data, requirement, state, listData);
+    } catch (error) {
+      if (request !== packageChooserRequestSeq || !packageChooserCurrent(state)) return;
+      clearText(region);
+      region.appendChild(sectionErrorBox("Active Materials could not be loaded.", error, function () {
+        loadPackageChooserList(region, body, job, data, requirement, state);
+      }));
+    }
+  }
+
+  function renderPackageChooserList(region, body, job, data, requirement, state, listData) {
+    clearText(region);
+    var chooser = el("section", { className: "package-chooser-panel" });
+    chooser.appendChild(el("h6", { textContent: "Choose an exact immutable Material version" }));
+    chooser.appendChild(el("p", { className: "field-hint", textContent: "Category is display metadata only. Select a Material, then explicitly select one exact version." }));
+    if (listData.items.length === 0) {
+      chooser.appendChild(el("p", { className: "empty-note", textContent: "No active Materials are available." }));
+    } else {
+      var list = el("ul", { className: "material-list" });
+      listData.items.forEach(function (item) {
+        var materialId = materialOpaqueId(item && item.material_id);
+        if (materialId === null || typeof item.name !== "string") return;
+        var row = el("li", { className: "material-list-item" });
+        var select = el("button", { type: "button", className: "material-select" });
+        select.setAttribute("aria-pressed", String(state.selectedMaterialId === materialId));
+        select.appendChild(el("strong", { textContent: item.name }));
+        select.appendChild(el("span", { textContent: materialCategoryLabel(item.category) + " · " + countValue(item.version_count) + " version" + (item.version_count === 1 ? "" : "s") }));
+        select.addEventListener("click", function () {
+          state.selectedMaterialId = materialId;
+          renderPackageChooserList(region, body, job, data, requirement, state, listData);
+          loadPackageChooserDetail(region, body, job, data, requirement, state, materialId);
+        });
+        row.appendChild(select);
+        list.appendChild(row);
+      });
+      chooser.appendChild(list);
+    }
+    var controls = el("div", { className: "materials-pagination" });
+    var previous = el("button", { type: "button", textContent: "Previous" });
+    setPackageControlSemanticDisabled(previous, state.offset <= 0);
+    var next = el("button", { type: "button", textContent: "Next" });
+    setPackageControlSemanticDisabled(next, state.offset + state.limit >= listData.total);
+    controls.appendChild(previous);
+    controls.appendChild(el("span", { textContent: (listData.total === 0 ? 0 : state.offset + 1) + "–" + Math.min(state.offset + listData.items.length, listData.total) + " of " + listData.total }));
+    controls.appendChild(next);
+    previous.addEventListener("click", function () { state.offset = Math.max(0, state.offset - state.limit); state.selectedMaterialId = null; loadPackageChooserList(region, body, job, data, requirement, state); });
+    next.addEventListener("click", function () { state.offset += state.limit; state.selectedMaterialId = null; loadPackageChooserList(region, body, job, data, requirement, state); });
+    chooser.appendChild(controls);
+    chooser.appendChild(el("div", { className: "package-chooser-detail" }));
+    var close = el("button", { type: "button", className: "package-secondary-action", textContent: "Close chooser" });
+    close.addEventListener("click", function () {
+      if (!packageChooserCurrent(state)) return;
+      packageChooserRequestSeq++;
+      packageChooserDetailRequestSeq++;
+      packageChooserState = null;
+      clearText(region);
+    });
+    chooser.appendChild(close);
+    region.appendChild(chooser);
+  }
+
+  async function loadPackageChooserDetail(region, body, job, data, requirement, state, materialId) {
+    var request = ++packageChooserDetailRequestSeq;
+    var detailRegion = region.querySelector(".package-chooser-detail");
+    if (!detailRegion) return;
+    clearText(detailRegion);
+    detailRegion.appendChild(el("p", { className: "status", textContent: "Loading exact versions…" }));
+    try {
+      var material = await fetchJson("/materials/" + materialId);
+      if (request !== packageChooserDetailRequestSeq || !packageChooserCurrent(state) || state.selectedMaterialId !== materialId) return;
+      if (!validMaterialDetail(material) || material.material_id !== materialId) {
+        throw new Error("The material detail response did not match the expected shape.");
+      }
+      clearText(detailRegion);
+      detailRegion.appendChild(el("h6", { textContent: material.name + " versions" }));
+      var versions = el("ul", { className: "material-version-list" });
+      material.versions.forEach(function (version) {
+        var versionId = materialOpaqueId(version && version.version_id);
+        if (versionId === null || !isFiniteNumber(version.version_number)) return;
+        var item = el("li", { className: "material-version-item" });
+        item.appendChild(el("p", { textContent: "Version " + version.version_number + " · " + displayText(version.display_filename) }));
+        item.appendChild(el("p", { className: "material-meta", textContent: materialByteSize(version.byte_size) + " · " + displayText(version.declared_media_type) }));
+        var use = el("button", { type: "button", className: "package-primary-action", textContent: "Use exact version " + version.version_number });
+        use.addEventListener("click", function () {
+          mutatePackageDraft(body, job, data, {
+            kind: "select-material",
+            url: packageVersionUrl(data.version_id) + "/material-selections/" + encodeURIComponent(requirement.requirement_id),
+            method: "PUT",
+            payload: { material_version_id: versionId },
+          });
+        });
+        item.appendChild(use);
+        versions.appendChild(item);
+      });
+      detailRegion.appendChild(versions);
+    } catch (error) {
+      if (request !== packageChooserDetailRequestSeq || !packageChooserCurrent(state) || state.selectedMaterialId !== materialId) return;
+      clearText(detailRegion);
+      detailRegion.appendChild(sectionErrorBox("The Material versions could not be loaded.", error, function () {
+        loadPackageChooserDetail(region, body, job, data, requirement, state, materialId);
+      }));
+    }
+  }
+
+  async function rebasePackageDraft(body, job, data) {
+    var operation = beginPackageOperation(job, data.version_id, "rebase");
+    if (operation === null) return;
+    setPackageControlsDisabled(body, true);
+    try {
+      var preparation = await currentPreparation(job, operation);
+      if (preparation === null) return;
+      await packageWrite(packageVersionUrl(data.version_id) + "/rebase", "PUT", data.revision, preparation.revision, { rebase: true }, true);
+      if (!packageOperationCurrent(operation)) return;
+      packageDraftIntent = null;
+      await loadPackageSummaryPage(body, job, packageHistoryOffset, "package-draft-heading");
+    } catch (error) {
+      if (!packageOperationCurrent(operation)) return;
+      if (packageErrorIsConflict(error)) {
+        if (error.code === "preparation_revision_conflict") await refreshPreparationForPackage(job, operation.detailSeq);
+        await loadPackageSummaryPage(body, job, packageHistoryOffset, null);
+      }
+      if (packageOperationCurrent(operation)) replaceSectionError(body, "The draft could not be rebased. Authoritative state was refreshed when available; retry explicitly.", error, function () { rebasePackageDraft(body, job, data); });
+    } finally {
+      if (packageOperationActive === operation) {
+        packageOperationActive = null;
+        if (operation.detailSeq === detailRequestSeq && isCurrentDetailJob(job.id)) restorePackageControlState(body);
+      }
+    }
+  }
+
+  function renderPackageLifecycleActions(region, body, job, data, finalized, history) {
+    var actions = el("div", { className: "status-actions package-lifecycle-actions" });
+    if (!finalized) {
+      var currentApproval = data.approval.status === "current";
+      var approval = el("button", { type: "button", textContent: currentApproval ? "Clear package approval" : "Approve this package revision" });
+      approval.addEventListener("click", function () {
+        mutatePackageDraft(body, job, data, {
+          kind: currentApproval ? "clear-approval" : "approve",
+          url: packageVersionUrl(data.version_id) + "/approval",
+          method: currentApproval ? "DELETE" : "PUT",
+          payload: currentApproval ? {} : { approved: true },
+        });
+      });
+      actions.appendChild(approval);
+      var finalize = el("button", { type: "button", className: "package-primary-action", textContent: "Finalize package" });
+      setPackageControlSemanticDisabled(finalize, !packageVersionCanFinalize(data));
+      finalize.title = finalize.disabled ? "Resolve server-reported blockers and approve the current revision first." : "";
+      finalize.addEventListener("click", function () { finalizePackageVersion(body, job, data); });
+      actions.appendChild(finalize);
+    }
+    var remove = el("button", { type: "button", className: "package-destructive-action", textContent: finalized ? "Delete finalized package version" : "Delete package draft" });
+    remove.addEventListener("click", function () { deletePackageVersion(body, job, data, remove); });
+    actions.appendChild(remove);
+    region.appendChild(actions);
+    if (finalized) region.appendChild(el("p", { className: "field-hint", textContent: "This finalized package is immutable. Deletion does not alter the underlying job, Preparation, Review, reminders, or Materials." }));
+  }
+
+  function packageVersionCanFinalize(data) {
+    return data.state === "draft" &&
+      data.completeness.category === "complete" && data.completeness.blocking_count === 0 &&
+      !data.preparation_stale && !data.job_stale && !data.job_reconfirmation_required &&
+      data.approval.status === "current" && data.approval.approved_revision === data.revision;
+  }
+
+  async function finalizePackageVersion(body, job, data) {
+    if (!packageVersionCanFinalize(data)) return;
+    var operation = beginPackageOperation(job, data.version_id, "finalize");
+    if (operation === null) return;
+    setPackageControlsDisabled(body, true);
+    var target = {
+      jobId: job.id,
+      detailSeq: operation.detailSeq,
+      versionId: data.version_id,
+      packageRevision: data.revision,
+      preparationRevision: data.preparation_revision,
+      operationId: operation.id,
+    };
+    try {
+      var result = await packageWrite(packageVersionUrl(data.version_id) + "/finalization", "PUT", data.revision, data.preparation_revision, { finalize: true }, true);
+      if (!packageOperationCurrent(operation)) return;
+      if (!validPackageDetail(result, data.version_id) || result.state !== "finalized") {
+        throw new Error("The finalization response did not match the expected shape.");
+      }
+      packageFinalizationReconcile = null;
+      packageSelectedFinalizedId = data.version_id;
+      await loadPackageSummaryPage(body, job, 0, "package-finalized-heading-" + data.version_id);
+    } catch (error) {
+      if (!packageOperationCurrent(operation)) return;
+      if (!error || !isFiniteNumber(error.status)) {
+        packageFinalizationReconcile = target;
+        await reconcilePackageFinalization(body, job, target);
+      } else {
+        if (packageErrorIsConflict(error)) {
+          if (error.code === "preparation_revision_conflict") await refreshPreparationForPackage(job, operation.detailSeq);
+          await loadPackageSummaryPage(body, job, packageHistoryOffset, null);
+        }
+        if (packageOperationCurrent(operation)) replaceSectionError(body, "The package could not be finalized. No automatic retry was made.", error, function () { finalizePackageVersion(body, job, data); });
+      }
+    } finally {
+      if (packageOperationActive === operation) {
+        packageOperationActive = null;
+        if (operation.detailSeq === detailRequestSeq && isCurrentDetailJob(job.id)) restorePackageControlState(body);
+      }
+    }
+  }
+
+  function packageReconcileCurrent(target) {
+    return target !== null && packageFinalizationReconcile === target &&
+      target.detailSeq === detailRequestSeq && isCurrentDetailJob(target.jobId);
+  }
+
+  function packageReconciliationAttemptCurrent(target, attempt) {
+    return packageReconcileCurrent(target) && target.attempt === attempt;
+  }
+
+  async function reconcilePackageFinalization(body, job, target) {
+    if (!packageReconcileCurrent(target)) return;
+    var attempt = { id: ++packageReconciliationAttemptSeq, target: target };
+    target.attempt = attempt;
+    packageReconciliationBusyOwner = attempt;
+    setPackageControlsDisabled(body, true);
+    try {
+      var detail = await fetchJson(packageVersionUrl(target.versionId));
+      if (!packageReconciliationAttemptCurrent(target, attempt)) return;
+      if (!validPackageDetail(detail, target.versionId)) throw new Error("The package reconciliation response did not match the expected shape.");
+      if (detail.state === "finalized") {
+        if (packageFinalizationReconcile === target) packageFinalizationReconcile = null;
+        packageSelectedFinalizedId = target.versionId;
+        await loadPackageSummaryPage(body, job, 0, "package-finalized-heading-" + target.versionId);
+        return;
+      }
+      if (packageFinalizationReconcile === target) packageFinalizationReconcile = null;
+      await loadPackageSummaryPage(body, job, packageHistoryOffset, "package-draft-heading");
+      if (target.detailSeq !== detailRequestSeq || !isCurrentDetailJob(target.jobId) || target.attempt !== attempt) return;
+      replaceSectionError(body, "Finalization was not confirmed: the target remains a draft. Review current state and use a new explicit Finalize action if desired.", null, function () {
+        var heading = document.getElementById("package-draft-heading");
+        if (heading) heading.focus();
+      });
+      var draftBox = body.querySelector(".error-box");
+      var draftRetry = draftBox.querySelector(".retry-button");
+      if (draftRetry) draftRetry.focus();
+    } catch (error) {
+      if (!packageReconciliationAttemptCurrent(target, attempt)) return;
+      replaceSectionError(body, "Finalization outcome is unresolved. Retry only the authoritative status check; CareerOS will not repeat finalization automatically.", error, function () {
+        reconcilePackageFinalization(body, job, target);
+      });
+      var unresolvedBox = body.querySelector(".error-box");
+      var retry = unresolvedBox.querySelector(".retry-button");
+      if (retry) {
+        retry.className += " package-reconciliation-retry";
+        retry.focus();
+      }
+    } finally {
+      if (packageReconciliationBusyOwner === attempt) {
+        packageReconciliationBusyOwner = null;
+        if (target.detailSeq === detailRequestSeq && isCurrentDetailJob(job.id)) restorePackageControlState(body);
+      }
+    }
+  }
+
+  async function deletePackageVersion(body, job, data, button) {
+    var message = data.state === "finalized"
+      ? "Delete this finalized application package version? This cannot be undone."
+      : "Delete this application package draft? Private answers and selections in this draft will be removed.";
+    if (!window.confirm(message)) {
+      button.focus();
+      return;
+    }
+    var operation = beginPackageOperation(job, data.version_id, "delete");
+    if (operation === null) return;
+    setPackageControlsDisabled(body, true);
+    try {
+      await packageWrite(packageVersionUrl(data.version_id), "DELETE", data.revision, null, { confirm: true }, false);
+      if (!packageOperationCurrent(operation)) return;
+      if (packageSelectedFinalizedId === data.version_id) packageSelectedFinalizedId = null;
+      if (packageDraftIntent && packageDraftIntent.versionId === data.version_id) packageDraftIntent = null;
+      await loadPackageSummaryPage(body, job, packageHistoryOffset, "package-history-heading");
+    } catch (error) {
+      if (!packageOperationCurrent(operation)) return;
+      if (error && (error.status === 409 || error.status === 404)) {
+        await loadPackageSummaryPage(body, job, packageHistoryOffset, null);
+      }
+      if (packageOperationCurrent(operation)) replaceSectionError(body, "The package version could not be deleted. Nothing was removed from this view.", error, function () { deletePackageVersion(body, job, data, button); });
+    } finally {
+      if (packageOperationActive === operation) {
+        packageOperationActive = null;
+        if (operation.detailSeq === detailRequestSeq && isCurrentDetailJob(job.id)) restorePackageControlState(body);
+      }
+    }
   }
 
   // Canonical review decisions (presentation labels only; the transmitted

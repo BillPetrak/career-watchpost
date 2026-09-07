@@ -35,8 +35,8 @@ invented and no DELETE is issued for applications); PUT being the only newly
 permitted application mutation with every forbidden endpoint absent and no
 review/reminder mutation touched; no storage APIs, unsafe HTML sinks, or
 private field/path access; Home/Jobs/Review and the existing read-only detail
-sections unchanged; the shared method set invariant ``["POST", "POST",
-"PUT", "DELETE"]``; static serving, ``SCHEMA_VERSION``, the no-``careeros.cli`` import
+sections unchanged; the shared method inventory including package-owned local
+workflow mutations; static serving, ``SCHEMA_VERSION``, the no-``careeros.cli`` import
 guarantee, the untouched real default database, and wheel packaging of the
 static assets.
 """
@@ -502,13 +502,23 @@ def test_write_json_helpers_reused_and_put_is_exact() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_method_set_is_exactly_post_put_patch_delete_in_order() -> None:
+def test_global_http_method_inventory_includes_package_mutations() -> None:
     js = _js()
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    # POST /report (Review view), POST /reminders (create), PUT (review/
-    # application/reminder lifecycle), PATCH (reminder edit), DELETE (review
-    # clear + reminder delete) -- in source order.
-    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
+    # The first five declarations are the legacy report/reminder/review/
+    # application methods. The final four are package-local removal, answer,
+    # answer-removal, and material-selection mutations, in source order.
+    assert methods == [
+        "POST",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
+    ]
 
 
 def test_forbidden_endpoints_remain_absent() -> None:
@@ -590,13 +600,19 @@ def test_no_private_fields_filesystem_profile_or_storage_access() -> None:
         "/data/",
         ".source_job_id",
         "score_components",
-        ".reasons",
         "reminder.message",
         "notification_summary",
         "last_error",
         "notes",
     ):
         assert forbidden not in js, forbidden
+    # Package completeness reasons are server-authoritative public workflow
+    # data. No ranking/profile/internal ``reasons`` property may be accessed.
+    assert re.findall(r"\b[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.reasons\b", js) == [
+        "data.completeness.reasons",
+        "completeness.reasons",
+        "completeness.reasons",
+    ]
 
 
 def test_application_actions_css_present() -> None:
@@ -771,7 +787,7 @@ def test_missing_database_is_500_and_nothing_is_created(
     path = tmp_path / "nested" / "careeros.sqlite3"
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v10"):
+    with pytest.raises(ValueError, match="current schema v11"):
         with TestClient(app):
             pass
     assert not path.exists()
@@ -817,7 +833,7 @@ def test_lock_contention_maps_to_503(
 
 
 def test_schema_version_stays_current() -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_no_careeros_cli_import() -> None:

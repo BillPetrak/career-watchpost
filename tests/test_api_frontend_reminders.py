@@ -594,10 +594,20 @@ def test_overview_get_only_same_origin_safe_dom() -> None:
         "toISOString",
     ):
         assert forbidden not in view, forbidden
-    # The overview adds no new HTTP method: it only uses the GET-only
-    # fetchJson helper, so the exact method set is unchanged.
+    # The overview adds no HTTP method: it only uses the GET-only fetchJson
+    # helper. The global inventory also includes package-owned mutations.
     methods = re.findall(r"\bmethod\s*:\s*['\"]([a-z]+)['\"]", js, re.IGNORECASE)
-    assert methods == ["POST", "POST", "PUT", "PATCH", "DELETE"]
+    assert methods == [
+        "POST",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
+    ]
 
 
 def test_private_fields_never_rendered_or_requested() -> None:
@@ -641,7 +651,7 @@ def test_no_filesystem_or_config_access() -> None:
 
 
 def test_schema_version_stays_10() -> None:
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 def test_real_default_database_untouched(

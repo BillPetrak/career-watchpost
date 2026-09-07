@@ -1,14 +1,19 @@
 """Ordered, fail-closed schema inspection and migrations."""
 
+# Migration SQL is normative and intentionally mirrors the bootstrap DDL.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 from careeros.database.schema import SCHEMA_VERSION
 
-MIGRATIONS: dict[int, object] = {}
+MigrationStep = Callable[[sqlite3.Connection], None]
+MIGRATIONS: dict[int, MigrationStep] = {}
 
 
 def inspect_schema(connection: sqlite3.Connection) -> str:
@@ -37,7 +42,7 @@ def inspect_schema(connection: sqlite3.Connection) -> str:
         return "unsupported"
     if version > SCHEMA_VERSION:
         return "future"
-    if version in (8, 9):
+    if version in (8, 9, 10):
         if not _valid_structure(connection, version):
             return "malformed"
     return "upgrade_required"
@@ -152,7 +157,283 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
             return False
         if not _valid_v10_indexes(connection):
             return False
+    if version == 11 and not _valid_v11_structure(connection):
+        return False
+    if version == 11 and (
+        not _valid_v9_columns(connection)
+        or not _valid_v9_sql(connection)
+        or not _valid_v9_foreign_keys(connection)
+        or not _valid_v9_indexes(connection)
+        or not _valid_v10_tables(connection)
+        or not _valid_v10_indexes(connection)
+    ):
+        return False
     return True
+
+
+def _valid_v11_structure_legacy(connection: sqlite3.Connection) -> bool:
+    required = {
+        "application_packages": {
+            "id",
+            "application_id",
+            "next_version_number",
+            "created_at",
+            "updated_at",
+        },
+        "application_package_versions": {
+            "id",
+            "package_id",
+            "version_number",
+            "state",
+            "revision",
+            "preparation_revision",
+            "forked_from_version_id",
+            "forked_from_version_number",
+            "job_id_snapshot",
+            "job_source",
+            "job_source_job_id",
+            "job_title",
+            "job_company",
+            "job_location",
+            "job_url",
+            "job_employment_type",
+            "job_remote_status",
+            "job_published_at",
+            "job_updated_at_snapshot",
+            "job_description_present",
+            "job_content_fingerprint",
+            "job_reconfirmation_required_at",
+            "approved_revision",
+            "approved_at",
+            "finalized_at",
+            "final_completeness_category",
+            "created_at",
+            "updated_at",
+        },
+        "application_package_requirement_snapshots": {
+            "package_version_id",
+            "requirement_id",
+            "kind",
+            "label",
+            "detail",
+            "required",
+            "fulfillment_state",
+            "deadline_at",
+            "sort_order",
+            "origin",
+            "capture_method",
+            "confirmed",
+            "created_at",
+            "updated_at",
+        },
+        "package_material_selections": {
+            "package_version_id",
+            "requirement_id",
+            "material_version_id",
+            "material_id_snapshot",
+            "material_name_snapshot",
+            "material_category_snapshot",
+            "material_version_number_snapshot",
+            "display_filename_snapshot",
+            "declared_media_type_snapshot",
+            "byte_size_snapshot",
+            "sha256_snapshot",
+            "origin",
+            "capture_method",
+            "created_at",
+            "updated_at",
+        },
+        "package_answers": {
+            "package_version_id",
+            "requirement_id",
+            "answer_text",
+            "origin",
+            "capture_method",
+            "confirmed",
+            "confirmed_at",
+            "created_at",
+            "updated_at",
+        },
+        "package_completeness_reasons": {
+            "package_version_id",
+            "position",
+            "code",
+            "blocking",
+            "requirement_id",
+        },
+    }
+    if any(not _table_exists(connection, t) for t in required):
+        return False
+    if any(
+        cols != {r[1] for r in connection.execute(f"PRAGMA table_info({t})")}
+        for t, cols in required.items()
+    ):
+        return False
+    expected = {
+        "idx_application_packages_application",
+        "idx_package_versions_package_number",
+        "idx_package_versions_one_draft",
+        "idx_package_versions_history",
+        "idx_package_requirement_snapshots_order",
+        "idx_package_material_selections_material_version",
+    }
+    named = {
+        r[1]
+        for t in required
+        for r in connection.execute(f"PRAGMA index_list({t})")
+        if not str(r[1]).startswith("sqlite_autoindex_")
+    }
+    if named != expected:
+        return False
+    checks = {
+        "application_packages": (
+            "application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE RESTRICT",
+        ),
+        "application_package_versions": (
+            "state TEXT NOT NULL CHECK",
+            "finalized_at IS NULL",
+            "final_completeness_category='complete'",
+        ),
+        "application_package_requirement_snapshots": (
+            "origin TEXT NOT NULL CHECK",
+            "capture_method TEXT NOT NULL CHECK",
+        ),
+        "package_material_selections": (
+            "REFERENCES material_versions(id) ON DELETE RESTRICT",
+            "FOREIGN KEY",
+        ),
+        "package_answers": (
+            "length(answer_text) BETWEEN 1 AND 10000",
+            "confirmed_at IS NULL",
+        ),
+        "package_completeness_reasons": ("package_complete", "blocking IN"),
+    }
+    return all(
+        all(
+            fragment.lower()
+            in (_normalized_sql(connection, "table", table) or "").lower()
+            for fragment in fragments
+        )
+        for table, fragments in checks.items()
+    )
+
+
+def _canonical_master_sql(
+    connection: sqlite3.Connection, object_type: str, name: str
+) -> str | None:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type=? AND name=?", (object_type, name)
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return "".join(str(row[0]).lower().split())
+
+
+def _pragma_rows(
+    connection: sqlite3.Connection, pragma: str, name: str
+) -> list[tuple[object, ...]]:
+    return [tuple(row) for row in connection.execute(f"PRAGMA {pragma}({name})")]
+
+
+def _valid_v11_structure(connection: sqlite3.Connection) -> bool:
+    """Compare every M3 table/index property with a fresh normative v11 schema."""
+    from careeros.database.schema import initialize_schema
+
+    tables = (
+        "application_packages",
+        "application_package_versions",
+        "application_package_requirement_snapshots",
+        "package_material_selections",
+        "package_answers",
+        "package_completeness_reasons",
+    )
+    expected_indexes = {
+        "idx_application_packages_application",
+        "idx_package_versions_package_number",
+        "idx_package_versions_one_draft",
+        "idx_package_versions_history",
+        "idx_package_requirement_snapshots_order",
+        "idx_package_material_selections_material_version",
+    }
+    m3_table_prefixes = ("application_package", "package_")
+    m3_named_object_prefixes = (
+        "application_package",
+        "package_",
+        "idx_application_package",
+        "idx_package_",
+        "trg_application_package",
+        "trg_package_",
+    )
+    master_objects = [
+        (str(row[0]), str(row[1]), str(row[2]))
+        for row in connection.execute(
+            "SELECT type,name,tbl_name FROM sqlite_master WHERE type IN ('table','index','trigger')"
+        )
+    ]
+    if any(
+        object_type == "table"
+        and name.startswith(m3_table_prefixes)
+        and name not in tables
+        for object_type, name, _table_name in master_objects
+    ):
+        return False
+    if any(
+        object_type == "index"
+        and not name.startswith("sqlite_autoindex_")
+        and name.startswith(m3_named_object_prefixes)
+        and name not in expected_indexes
+        for object_type, name, _table_name in master_objects
+    ):
+        return False
+    if any(
+        object_type == "trigger"
+        and (table_name in tables or name.startswith(m3_named_object_prefixes))
+        for object_type, name, table_name in master_objects
+    ):
+        return False
+    reference = sqlite3.connect(":memory:")
+    reference.row_factory = sqlite3.Row
+    try:
+        initialize_schema(reference)
+        for table in tables:
+            if (
+                _canonical_master_sql(connection, "table", table)
+                != _canonical_master_sql(reference, "table", table)
+                or _pragma_rows(connection, "table_info", table)
+                != _pragma_rows(reference, "table_info", table)
+                or _pragma_rows(connection, "foreign_key_list", table)
+                != _pragma_rows(reference, "foreign_key_list", table)
+            ):
+                return False
+            actual_indexes = {
+                str(row[1]): (int(row[2]), str(row[3]), int(row[4]))
+                for row in connection.execute(f"PRAGMA index_list({table})")
+            }
+            reference_indexes = {
+                str(row[1]): (int(row[2]), str(row[3]), int(row[4]))
+                for row in reference.execute(f"PRAGMA index_list({table})")
+            }
+            if actual_indexes != reference_indexes:
+                return False
+            for index in actual_indexes:
+                if _pragma_rows(connection, "index_xinfo", index) != _pragma_rows(
+                    reference, "index_xinfo", index
+                ) or _canonical_master_sql(
+                    connection, "index", index
+                ) != _canonical_master_sql(reference, "index", index):
+                    return False
+        named = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN (?,?,?,?,?,?) AND name NOT LIKE 'sqlite_autoindex_%'",
+                tables,
+            )
+        }
+        if named != expected_indexes:
+            return False
+        return True
+    finally:
+        reference.close()
 
 
 def _valid_v10_indexes(connection: sqlite3.Connection) -> bool:
@@ -558,18 +839,18 @@ def migrate_8_to_9(connection: sqlite3.Connection) -> None:
     connection.execute("BEGIN IMMEDIATE")
     try:
         _apply_8_to_9(connection)
+        if not _valid_structure(connection, 9):
+            raise ValueError("migration produced invalid v9 schema")
         connection.execute(
             "UPDATE schema_metadata SET value='9' WHERE key='schema_version'"
         )
-        if inspect_schema(connection) != "upgrade_required":
-            raise ValueError("migration produced invalid v9 schema")
         connection.commit()
     except Exception:
         connection.rollback()
         raise
 
 
-MIGRATIONS[8] = migrate_8_to_9
+MIGRATIONS[8] = _apply_8_to_9
 
 
 def _apply_9_to_10(connection: sqlite3.Connection) -> None:
@@ -655,18 +936,86 @@ def migrate_9_to_10(connection: sqlite3.Connection) -> None:
     connection.execute("BEGIN IMMEDIATE")
     try:
         _apply_9_to_10(connection)
+        if not _valid_structure(connection, 10):
+            raise ValueError("migration produced invalid v10 schema")
         connection.execute(
             "UPDATE schema_metadata SET value='10' WHERE key='schema_version'"
         )
-        if inspect_schema(connection) != "current":
-            raise ValueError("migration produced invalid v10 schema")
         connection.commit()
     except Exception:
         connection.rollback()
         raise
 
 
-MIGRATIONS[9] = migrate_9_to_10
+MIGRATIONS[9] = _apply_9_to_10
+
+
+def _apply_10_to_11(connection: sqlite3.Connection) -> None:
+    """Add immutable, job-specific application package persistence."""
+    statements = [
+        """CREATE TABLE application_packages (
+            id TEXT PRIMARY KEY CHECK (length(id)=32 AND id=lower(id) AND id NOT GLOB '*[^0-9a-f]*'),
+            application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE RESTRICT,
+            next_version_number INTEGER NOT NULL DEFAULT 1 CHECK (next_version_number BETWEEN 1 AND 2147483647),
+            created_at TEXT NOT NULL CHECK (length(created_at)>0), updated_at TEXT NOT NULL CHECK (length(updated_at)>0))""",
+        "CREATE UNIQUE INDEX idx_application_packages_application ON application_packages(application_id ASC)",
+        """CREATE TABLE application_package_versions (
+            id TEXT PRIMARY KEY CHECK(length(id)=32 AND id=lower(id) AND id NOT GLOB '*[^0-9a-f]*'),
+            package_id TEXT NOT NULL REFERENCES application_packages(id) ON DELETE CASCADE,
+            version_number INTEGER NOT NULL CHECK(version_number BETWEEN 1 AND 2147483647),
+            state TEXT NOT NULL CHECK(state IN ('draft','finalized')), revision INTEGER NOT NULL DEFAULT 0 CHECK(revision BETWEEN 0 AND 2147483647),
+            preparation_revision INTEGER NOT NULL CHECK(preparation_revision BETWEEN 0 AND 2147483647),
+            forked_from_version_id TEXT, forked_from_version_number INTEGER,
+            job_id_snapshot INTEGER NOT NULL CHECK(job_id_snapshot>0), job_source TEXT NOT NULL CHECK(length(job_source)>0), job_source_job_id TEXT,
+            job_title TEXT NOT NULL CHECK(length(job_title)>0), job_company TEXT, job_location TEXT, job_url TEXT, job_employment_type TEXT, job_remote_status TEXT, job_published_at TEXT,
+            job_updated_at_snapshot TEXT NOT NULL CHECK(length(job_updated_at_snapshot)>0), job_description_present INTEGER NOT NULL CHECK(job_description_present IN(0,1)),
+            job_content_fingerprint TEXT NOT NULL CHECK(length(job_content_fingerprint)=64 AND job_content_fingerprint=lower(job_content_fingerprint) AND job_content_fingerprint NOT GLOB '*[^0-9a-f]*'),
+            job_reconfirmation_required_at TEXT, approved_revision INTEGER, approved_at TEXT, finalized_at TEXT, final_completeness_category TEXT,
+            created_at TEXT NOT NULL CHECK(length(created_at)>0), updated_at TEXT NOT NULL CHECK(length(updated_at)>0),
+            CHECK((forked_from_version_id IS NULL AND forked_from_version_number IS NULL) OR (forked_from_version_id IS NOT NULL AND length(forked_from_version_id)=32 AND forked_from_version_id=lower(forked_from_version_id) AND forked_from_version_id NOT GLOB '*[^0-9a-f]*' AND forked_from_version_number BETWEEN 1 AND 2147483647)),
+            CHECK((approved_revision IS NULL AND approved_at IS NULL) OR (approved_revision IS NOT NULL AND approved_revision BETWEEN 0 AND revision AND approved_at IS NOT NULL AND length(approved_at)>0)),
+            CHECK((state='draft' AND finalized_at IS NULL AND final_completeness_category IS NULL) OR (state='finalized' AND finalized_at IS NOT NULL AND length(finalized_at)>0 AND final_completeness_category='complete' AND approved_revision=revision AND approved_at IS NOT NULL)))""",
+        "CREATE UNIQUE INDEX idx_package_versions_package_number ON application_package_versions(package_id COLLATE BINARY ASC,version_number ASC)",
+        "CREATE UNIQUE INDEX idx_package_versions_one_draft ON application_package_versions(package_id COLLATE BINARY ASC) WHERE state='draft'",
+        "CREATE INDEX idx_package_versions_history ON application_package_versions(package_id COLLATE BINARY ASC,version_number DESC) WHERE state='finalized'",
+        """CREATE TABLE application_package_requirement_snapshots (
+            package_version_id TEXT NOT NULL REFERENCES application_package_versions(id) ON DELETE CASCADE, requirement_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN('material','link','question','task','deadline','other')), label TEXT NOT NULL CHECK(length(label) BETWEEN 1 AND 160), detail TEXT CHECK(detail IS NULL OR length(detail) BETWEEN 1 AND 1000), required INTEGER NOT NULL CHECK(required IN(0,1)), fulfillment_state TEXT NOT NULL CHECK(fulfillment_state IN('open','satisfied','not_applicable')), deadline_at TEXT, sort_order INTEGER NOT NULL CHECK(sort_order>=0), origin TEXT NOT NULL CHECK(origin='manual'), capture_method TEXT NOT NULL CHECK(capture_method='manual'), confirmed INTEGER NOT NULL CHECK(confirmed IN(0,1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY(package_version_id,requirement_id), CHECK(kind!='deadline' OR fulfillment_state!='satisfied'))""",
+        "CREATE UNIQUE INDEX idx_package_requirement_snapshots_order ON application_package_requirement_snapshots(package_version_id COLLATE BINARY ASC,sort_order ASC)",
+        """CREATE TABLE package_material_selections (
+            package_version_id TEXT NOT NULL, requirement_id TEXT NOT NULL, material_version_id TEXT NOT NULL REFERENCES material_versions(id) ON DELETE RESTRICT,
+            material_id_snapshot TEXT NOT NULL CHECK(length(material_id_snapshot)=32 AND material_id_snapshot=lower(material_id_snapshot) AND material_id_snapshot NOT GLOB '*[^0-9a-f]*'), material_name_snapshot TEXT NOT NULL CHECK(length(material_name_snapshot) BETWEEN 1 AND 160 AND material_name_snapshot=trim(material_name_snapshot)), material_category_snapshot TEXT NOT NULL CHECK(material_category_snapshot IN('resume','cover_letter_base','portfolio','supporting_document','other')), material_version_number_snapshot INTEGER NOT NULL CHECK(material_version_number_snapshot BETWEEN 1 AND 100), display_filename_snapshot TEXT NOT NULL CHECK(length(display_filename_snapshot) BETWEEN 1 AND 255), declared_media_type_snapshot TEXT NOT NULL CHECK(length(declared_media_type_snapshot) BETWEEN 3 AND 127), byte_size_snapshot INTEGER NOT NULL CHECK(byte_size_snapshot BETWEEN 1 AND 26214400), sha256_snapshot TEXT NOT NULL CHECK(length(sha256_snapshot)=64 AND sha256_snapshot=lower(sha256_snapshot) AND sha256_snapshot NOT GLOB '*[^0-9a-f]*'), origin TEXT NOT NULL CHECK(origin='manual'), capture_method TEXT NOT NULL CHECK(capture_method='manual'), created_at TEXT NOT NULL CHECK(length(created_at)>0), updated_at TEXT NOT NULL CHECK(length(updated_at)>0),
+            PRIMARY KEY(package_version_id,requirement_id), FOREIGN KEY(package_version_id,requirement_id) REFERENCES application_package_requirement_snapshots(package_version_id,requirement_id) ON DELETE CASCADE)""",
+        "CREATE INDEX idx_package_material_selections_material_version ON package_material_selections(material_version_id COLLATE BINARY ASC)",
+        """CREATE TABLE package_answers (
+            package_version_id TEXT NOT NULL, requirement_id TEXT NOT NULL, answer_text TEXT NOT NULL CHECK(length(answer_text) BETWEEN 1 AND 10000), origin TEXT NOT NULL CHECK(origin='manual'), capture_method TEXT NOT NULL CHECK(capture_method='manual'), confirmed INTEGER NOT NULL CHECK(confirmed IN(0,1)), confirmed_at TEXT, created_at TEXT NOT NULL CHECK(length(created_at)>0), updated_at TEXT NOT NULL CHECK(length(updated_at)>0), PRIMARY KEY(package_version_id,requirement_id), FOREIGN KEY(package_version_id,requirement_id) REFERENCES application_package_requirement_snapshots(package_version_id,requirement_id) ON DELETE CASCADE, CHECK((confirmed=0 AND confirmed_at IS NULL) OR (confirmed=1 AND confirmed_at IS NOT NULL AND length(confirmed_at)>0)))""",
+        """CREATE TABLE package_completeness_reasons (
+            package_version_id TEXT NOT NULL REFERENCES application_package_versions(id) ON DELETE CASCADE, position INTEGER NOT NULL CHECK(position>=0), code TEXT NOT NULL CHECK(code IN('job_information_unavailable','preparation_revision_stale','job_snapshot_stale','job_reconfirmation_required','requirements_not_reviewed','requirements_review_stale','requirement_unconfirmed','required_deadline_passed','required_requirement_open','ready_confirmation_missing','ready_confirmation_stale','material_selection_missing','selected_material_retired','selected_material_unavailable','answer_missing','answer_unconfirmed','package_complete')), blocking INTEGER NOT NULL CHECK(blocking IN(0,1)), requirement_id TEXT, PRIMARY KEY(package_version_id,position), CHECK((code IN('job_information_unavailable','package_complete') AND blocking=0) OR (code NOT IN('job_information_unavailable','package_complete') AND blocking=1)))""",
+    ]
+    for statement in statements:
+        connection.execute(statement)
+
+
+MIGRATIONS[10] = _apply_10_to_11
+
+
+def migrate_10_to_11(connection: sqlite3.Connection) -> None:
+    """Apply the v10 boundary as one independently usable transaction."""
+    if not _valid_structure(connection, 10):
+        raise ValueError("invalid v10 schema")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        _apply_10_to_11(connection)
+        if not _valid_structure(connection, 11):
+            raise ValueError("migration produced invalid v11 schema")
+        connection.execute(
+            "UPDATE schema_metadata SET value='11' WHERE key='schema_version'"
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 def migrate(connection: sqlite3.Connection) -> str:
@@ -682,16 +1031,17 @@ def migrate(connection: sqlite3.Connection) -> str:
             while version < SCHEMA_VERSION:
                 if version not in MIGRATIONS:
                     raise ValueError(f"unsupported database schema (v{version})")
-                if version == 8:
-                    _apply_8_to_9(connection)
-                else:
-                    _apply_9_to_10(connection)
-                version += 1
-                if version == SCHEMA_VERSION:
-                    connection.execute(
-                        "UPDATE schema_metadata SET value=? WHERE key='schema_version'",
-                        (str(version),),
-                    )
+                if not _valid_structure(connection, version):
+                    raise ValueError(f"invalid database schema boundary (v{version})")
+                MIGRATIONS[version](connection)
+                target = version + 1
+                if not _valid_structure(connection, target):
+                    raise ValueError(f"migration produced invalid v{target} schema")
+                connection.execute(
+                    "UPDATE schema_metadata SET value=? WHERE key='schema_version'",
+                    (str(target),),
+                )
+                version = target
             if inspect_schema(connection) != "current":
                 raise ValueError("migration produced invalid schema")
             connection.commit()
