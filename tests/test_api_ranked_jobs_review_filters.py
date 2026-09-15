@@ -1468,7 +1468,7 @@ def test_uninitialized_database_is_500(
     _set_database(monkeypatch, database_path)
 
     before = database_path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
     assert database_path.read_bytes() == before
@@ -1482,7 +1482,7 @@ def test_malformed_database_is_500(
     _set_database(monkeypatch, database_path)
 
     before = database_path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
     assert database_path.read_bytes() == before
@@ -1786,7 +1786,7 @@ def test_existing_flat_and_grouped_and_application_filter_behavior_unchanged(
 
 
 def test_schema_version_is_ten() -> None:
-    assert SCHEMA_VERSION == 11
+    assert SCHEMA_VERSION == 12
 
 
 def test_api_does_not_import_careeros_cli() -> None:

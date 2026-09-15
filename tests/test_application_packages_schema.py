@@ -19,9 +19,17 @@ M3_TABLES = (
     "application_package_versions",
     "application_packages",
 )
+PREFERENCE_TABLES = (
+    "learned_preference_suppressions",
+    "preference_evidence",
+    "explicit_preferences",
+    "preference_state",
+)
 
 
 def downgrade_to_v10(connection: sqlite3.Connection) -> None:
+    for table in PREFERENCE_TABLES:
+        connection.execute(f"DROP TABLE {table}")
     for table in M3_TABLES:
         connection.execute(f"DROP TABLE {table}")
     connection.execute(
@@ -30,7 +38,7 @@ def downgrade_to_v10(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
-def test_fresh_v11_is_exact_and_rejects_extra_named_index(tmp_path):
+def test_fresh_current_schema_is_exact_and_rejects_extra_named_index(tmp_path):
     connection = connect(tmp_path / "fresh.sqlite3")
     initialize_schema(connection)
     assert inspect_schema(connection) == "current"
@@ -49,7 +57,7 @@ def test_fresh_v11_is_exact_and_rejects_extra_named_index(tmp_path):
         "CREATE TRIGGER package_unexpected_trigger AFTER INSERT ON jobs BEGIN SELECT 1; END",
     ],
 )
-def test_fresh_v11_rejects_additional_m3_domain_objects(tmp_path, statement):
+def test_fresh_current_schema_rejects_additional_m3_domain_objects(tmp_path, statement):
     connection = connect(tmp_path / "unexpected.sqlite3")
     initialize_schema(connection)
     connection.execute(statement)
@@ -57,7 +65,7 @@ def test_fresh_v11_rejects_additional_m3_domain_objects(tmp_path, statement):
     assert inspect_schema(connection) == "malformed"
 
 
-def test_fresh_v11_allows_unrelated_preexisting_careeros_objects(tmp_path):
+def test_fresh_current_schema_allows_unrelated_preexisting_careeros_objects(tmp_path):
     connection = connect(tmp_path / "unrelated.sqlite3")
     initialize_schema(connection)
     connection.execute("CREATE TABLE career_notes(id INTEGER PRIMARY KEY)")
@@ -114,6 +122,8 @@ def test_v10_with_preexisting_package_object_rolls_back(tmp_path):
 def test_v8_to_v11_failure_rolls_back_every_boundary(tmp_path, monkeypatch):
     connection = connect(tmp_path / "v8.sqlite3")
     initialize_schema(connection)
+    for table in PREFERENCE_TABLES:
+        connection.execute(f"DROP TABLE {table}")
     for table in M3_TABLES:
         connection.execute(f"DROP TABLE {table}")
     for table in ("material_versions", "materials", "material_store"):
@@ -159,7 +169,7 @@ def test_v8_to_v11_failure_rolls_back_every_boundary(tmp_path, monkeypatch):
 
 
 def test_dispatcher_has_every_frozen_boundary():
-    assert set(core.MIGRATIONS) == {8, 9, 10}
+    assert set(core.MIGRATIONS) == {8, 9, 10, 11}
 
 
 def test_target_validation_precedes_metadata_and_failure_rolls_back(

@@ -130,7 +130,7 @@ def test_list_jobs_absent_database_is_empty(
     path = tmp_path / "missing.sqlite3"
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
     assert not path.exists()
@@ -184,7 +184,7 @@ def test_show_job_absent_database_is_404(
     path = tmp_path / "missing.sqlite3"
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
     assert not path.exists()
@@ -211,7 +211,7 @@ def test_list_jobs_uninitialized_database_is_500(
     _set_database(monkeypatch, path)
 
     before = path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
     assert path.read_bytes() == before

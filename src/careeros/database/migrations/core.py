@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from careeros.database.schema import SCHEMA_VERSION
@@ -42,7 +43,7 @@ def inspect_schema(connection: sqlite3.Connection) -> str:
         return "unsupported"
     if version > SCHEMA_VERSION:
         return "future"
-    if version in (8, 9, 10):
+    if version in (8, 9, 10, 11):
         if not _valid_structure(connection, version):
             return "malformed"
     return "upgrade_required"
@@ -83,8 +84,16 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
         },
         "reminders": {"id", "job_id", "kind", "due_at"},
         "review_decisions": {"id", "job_id", "decision", "created_at", "updated_at"},
+        "review_events": {
+            "id",
+            "job_id",
+            "old_decision",
+            "new_decision",
+            "note",
+            "created_at",
+        },
     }
-    if version in (9, 10):
+    if version in (9, 10, 11, 12):
         required["application_events"].add("note_redacted_at")
         required["application_preparations"] = {
             "application_id",
@@ -112,7 +121,7 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
             "created_at",
             "updated_at",
         }
-    if version == 10:
+    if version in (10, 11, 12):
         required.update(
             {
                 "material_store": {"singleton", "store_id", "created_at"},
@@ -145,21 +154,21 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
         actual = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
         if not columns <= actual:
             return False
-    if version in (9, 10):
+    if version in (9, 10, 11, 12):
         if not _valid_v9_columns(connection) or not _valid_v9_sql(connection):
             return False
         if not _valid_v9_foreign_keys(connection):
             return False
         if not _valid_v9_indexes(connection):
             return False
-    if version == 10:
+    if version in (10, 11, 12):
         if not _valid_v10_tables(connection):
             return False
         if not _valid_v10_indexes(connection):
             return False
-    if version == 11 and not _valid_v11_structure(connection):
+    if version in (11, 12) and not _valid_v11_structure(connection):
         return False
-    if version == 11 and (
+    if version in (11, 12) and (
         not _valid_v9_columns(connection)
         or not _valid_v9_sql(connection)
         or not _valid_v9_foreign_keys(connection)
@@ -168,7 +177,112 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
         or not _valid_v10_indexes(connection)
     ):
         return False
+    if version == 11 and _preference_objects(connection):
+        return False
+    if version == 12 and not _valid_v12_structure(connection):
+        return False
     return True
+
+
+def _preference_objects(connection: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    prefixes = (
+        "preference_",
+        "explicit_preference",
+        "learned_preference",
+        "idx_preference_",
+        "idx_explicit_preference",
+        "idx_learned_preference",
+        "trg_preference_",
+        "trg_explicit_preference",
+        "trg_learned_preference",
+    )
+    return [
+        (str(row[0]), str(row[1]), str(row[2]))
+        for row in connection.execute(
+            "SELECT type,name,tbl_name FROM sqlite_master "
+            "WHERE type IN ('table','index','trigger')"
+        )
+        if str(row[1]).startswith(prefixes) or str(row[2]).startswith(prefixes)
+    ]
+
+
+def _valid_v12_structure(connection: sqlite3.Connection) -> bool:
+    """Compare every preference table and index with a normative fresh v12."""
+    from careeros.database.schema import initialize_schema
+
+    tables = (
+        "preference_state",
+        "explicit_preferences",
+        "preference_evidence",
+        "learned_preference_suppressions",
+    )
+    expected_indexes = {
+        "idx_preference_evidence_dimension_value",
+        "idx_preference_evidence_review_event",
+    }
+    objects = _preference_objects(connection)
+    if any(
+        object_type == "table" and name not in tables
+        for object_type, name, _table_name in objects
+    ):
+        return False
+    if any(
+        object_type == "index"
+        and not name.startswith("sqlite_autoindex_")
+        and name not in expected_indexes
+        for object_type, name, _table_name in objects
+    ):
+        return False
+    if any(object_type == "trigger" for object_type, _name, _table_name in objects):
+        return False
+
+    reference = sqlite3.connect(":memory:")
+    reference.row_factory = sqlite3.Row
+    try:
+        initialize_schema(reference)
+        for table in tables:
+            if (
+                _canonical_master_sql(connection, "table", table)
+                != _canonical_master_sql(reference, "table", table)
+                or _pragma_rows(connection, "table_info", table)
+                != _pragma_rows(reference, "table_info", table)
+                or _pragma_rows(connection, "foreign_key_list", table)
+                != _pragma_rows(reference, "foreign_key_list", table)
+            ):
+                return False
+            actual_indexes = {
+                str(row[1]): (int(row[2]), str(row[3]), int(row[4]))
+                for row in connection.execute(f"PRAGMA index_list({table})")
+            }
+            reference_indexes = {
+                str(row[1]): (int(row[2]), str(row[3]), int(row[4]))
+                for row in reference.execute(f"PRAGMA index_list({table})")
+            }
+            if actual_indexes != reference_indexes:
+                return False
+            for index in actual_indexes:
+                if _pragma_rows(connection, "index_xinfo", index) != _pragma_rows(
+                    reference, "index_xinfo", index
+                ) or _canonical_master_sql(
+                    connection, "index", index
+                ) != _canonical_master_sql(reference, "index", index):
+                    return False
+        named = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name IN (?,?,?,?) AND name NOT LIKE 'sqlite_autoindex_%'",
+                tables,
+            )
+        }
+        if named != expected_indexes:
+            return False
+        state_rows = connection.execute(
+            "SELECT singleton FROM preference_state"
+        ).fetchall()
+        return len(state_rows) == 1 and int(state_rows[0][0]) == 1
+    finally:
+        reference.close()
 
 
 def _valid_v11_structure_legacy(connection: sqlite3.Connection) -> bool:
@@ -1011,6 +1125,101 @@ def migrate_10_to_11(connection: sqlite3.Connection) -> None:
             raise ValueError("migration produced invalid v11 schema")
         connection.execute(
             "UPDATE schema_metadata SET value='11' WHERE key='schema_version'"
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def _apply_11_to_12(connection: sqlite3.Connection) -> None:
+    """Add persistent explicit and learned preference authority storage."""
+    statements = [
+        """CREATE TABLE preference_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            explicit_configured INTEGER NOT NULL DEFAULT 0
+                CHECK (explicit_configured IN (0,1)),
+            explicit_updated_at TEXT,
+            learning_reset_at TEXT,
+            learning_reset_review_event_id INTEGER NOT NULL DEFAULT 0
+                CHECK (learning_reset_review_event_id >= 0),
+            created_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE explicit_preferences (
+            dimension TEXT NOT NULL CHECK (dimension IN (
+                'desired_titles','skills','required_skills',
+                'preferred_locations','remote_preference','excluded_terms',
+                'hard_excluded_terms','preferred_employment_types',
+                'preferred_seniority'
+            )),
+            position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 99),
+            value TEXT NOT NULL CHECK (length(value) BETWEEN 1 AND 100),
+            PRIMARY KEY (dimension, position)
+        )""",
+        """CREATE TABLE preference_evidence (
+            job_id INTEGER NOT NULL
+                REFERENCES jobs(id) ON DELETE RESTRICT,
+            review_event_id INTEGER NOT NULL
+                REFERENCES review_events(id) ON DELETE RESTRICT,
+            dimension TEXT NOT NULL CHECK (dimension IN (
+                'title','company','location','remote','employment_type','seniority'
+            )),
+            value TEXT NOT NULL,
+            normalized_value TEXT NOT NULL,
+            signal INTEGER NOT NULL CHECK (signal IN (-1,1)),
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY (job_id, dimension, normalized_value),
+            UNIQUE (review_event_id, dimension, normalized_value)
+        )""",
+        "CREATE INDEX idx_preference_evidence_dimension_value "
+        "ON preference_evidence(dimension, normalized_value)",
+        "CREATE INDEX idx_preference_evidence_review_event "
+        "ON preference_evidence(review_event_id)",
+        """CREATE TABLE learned_preference_suppressions (
+            preference_key TEXT PRIMARY KEY CHECK (
+                length(preference_key) = 32
+                AND preference_key = lower(preference_key)
+                AND preference_key NOT GLOB '*[^0-9a-f]*'
+            ),
+            dimension TEXT NOT NULL,
+            normalized_value TEXT NOT NULL,
+            suppressed_at TEXT NOT NULL,
+            UNIQUE (dimension, normalized_value)
+        )""",
+    ]
+    for statement in statements:
+        connection.execute(statement)
+    reset_event_id = int(
+        connection.execute("SELECT COALESCE(MAX(id), 0) FROM review_events").fetchone()[
+            0
+        ]
+    )
+    connection.execute(
+        """
+        INSERT INTO preference_state (
+            singleton, explicit_configured, explicit_updated_at,
+            learning_reset_at, learning_reset_review_event_id, created_at
+        )
+        VALUES (1, 0, NULL, NULL, ?, ?)
+        """,
+        (reset_event_id, datetime.now(UTC).isoformat()),
+    )
+
+
+MIGRATIONS[11] = _apply_11_to_12
+
+
+def migrate_11_to_12(connection: sqlite3.Connection) -> None:
+    """Apply the v11 boundary as one independently usable transaction."""
+    if not _valid_structure(connection, 11):
+        raise ValueError("invalid v11 schema")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        _apply_11_to_12(connection)
+        if not _valid_structure(connection, 12):
+            raise ValueError("migration produced invalid v12 schema")
+        connection.execute(
+            "UPDATE schema_metadata SET value='12' WHERE key='schema_version'"
         )
         connection.commit()
     except Exception:

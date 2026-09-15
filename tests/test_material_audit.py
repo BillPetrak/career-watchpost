@@ -339,7 +339,7 @@ def test_repeated_schema_instability_returns_fixed_75(tmp_path, monkeypatch):
     def capture(database_arg, root_arg):
         nonlocal calls
         calls += 1
-        version = "10" if calls in (2, 4) else "11"
+        version = "11" if calls in (2, 4) else "12"
         with sqlite3.connect(database) as writer:
             writer.execute(
                 "UPDATE schema_metadata SET value=? WHERE key='schema_version'",

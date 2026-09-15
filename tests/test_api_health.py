@@ -27,7 +27,7 @@ def test_health_ok_with_absent_database(
 ) -> None:
     _set_database(monkeypatch, tmp_path / "missing.sqlite3")
 
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
 
@@ -55,6 +55,6 @@ def test_health_schema_version_null_for_uninitialized_file(
     path.write_bytes(b"")
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass

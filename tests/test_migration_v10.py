@@ -2,10 +2,19 @@ from careeros.database.connection import connect
 from careeros.database.migrations.core import inspect_schema, migrate
 from careeros.database.schema import initialize_schema
 
+PREFERENCE_TABLES = (
+    "learned_preference_suppressions",
+    "preference_evidence",
+    "explicit_preferences",
+    "preference_state",
+)
+
 
 def test_v9_to_v10(tmp_path):
     c = connect(tmp_path / "db")
     initialize_schema(c)
+    for table in PREFERENCE_TABLES:
+        c.execute("DROP TABLE " + table)
     for table in (
         "package_completeness_reasons",
         "package_answers",
@@ -35,6 +44,8 @@ def test_v10_with_missing_material_table_is_malformed(tmp_path):
 def test_v8_to_v10_failure_rolls_back_intermediate_step(tmp_path, monkeypatch):
     c = connect(tmp_path / "db")
     initialize_schema(c)
+    for table in PREFERENCE_TABLES:
+        c.execute("DROP TABLE " + table)
     c.executescript(
         """
         DROP TABLE package_completeness_reasons;

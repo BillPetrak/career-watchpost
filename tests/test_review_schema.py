@@ -49,7 +49,7 @@ def _index_names(connection: sqlite3.Connection) -> set[str]:
 
 
 def test_schema_version_is_current(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 11
+    assert SCHEMA_VERSION == 12
 
 
 def test_fresh_schema_has_review_tables(tmp_path: Path) -> None:
@@ -208,6 +208,10 @@ def test_explicit_v8_to_current_migration_preserves_review_rows(
         )
         connection.executescript(
             """
+            DROP TABLE learned_preference_suppressions;
+            DROP TABLE preference_evidence;
+            DROP TABLE explicit_preferences;
+            DROP TABLE preference_state;
             DROP TABLE package_completeness_reasons;
             DROP TABLE package_answers;
             DROP TABLE package_material_selections;

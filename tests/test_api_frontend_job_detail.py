@@ -893,7 +893,7 @@ def test_missing_database_all_five_endpoints(
     missing = tmp_path / "does-not-exist" / "db.sqlite3"
     _set_database(monkeypatch, missing)
 
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
     # Nothing is ever created for a missing database.
@@ -908,7 +908,7 @@ def test_uninitialized_database_all_five_endpoints_500(
     path.write_bytes(b"")  # present but uninitialized
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
 
@@ -935,7 +935,7 @@ def test_static_serving_requires_no_database(
 
 
 def test_schema_version_is_10_for_m1() -> None:
-    assert SCHEMA_VERSION == 11
+    assert SCHEMA_VERSION == 12
 
 
 def test_real_default_database_untouched(

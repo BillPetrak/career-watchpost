@@ -244,4 +244,4 @@ def test_pipeline_missing_database_is_empty_without_creating_file(
 
 
 def test_schema_version_is_ten_for_m1() -> None:
-    assert SCHEMA_VERSION == 11
+    assert SCHEMA_VERSION == 12

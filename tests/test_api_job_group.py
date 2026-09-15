@@ -278,7 +278,7 @@ def test_absent_database_returns_404_without_creating_file(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -293,7 +293,7 @@ def test_uninitialized_database_is_500(
     _set_database(monkeypatch, database_path)
 
     before = database_path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
     assert database_path.read_bytes() == before
@@ -307,7 +307,7 @@ def test_malformed_database_is_500(
     _set_database(monkeypatch, database_path)
 
     before = database_path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v11"):
+    with pytest.raises(ValueError, match="current schema v12"):
         with TestClient(app):
             pass
     assert database_path.read_bytes() == before
@@ -540,7 +540,7 @@ def test_prior_endpoints_unchanged(
 
 
 def test_schema_version_unchanged() -> None:
-    assert SCHEMA_VERSION == 11
+    assert SCHEMA_VERSION == 12
 
 
 # --------------------------------------------------------------------------- #

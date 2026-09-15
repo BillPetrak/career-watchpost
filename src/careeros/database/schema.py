@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -255,6 +256,63 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_review_events_job
             ON review_events(job_id, created_at DESC, id DESC);
 
+        CREATE TABLE IF NOT EXISTS preference_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            explicit_configured INTEGER NOT NULL DEFAULT 0
+                CHECK (explicit_configured IN (0,1)),
+            explicit_updated_at TEXT,
+            learning_reset_at TEXT,
+            learning_reset_review_event_id INTEGER NOT NULL DEFAULT 0
+                CHECK (learning_reset_review_event_id >= 0),
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS explicit_preferences (
+            dimension TEXT NOT NULL CHECK (dimension IN (
+                'desired_titles','skills','required_skills',
+                'preferred_locations','remote_preference','excluded_terms',
+                'hard_excluded_terms','preferred_employment_types',
+                'preferred_seniority'
+            )),
+            position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 99),
+            value TEXT NOT NULL CHECK (length(value) BETWEEN 1 AND 100),
+            PRIMARY KEY (dimension, position)
+        );
+
+        CREATE TABLE IF NOT EXISTS preference_evidence (
+            job_id INTEGER NOT NULL
+                REFERENCES jobs(id) ON DELETE RESTRICT,
+            review_event_id INTEGER NOT NULL
+                REFERENCES review_events(id) ON DELETE RESTRICT,
+            dimension TEXT NOT NULL CHECK (dimension IN (
+                'title','company','location','remote','employment_type','seniority'
+            )),
+            value TEXT NOT NULL,
+            normalized_value TEXT NOT NULL,
+            signal INTEGER NOT NULL CHECK (signal IN (-1,1)),
+            observed_at TEXT NOT NULL,
+            PRIMARY KEY (job_id, dimension, normalized_value),
+            UNIQUE (review_event_id, dimension, normalized_value)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_preference_evidence_dimension_value
+            ON preference_evidence(dimension, normalized_value);
+
+        CREATE INDEX IF NOT EXISTS idx_preference_evidence_review_event
+            ON preference_evidence(review_event_id);
+
+        CREATE TABLE IF NOT EXISTS learned_preference_suppressions (
+            preference_key TEXT PRIMARY KEY CHECK (
+                length(preference_key) = 32
+                AND preference_key = lower(preference_key)
+                AND preference_key NOT GLOB '*[^0-9a-f]*'
+            ),
+            dimension TEXT NOT NULL,
+            normalized_value TEXT NOT NULL,
+            suppressed_at TEXT NOT NULL,
+            UNIQUE (dimension, normalized_value)
+        );
+
         CREATE TABLE IF NOT EXISTS material_store (
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
             store_id TEXT NOT NULL UNIQUE CHECK (
@@ -450,6 +508,17 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE application_events ADD COLUMN note_redacted_at TEXT"
         )
+
+    connection.execute(
+        """
+        INSERT INTO preference_state (
+            singleton, explicit_configured, explicit_updated_at,
+            learning_reset_at, learning_reset_review_event_id, created_at
+        )
+        VALUES (1, 0, NULL, NULL, 0, ?)
+        """,
+        (datetime.now(UTC).isoformat(),),
+    )
 
     connection.execute(
         """

@@ -38,7 +38,7 @@ class _SnapshotChanged(Exception):
 
 
 class _InvalidSchema(Exception):
-    """The database is not an exact current-v11 database."""
+    """The database is not an exact current-v12 database."""
 
 
 def _value(value: Any) -> bytes:

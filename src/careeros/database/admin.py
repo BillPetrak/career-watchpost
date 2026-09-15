@@ -94,7 +94,7 @@ def migrate_database(
         if state == "upgrade_required" and no_backup and not acknowledge:
             raise ValueError("--no-backup requires acknowledgement")
         if state == "upgrade_required" and not no_backup:
-            destination = backup_path or Path(str(path) + ".pre-v11.backup.sqlite3")
+            destination = backup_path or Path(str(path) + ".pre-v12.backup.sqlite3")
             if destination.is_symlink() or destination.exists():
                 raise ValueError("backup destination already exists")
             destination.parent.mkdir(parents=True, exist_ok=True)
