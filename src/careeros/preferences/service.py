@@ -14,6 +14,7 @@ from careeros.preferences.models import (
     MAX_EXPLICIT_VALUE_LENGTH,
     MAX_EXPLICIT_VALUES,
     MAX_REMOTE_PREFERENCE_LENGTH,
+    AdaptivePreferenceSet,
     EffectivePreferenceContext,
     ExplicitPreferenceProfile,
     LearnedPreferenceSuppression,
@@ -213,6 +214,25 @@ def resolve_explicit_profile(
         return EffectivePreferenceContext(explicit_profile=stored, source="stored")
     return EffectivePreferenceContext(
         explicit_profile=ExplicitPreferenceProfile(), source="default"
+    )
+
+
+def build_adaptive_preference_set(
+    connection: sqlite3.Connection,
+    *,
+    supplied_profile: CandidateProfile | ExplicitPreferenceProfile | None = None,
+    enabled: bool = True,
+) -> AdaptivePreferenceSet:
+    """Build one immutable learned snapshot with invocation-specific locks."""
+    if not enabled:
+        return AdaptivePreferenceSet.disabled()
+    context = resolve_explicit_profile(
+        connection,
+        supplied_profile=supplied_profile,
+    )
+    return AdaptivePreferenceSet(
+        learned=derive_learned_preferences(connection),
+        locked_dimensions=context.locked_dimensions,
     )
 
 

@@ -43,7 +43,8 @@ def test_exact_snapshot_request_and_profile_boundary() -> None:
     js = _asset("app.js")
     assert '"/saved-searches/" + encodeURIComponent(definition.name)' in js
     assert '"/execute?snapshot=true"' in js
-    assert "var body = captured.profile ? profilePayload(captured.profile) : {};" in js
+    assert "var body = captured.profile" in js
+    assert "use_learned_preferences: captured.useLearnedPreferences" in js
     region = js[
         js.index("async function runSavedSearch") : js.index(
             "async function renderSavedSearchesView"

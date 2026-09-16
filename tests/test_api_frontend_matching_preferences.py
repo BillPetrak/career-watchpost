@@ -207,7 +207,8 @@ def test_saved_search_search_mode_is_profile_free_and_rank_mode_captures_profile
     )
     assert 'definition.mode === "rank"' in run
     assert "freezeProfile(retryRun && retryRun.profile" in run
-    assert "var body = captured.profile ? profilePayload(captured.profile) : {};" in run
+    assert "var body = captured.profile" in run
+    assert "use_learned_preferences: captured.useLearnedPreferences" in run
     assert "profileGeneration: captured.profileGeneration" in run
     assert "runGeneration: runGeneration" in run
     assert "captured.profileGeneration !== matchingActiveProfileGeneration" in run
@@ -216,6 +217,18 @@ def test_saved_search_search_mode_is_profile_free_and_rank_mode_captures_profile
     )
     assert 'definition.mode === "rank"' in render
     assert "snapshot.profileGeneration !== matchingActiveProfileGeneration" in render
+
+
+def test_adaptive_opt_out_is_propagated_without_client_side_scoring() -> None:
+    html = text("index.html")
+    js = text("app.js")
+    assert "Use learned preferences" in html
+    assert js.count("Use learned preferences") >= 2
+    assert "matching-use-learned" in js
+    assert "saved-search-use-learned" in js
+    assert "review-use-learned" in html
+    assert js.count("use_learned_preferences") >= 4
+    assert "computeRawLearned" not in js
 
 
 def test_job_detail_context_retains_exact_historical_run_basis() -> None:

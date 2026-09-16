@@ -79,6 +79,7 @@ def run_report(
                     if not arguments.no_feedback
                     else None
                 ),
+                use_adaptive=not arguments.no_adaptive,
             )
     except (OSError, sqlite3.Error) as error:
         print(f"Report failed: {type(error).__name__}: {error}", file=sys.stderr)

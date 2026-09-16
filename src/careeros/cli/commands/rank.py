@@ -38,6 +38,7 @@ def run_rank(
     exclude_statuses: Sequence[str] = (),
     output_format: str = "text",
     use_feedback: bool = True,
+    use_adaptive: bool = True,
 ) -> int:
     """Search jobs and rank them against a candidate profile."""
     profile = load_profile_or_error(profile_path)
@@ -61,6 +62,7 @@ def run_rank(
                 include_statuses=tuple(include_statuses),
                 exclude_statuses=tuple(exclude_statuses),
                 feedback=feedback,
+                use_adaptive=use_adaptive,
             )
     except (OSError, sqlite3.Error) as error:
         print(f"Search failed: {type(error).__name__}: {error}", file=sys.stderr)
@@ -114,4 +116,5 @@ def run_rank_command(
         exclude_statuses=arguments.exclude_status or (),
         output_format=arguments.format,
         use_feedback=not arguments.no_feedback,
+        use_adaptive=not arguments.no_adaptive,
     )

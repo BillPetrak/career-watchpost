@@ -24,6 +24,8 @@ from careeros.applications.service import (
 )
 from careeros.database.groups import GroupedJob, search_grouped
 from careeros.database.jobs import StoredJob, search_jobs
+from careeros.preferences.models import AdaptivePreferenceSet
+from careeros.preferences.service import build_adaptive_preference_set
 from careeros.ranking.feedback import FeedbackSet
 from careeros.ranking.scorer import (
     CandidateProfile,
@@ -191,6 +193,8 @@ def rank_candidates(
     include_statuses: tuple[str, ...] = (),
     exclude_statuses: tuple[str, ...] = (),
     feedback: FeedbackSet | None = None,
+    adaptive_preferences: AdaptivePreferenceSet | None = None,
+    use_adaptive: bool = True,
 ) -> RankOutcome:
     """Run the shared flat/grouped rank pipeline (search + score + min filter).
 
@@ -212,11 +216,20 @@ def rank_candidates(
         include_statuses=include_statuses,
         exclude_statuses=exclude_statuses,
     )
+    if adaptive_preferences is None:
+        adaptive_preferences = build_adaptive_preference_set(
+            connection,
+            supplied_profile=profile,
+            enabled=use_adaptive,
+        )
 
     if grouped:
         candidate_count = len(outcome.groups)
         ranked_groups: Sequence[RankedGroup] = score_groups(
-            outcome.groups, profile, feedback=feedback
+            outcome.groups,
+            profile,
+            feedback=feedback,
+            adaptive_preferences=adaptive_preferences,
         )
         if min_score > 0:
             ranked_groups = [
@@ -233,7 +246,10 @@ def rank_candidates(
 
     candidate_count = len(outcome.flat)
     ranked_jobs: Sequence[RankedJob] = score_jobs(
-        outcome.flat, profile, feedback=feedback
+        outcome.flat,
+        profile,
+        feedback=feedback,
+        adaptive_preferences=adaptive_preferences,
     )
     if min_score > 0:
         ranked_jobs = [item for item in ranked_jobs if item.match_score >= min_score]
@@ -272,6 +288,8 @@ def execute_rank(
     *,
     profile: CandidateProfile,
     feedback: FeedbackSet | None = None,
+    adaptive_preferences: AdaptivePreferenceSet | None = None,
+    use_adaptive: bool = True,
 ) -> RankOutcome:
     """Run a stored saved search in rank mode (thin definition adapter)."""
     return rank_candidates(
@@ -288,4 +306,6 @@ def execute_rank(
         include_statuses=definition.include_statuses,
         exclude_statuses=definition.exclude_statuses,
         feedback=feedback,
+        adaptive_preferences=adaptive_preferences,
+        use_adaptive=use_adaptive,
     )

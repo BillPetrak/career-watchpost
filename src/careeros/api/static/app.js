@@ -66,7 +66,7 @@
   var matchingPreferenceMutationQueue = Promise.resolve();
   var matchingPreferenceInitializationEligible = true;
   var reviewSnapshot = null;
-  var matchingPreviewControls = { grouped: true, minimumScore: "0", limit: "10" };
+  var matchingPreviewControls = { grouped: true, minimumScore: "0", limit: "10", useLearnedPreferences: true };
   var matchingPreviewControlsGeneration = 0;
 
   function consumeMatchingPreferenceInitializationEligibility() {
@@ -112,7 +112,7 @@
   var savedSearchState = {
     metadata: [], metadataTotal: 0, metadataPage: 0, metadataPageSize: 20, selected: null, metadataSeq: 0, selectionGeneration: 0,
     executionSeq: 0, executionGeneration: 0, rankingGeneration: 0, inFlight: false, snapshot: null,
-    page: 0, pageSize: 20, profile: null,
+    page: 0, pageSize: 20, profile: null, useLearnedPreferences: true,
   };
 
   // Stale-response guard for the Job Detail view: every full render of
@@ -2226,6 +2226,7 @@
       matchingDraftGeneration++;
     } else if (
       node.id === "matching-grouped" ||
+      node.id === "matching-use-learned" ||
       node.id === "matching-min-score" ||
       node.id === "matching-limit"
     ) {
@@ -2233,6 +2234,7 @@
         grouped: document.getElementById("matching-grouped").checked,
         minimumScore: document.getElementById("matching-min-score").value,
         limit: document.getElementById("matching-limit").value,
+        useLearnedPreferences: document.getElementById("matching-use-learned").checked,
       };
       matchingPreviewControlsGeneration++;
     }
@@ -2410,6 +2412,14 @@
     groupedLabel.appendChild(grouped);
     groupedLabel.appendChild(document.createTextNode(" Collapse duplicates"));
     runControls.appendChild(groupedLabel);
+    var learnedLabel = el("label", { className: "inline-label" });
+    var learned = document.createElement("input");
+    learned.type = "checkbox";
+    learned.id = "matching-use-learned";
+    learned.checked = matchingPreviewControls.useLearnedPreferences;
+    learnedLabel.appendChild(learned);
+    learnedLabel.appendChild(document.createTextNode(" Use learned preferences"));
+    runControls.appendChild(learnedLabel);
     var minLabel = el("label", { textContent: "Minimum match score" });
     minLabel.htmlFor = "matching-min-score";
     var min = document.createElement("input");
@@ -2527,6 +2537,7 @@
       grouped: matchingPreviewControls.grouped,
       minimumScore: matchingPreviewControls.minimumScore,
       limit: matchingPreviewControls.limit,
+      useLearnedPreferences: matchingPreviewControls.useLearnedPreferences,
     });
     var validation = validateMatchingProfile(profile) ||
       validateMatchingPreviewControls(controls);
@@ -2543,7 +2554,10 @@
         "/ranked-jobs?grouped=" + (controls.grouped ? "true" : "false") +
           "&minimum_score=" + encodeURIComponent(controls.minimumScore) +
           "&offset=0&limit=" + encodeURIComponent(controls.limit),
-        Object.assign({}, profilePayload(profile), { untracked: true })
+        Object.assign({}, profilePayload(profile), {
+          untracked: true,
+          use_learned_preferences: controls.useLearnedPreferences,
+        })
       );
       if (seq !== matchingPreviewRequestSeq || visibleView() !== MATCHING) return;
       if (
@@ -2741,7 +2755,7 @@
   }
 
   function selectSavedSearch(item) {
-    savedSearchState.selected = item; savedSearchState.selectionGeneration++; savedSearchState.executionSeq++; savedSearchState.executionGeneration++; savedSearchState.inFlight = false; savedSearchState.snapshot = null; savedSearchState.page = 0; savedSearchState.profile = null; rankingContextGeneration++; rankedJobContext = null; pendingRankedNavigation = null;
+    savedSearchState.selected = item; savedSearchState.selectionGeneration++; savedSearchState.executionSeq++; savedSearchState.executionGeneration++; savedSearchState.inFlight = false; savedSearchState.snapshot = null; savedSearchState.page = 0; savedSearchState.profile = null; savedSearchState.useLearnedPreferences = true; rankingContextGeneration++; rankedJobContext = null; pendingRankedNavigation = null;
     renderSavedSearchWorkspace();
   }
 
@@ -2766,7 +2780,7 @@
       detail.appendChild(savedSearchDefinition(savedSearchState.selected));
       var run = el("button", { className: "primary-button", textContent: "Run saved search", type: "button" }); run.id = "saved-search-run"; run.disabled = savedSearchState.inFlight;
       run.addEventListener("click", function () { runSavedSearch(savedSearchState.selected); }); detail.appendChild(run);
-      if (savedSearchState.selected.mode === "rank") { var profileSummary = el("div", { className: "profile-summary" }); renderProfileSummary(profileSummary, matchingActiveProfile); detail.appendChild(profileSummary); var edit = el("p"); edit.appendChild(el("a", { href: "#matching", textContent: "Edit matching preferences" })); detail.appendChild(edit); }
+      if (savedSearchState.selected.mode === "rank") { var profileSummary = el("div", { className: "profile-summary" }); renderProfileSummary(profileSummary, matchingActiveProfile); detail.appendChild(profileSummary); var adaptiveLabel = el("label", { className: "inline-label" }); var adaptiveToggle = document.createElement("input"); adaptiveToggle.type = "checkbox"; adaptiveToggle.id = "saved-search-use-learned"; adaptiveToggle.checked = savedSearchState.useLearnedPreferences; adaptiveToggle.disabled = savedSearchState.inFlight; adaptiveToggle.addEventListener("change", function () { savedSearchState.useLearnedPreferences = adaptiveToggle.checked; savedSearchState.executionSeq++; savedSearchState.executionGeneration++; savedSearchState.snapshot = null; renderSavedSearchWorkspace(); }); adaptiveLabel.appendChild(adaptiveToggle); adaptiveLabel.appendChild(document.createTextNode(" Use learned preferences")); detail.appendChild(adaptiveLabel); var edit = el("p"); edit.appendChild(el("a", { href: "#matching", textContent: "Edit matching preferences" })); detail.appendChild(edit); }
       if (savedSearchState.snapshot) { renderSavedSearchSnapshot(savedSearchState.snapshot, detail); }
     }
     layout.appendChild(detail); content.appendChild(layout);
@@ -2799,6 +2813,9 @@
           ? retryRun.profileGeneration
           : matchingActiveProfileGeneration)
         : null,
+      useLearnedPreferences: definition.mode === "rank"
+        ? savedSearchState.useLearnedPreferences
+        : true,
     });
     if (captured.profile) {
       var validation = validateMatchingProfile(captured.profile);
@@ -2812,7 +2829,11 @@
     savedSearchState.inFlight = true;
     setLoading(status, "Running saved search…");
     renderSavedSearchWorkspace();
-    var body = captured.profile ? profilePayload(captured.profile) : {};
+    var body = captured.profile
+      ? Object.assign({}, profilePayload(captured.profile), {
+          use_learned_preferences: captured.useLearnedPreferences,
+        })
+      : {};
     try {
       var data = await postReportJson(
         "/saved-searches/" + encodeURIComponent(definition.name) +
@@ -2921,6 +2942,7 @@
       profile: cloneProfile(matchingActiveProfile),
       grouped: document.getElementById("review-grouped").checked,
       limit: document.getElementById("review-limit").value,
+      useLearnedPreferences: document.getElementById("review-use-learned").checked,
     };
   }
 
@@ -2973,7 +2995,9 @@
 
   // Only the approved profile fields are ever sent; empty fields are omitted.
   function buildProfilePayload(fields) {
-    if (fields.profile) return profilePayload(fields.profile);
+    if (fields.profile) return Object.assign({}, profilePayload(fields.profile), {
+      use_learned_preferences: fields.useLearnedPreferences !== false,
+    });
     var profile = {};
     if (fields.desiredTitles.length > 0) {
       profile.desired_titles = fields.desiredTitles;
@@ -2987,7 +3011,10 @@
     if (fields.remotePreference.length > 0) {
       profile.remote_preference = fields.remotePreference;
     }
-    return { profile: profile };
+    return {
+      profile: profile,
+      use_learned_preferences: fields.useLearnedPreferences !== false,
+    };
   }
 
   // The Review view's single authoritative request. Every run captures a
@@ -3003,6 +3030,7 @@
         : matchingActiveProfileGeneration,
       grouped: fields.grouped === true,
       limit: String(fields.limit),
+      useLearnedPreferences: fields.useLearnedPreferences !== false,
     });
     var seq = ++reviewRequestSeq;
     reviewDataGeneration++;
@@ -3018,7 +3046,12 @@
     setLoading(status, "Generating review results…");
     if (submit) submit.disabled = true;
     try {
-      var data = await postReportJson(url, profilePayload(captured.profile));
+      var data = await postReportJson(
+        url,
+        Object.assign({}, profilePayload(captured.profile), {
+          use_learned_preferences: captured.useLearnedPreferences,
+        })
+      );
       if (seq !== reviewRequestSeq || visibleView() !== REVIEW) return;
       if (captured.profileGeneration !== matchingActiveProfileGeneration) {
         if (status) {
@@ -3039,6 +3072,7 @@
         profileGeneration: captured.profileGeneration,
         grouped: captured.grouped,
         limit: captured.limit,
+        useLearnedPreferences: captured.useLearnedPreferences,
         runGeneration: runGeneration,
         data: Object.freeze(data),
       });
@@ -3066,6 +3100,7 @@
       profileGeneration: reviewSnapshot.profileGeneration,
       grouped: reviewSnapshot.grouped,
       limit: reviewSnapshot.limit,
+      useLearnedPreferences: reviewSnapshot.useLearnedPreferences,
     });
     renderReviewContent(
       content,
@@ -3139,6 +3174,7 @@
         profileGeneration: reviewSnapshot.profileGeneration,
         grouped: reviewSnapshot.grouped,
         limit: reviewSnapshot.limit,
+        useLearnedPreferences: reviewSnapshot.useLearnedPreferences,
         runGeneration: reviewSnapshot.runGeneration,
         data: Object.freeze(updatedData),
       });
@@ -3280,7 +3316,11 @@
   function appendFactorList(parent, factors, className, limit) {
     var list = el("ul", { className: className });
     factors.slice(0, limit).forEach(function (factor) {
-      list.appendChild(el("li", { textContent: factorText(factor) }));
+      var text = factorText(factor);
+      if (factor.criterion === "learned_preference") {
+        text += " (" + signedPoints(factor.points) + " points)";
+      }
+      list.appendChild(el("li", { textContent: text }));
     });
     parent.appendChild(list);
   }
@@ -3299,7 +3339,8 @@
     var material = explanationFactors(explanation, "gaps").concat(
       explanationFactors(explanation, "unknowns"),
       explanationFactors(explanation, "other_factors").filter(function (factor) {
-        return factor.effect === "negative" || factor.effect === "blocking";
+        return factor.criterion === "learned_preference" ||
+          factor.effect === "negative" || factor.effect === "blocking";
       })
     );
     if (material.length > 0) {
@@ -4749,6 +4790,8 @@
     var score = isObject(explanation.score) ? explanation.score : {};
     var fields = el("dl", { className: "job-fields explanation-score" });
     addField(fields, "Match score", String(countValue(score.match_score)));
+    addField(fields, "Base score", signedPoints(score.base_score));
+    addField(fields, "Learned preference adjustment", signedPoints(score.preference_adjustment));
     addField(fields, "Contribution total", signedPoints(score.contribution_total));
     addField(fields, "Score resolution", displayText(score.resolution));
     if (explanation.scope === "opportunity") {

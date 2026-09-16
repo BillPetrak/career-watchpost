@@ -27,6 +27,13 @@ from dataclasses import dataclass
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.runs import parse_utc
+from careeros.preferences.models import AdaptivePreferenceSet
+from careeros.ranking.adaptive import (
+    AdaptiveAdjustment,
+    AdaptiveCandidate,
+    apply_legacy_envelope,
+    compute_raw_learned_adjustment,
+)
 from careeros.ranking.feedback import (
     CandidateJob,
     FeedbackAdjustment,
@@ -103,6 +110,7 @@ class MatchFacts:
     """
 
     titles: tuple[str, ...]
+    company: str | None = None
     description: str | None = None
     location: str | None = None
     remote_status: str | None = None
@@ -116,10 +124,11 @@ class ScoreComponent:
 
     ``kind`` is a stable machine key (``title``, ``skill``, ``location``,
     ``remote``, ``employment``, ``seniority``, ``excluded``,
-    ``missing_required``, ``feedback``, ``hard_excluded``). ``label`` is the
-    human-readable line shown to users. ``points`` is the signed contribution to
-    the raw score (``0`` for a veto). ``is_veto`` marks hard exclusions, which
-    force the displayed score to 0 while leaving the raw score untouched.
+    ``missing_required``, ``feedback``, ``learned_preference``,
+    ``hard_excluded``). ``label`` is the human-readable line shown to users.
+    ``points`` is the signed contribution to the raw score (``0`` for a veto).
+    ``is_veto`` marks hard exclusions, which force the displayed score to 0
+    while leaving the raw score untouched.
     """
 
     kind: str
@@ -159,6 +168,7 @@ class MatchResult:
     description_unavailable: bool
     components: tuple[ScoreComponent, ...] = ()
     feedback: FeedbackAdjustment | None = None
+    adaptive: AdaptiveAdjustment | None = None
 
     @property
     def reasons(self) -> tuple[str, ...]:
@@ -173,6 +183,17 @@ class MatchResult:
             for component in self.components
             if component.kind != "feedback"
         )
+
+    @property
+    def base_score(self) -> int:
+        """Return the pre-adaptive raw score, including legacy feedback."""
+        adjustment = self.adaptive.effective_points if self.adaptive is not None else 0
+        return self.score - adjustment
+
+    @property
+    def preference_adjustment(self) -> int:
+        """Return only the effective learned points actually applied."""
+        return self.adaptive.effective_points if self.adaptive is not None else 0
 
     @property
     def match_score(self) -> int:
@@ -366,6 +387,7 @@ def score_facts(
     *,
     feedback: FeedbackSet | None = None,
     candidate: CandidateJob | None = None,
+    adaptive_preferences: AdaptivePreferenceSet | None = None,
 ) -> MatchResult:
     """Score one job/group's facts against a profile (deterministic).
 
@@ -645,6 +667,40 @@ def score_facts(
             )
             feedback_adjustment = adjustment
 
+    adaptive_adjustment: AdaptiveAdjustment | None = None
+    if adaptive_preferences is not None:
+        employment_types = tuple(
+            _normalize_employment(value)
+            for value in _split_employment_types(facts.employment_type)
+            if _normalize_employment(value)
+        )
+        raw_learned = compute_raw_learned_adjustment(
+            AdaptiveCandidate(
+                titles=facts.titles,
+                company=facts.company,
+                location=facts.location,
+                remote_status=facts.remote_status,
+                employment_types=employment_types,
+                seniority_levels=tuple(_detect_seniority(facts.titles)),
+            ),
+            adaptive_preferences,
+        )
+        adaptive_adjustment = apply_legacy_envelope(
+            raw_learned,
+            legacy_feedback=(
+                feedback_adjustment.points if feedback_adjustment is not None else 0
+            ),
+        )
+        if adaptive_adjustment is not None:
+            score += adaptive_adjustment.effective_points
+            components.append(
+                ScoreComponent(
+                    kind="learned_preference",
+                    label=adaptive_adjustment.summary,
+                    points=adaptive_adjustment.effective_points,
+                )
+            )
+
     return MatchResult(
         score=score,
         matched_titles=tuple(matched_titles),
@@ -662,6 +718,7 @@ def score_facts(
         description_unavailable=description_unavailable,
         components=tuple(components),
         feedback=feedback_adjustment,
+        adaptive=adaptive_adjustment,
     )
 
 
@@ -669,6 +726,7 @@ def _facts_from_job(job: StoredJob) -> MatchFacts:
     """Build scoring facts from a single stored job."""
     return MatchFacts(
         titles=(job.title,),
+        company=job.company,
         description=job.description,
         location=job.location,
         remote_status=job.remote_status,
@@ -682,6 +740,7 @@ def score_job(
     profile: CandidateProfile,
     *,
     feedback: FeedbackSet | None = None,
+    adaptive_preferences: AdaptivePreferenceSet | None = None,
 ) -> RankedJob:
     """Score a single job against a candidate profile."""
     return RankedJob(
@@ -691,6 +750,7 @@ def score_job(
             profile,
             feedback=feedback,
             candidate=_candidate_from_job(job),
+            adaptive_preferences=adaptive_preferences,
         ),
     )
 
@@ -710,13 +770,22 @@ def score_jobs(
     profile: CandidateProfile,
     *,
     feedback: FeedbackSet | None = None,
+    adaptive_preferences: AdaptivePreferenceSet | None = None,
 ) -> list[RankedJob]:
     """Score multiple jobs, sorted deterministically.
 
     Ordering: descending match score, then publication time (newest first,
     unknown last), then ascending job ID.
     """
-    ranked = [score_job(job, profile, feedback=feedback) for job in jobs]
+    ranked = [
+        score_job(
+            job,
+            profile,
+            feedback=feedback,
+            adaptive_preferences=adaptive_preferences,
+        )
+        for job in jobs
+    ]
     ranked.sort(
         key=lambda rj: (
             -rj.match_score,
@@ -742,6 +811,10 @@ def _facts_from_group(group: GroupedJob) -> MatchFacts:
     )
     return MatchFacts(
         titles=titles,
+        company=next(
+            (member.company for member in members if member.company),
+            group.representative.company,
+        ),
         description="\n".join(descriptions) or None,
         location=next(
             (member.location for member in members if member.location),
@@ -784,6 +857,7 @@ def score_group(
     profile: CandidateProfile,
     *,
     feedback: FeedbackSet | None = None,
+    adaptive_preferences: AdaptivePreferenceSet | None = None,
 ) -> RankedGroup:
     """Score a canonical group against a candidate profile using all members."""
     facts = _facts_from_group(group)
@@ -794,6 +868,7 @@ def score_group(
             profile,
             feedback=feedback,
             candidate=_candidate_from_group(group),
+            adaptive_preferences=adaptive_preferences,
         ),
     )
 
@@ -803,13 +878,22 @@ def score_groups(
     profile: CandidateProfile,
     *,
     feedback: FeedbackSet | None = None,
+    adaptive_preferences: AdaptivePreferenceSet | None = None,
 ) -> list[RankedGroup]:
     """Score multiple groups, sorted deterministically.
 
     Ordering mirrors flat ranking: descending match score, then newest member
     publication time, then the representative's (lowest) job ID.
     """
-    ranked = [score_group(group, profile, feedback=feedback) for group in groups]
+    ranked = [
+        score_group(
+            group,
+            profile,
+            feedback=feedback,
+            adaptive_preferences=adaptive_preferences,
+        )
+        for group in groups
+    ]
     ranked.sort(
         key=lambda rg: (
             -rg.match_score,

@@ -59,6 +59,7 @@ class ExportRequest:
     state: str = "unreviewed"
     include_tracked: bool = False
     use_feedback: bool = True
+    use_adaptive: bool = True
     failed_only: bool = False
 
 

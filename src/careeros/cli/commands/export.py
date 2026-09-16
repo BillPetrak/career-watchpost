@@ -51,6 +51,7 @@ def run_export(
         state=getattr(arguments, "state", "unreviewed"),
         include_tracked=getattr(arguments, "include_tracked", False),
         use_feedback=not getattr(arguments, "no_feedback", False),
+        use_adaptive=not getattr(arguments, "no_adaptive", False),
         failed_only=getattr(arguments, "failed", False),
     )
 

@@ -24,10 +24,13 @@ from careeros.applications.service import set_application_status
 from careeros.collectors import COLLECTORS
 from careeros.collectors.arbeitnow import CollectedJob
 from careeros.database.connection import connect
+from careeros.database.groups import ensure_grouped
 from careeros.database.jobs import save_jobs
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.reminders.service import add_reminder
 from careeros.review.service import set_decision
+from careeros.saved_searches.models import SavedSearchFields
+from careeros.saved_searches.service import create_search
 from tests.support import TestClient
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
@@ -53,6 +56,142 @@ _MAIN_PROFILE = {
     "preferred_locations": ["Berlin"],
     "remote_preference": "remote",
 }
+
+
+def test_ranked_jobs_applies_learned_preferences_without_legacy_feedback_and_opts_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "adaptive-api.sqlite3"
+    with connect(database) as connection:
+        initialize_schema(connection)
+        save_jobs(
+            connection,
+            [
+                _make_job(
+                    "arbeitnow",
+                    "learn-1",
+                    "Backend Engineer",
+                    "Alpha",
+                    "Alpha",
+                    remote_status="onsite_or_unspecified",
+                    employment_type=None,
+                ),
+                _make_job(
+                    "remotive",
+                    "learn-2",
+                    "Backend Engineer",
+                    "Beta",
+                    "Beta",
+                    remote_status="onsite_or_unspecified",
+                    employment_type=None,
+                ),
+                _make_job(
+                    "jobicy",
+                    "target",
+                    "Backend Engineer",
+                    "Gamma",
+                    "Gamma",
+                    remote_status="onsite_or_unspecified",
+                    employment_type=None,
+                ),
+            ],
+        )
+        ensure_grouped(connection)
+        ids = {
+            row["source_job_id"]: int(row["id"])
+            for row in connection.execute("SELECT id, source_job_id FROM jobs")
+        }
+        set_decision(connection, job_id=ids["learn-1"], decision="shortlist")
+        set_decision(connection, job_id=ids["learn-2"], decision="shortlist")
+        create_search(
+            connection,
+            fields=SavedSearchFields(
+                name="adaptive",
+                query="Gamma",
+                mode="rank",
+                profile_path="private-unused.json",
+            ),
+        )
+
+    _set_database(monkeypatch, database)
+    with TestClient(app) as client:
+        adaptive = client.post(
+            "/ranked-jobs?query=Gamma",
+            json={"profile": {}},
+        )
+        opted_out = client.post(
+            "/ranked-jobs?query=Gamma",
+            json={"profile": {}, "use_learned_preferences": False},
+        )
+        queue = client.post(
+            "/review-queue?query=Gamma",
+            json={"profile": {}},
+        )
+        queue_opted_out = client.post(
+            "/review-queue?query=Gamma",
+            json={"profile": {}, "use_learned_preferences": False},
+        )
+        report = client.post("/report", json={"profile": {}})
+        report_opted_out = client.post(
+            "/report",
+            json={"profile": {}, "use_learned_preferences": False},
+        )
+        saved = client.post(
+            "/saved-searches/adaptive/execute",
+            json={"profile": {}},
+        )
+        saved_opted_out = client.post(
+            "/saved-searches/adaptive/execute",
+            json={"profile": {}, "use_learned_preferences": False},
+        )
+
+    assert adaptive.status_code == 200
+    assert opted_out.status_code == 200
+    for response in (
+        queue,
+        queue_opted_out,
+        report,
+        report_opted_out,
+        saved,
+        saved_opted_out,
+    ):
+        assert response.status_code == 200
+    adaptive_item = adaptive.json()["items"][0]
+    opted_out_item = opted_out.json()["items"][0]
+    assert adaptive_item["score"] == 2
+    assert opted_out_item["score"] == 0
+    assert adaptive_item["explanation"]["score"] == {
+        "base_score": 0,
+        "preference_adjustment": 2,
+        "contribution_total": 2,
+        "match_score": 2,
+        "resolution": "unchanged",
+    }
+    assert [
+        factor["points"]
+        for factor in adaptive_item["explanation"]["other_factors"]
+        if factor["criterion"] == "learned_preference"
+    ] == [2]
+    assert all(
+        factor["criterion"] != "feedback"
+        for factor in adaptive_item["explanation"]["other_factors"]
+    )
+    assert queue.json()["items"][0]["score"] == 2
+    assert queue_opted_out.json()["items"][0]["score"] == 0
+    report_target = next(
+        item
+        for item in report.json()["recommendations"]["ranked_jobs"]
+        if item["job"]["id"] == ids["target"]
+    )
+    opted_out_report_target = next(
+        item
+        for item in report_opted_out.json()["recommendations"]["ranked_jobs"]
+        if item["job"]["id"] == ids["target"]
+    )
+    assert report_target["score"] == 2
+    assert opted_out_report_target["score"] == 0
+    assert saved.json()["items"][0]["score"] == 2
+    assert saved_opted_out.json()["items"][0]["score"] == 0
 
 
 def _set_database(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:

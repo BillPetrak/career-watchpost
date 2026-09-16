@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from careeros.preferences.learning import LearnedPreference
     from careeros.ranking.scorer import CandidateProfile
 
 EXPLICIT_PREFERENCE_DIMENSIONS: tuple[str, ...] = (
@@ -161,6 +162,19 @@ class EffectivePreferenceContext:
     @property
     def locked_dimensions(self) -> frozenset[str]:
         return self.explicit_profile.locked_dimensions
+
+
+@dataclass(frozen=True)
+class AdaptivePreferenceSet:
+    """One immutable learned-preference authority snapshot for a ranking run."""
+
+    learned: tuple[LearnedPreference, ...]
+    locked_dimensions: frozenset[str]
+
+    @classmethod
+    def disabled(cls) -> AdaptivePreferenceSet:
+        """Return an explicitly empty adaptive authority for opt-out paths."""
+        return cls(learned=(), locked_dimensions=frozenset())
 
 
 def preference_key(dimension: str, normalized_value: str) -> str:

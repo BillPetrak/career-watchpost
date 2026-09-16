@@ -235,6 +235,7 @@ def run_review_next(
     grouped: bool,
     output_format: str,
     use_feedback: bool = True,
+    use_adaptive: bool = True,
 ) -> int:
     """Rank a personalized daily review queue (read-only, no lock)."""
     profile = load_profile_or_error(profile_path)
@@ -256,6 +257,7 @@ def run_review_next(
                 limit=limit,
                 grouped=grouped,
                 feedback=feedback,
+                use_adaptive=use_adaptive,
             )
     except ReviewValidationError as error:
         print(str(error), file=sys.stderr)
@@ -328,4 +330,5 @@ def run_review_command(
         grouped=arguments.grouped,
         output_format=arguments.format,
         use_feedback=not arguments.no_feedback,
+        use_adaptive=not arguments.no_adaptive,
     )

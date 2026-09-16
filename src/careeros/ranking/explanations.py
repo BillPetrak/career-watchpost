@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from careeros.ranking.adaptive import learned_display_summary
 from careeros.ranking.scorer import MatchResult
 
 Effect = Literal["positive", "negative", "neutral", "blocking", "unknown"]
@@ -28,6 +29,7 @@ Criterion = Literal[
     "excluded_term",
     "hard_exclusion",
     "feedback",
+    "learned_preference",
 ]
 
 _SUPPORTED_COMPONENT_KINDS = frozenset(
@@ -42,6 +44,7 @@ _SUPPORTED_COMPONENT_KINDS = frozenset(
         "excluded",
         "hard_excluded",
         "feedback",
+        "learned_preference",
     }
 )
 
@@ -57,6 +60,8 @@ class ExplanationFactor:
 
 @dataclass(frozen=True)
 class ExplanationScore:
+    base_score: int
+    preference_adjustment: int
     contribution_total: int
     match_score: int
     resolution: Resolution
@@ -239,6 +244,17 @@ def explain_result(
                 points,
             )
         )
+    if result.adaptive is not None:
+        points = result.adaptive.effective_points
+        other.append(
+            _factor(
+                "learned_preference",
+                "Learned preferences",
+                learned_display_summary(result.adaptive.matches),
+                "positive" if points > 0 else "negative",
+                points,
+            )
+        )
 
     if result.hard_excluded_terms:
         resolution: Resolution = "excluded"
@@ -248,7 +264,13 @@ def explain_result(
         resolution = "floored"
     else:
         resolution = "unchanged"
-    score = ExplanationScore(result.score, result.match_score, resolution)
+    score = ExplanationScore(
+        result.base_score,
+        result.preference_adjustment,
+        result.score,
+        result.match_score,
+        resolution,
+    )
     positive = sum(1 for item in matches if item.effect == "positive")
     gaps_count = len(gaps)
     unknown_count = len(unknowns)
@@ -304,6 +326,8 @@ def explanation_to_dict(explanation: RankingExplanation) -> dict[str, Any]:
         "listing_count": explanation.listing_count,
         "summary": explanation.summary,
         "score": {
+            "base_score": explanation.score.base_score,
+            "preference_adjustment": explanation.score.preference_adjustment,
             "contribution_total": explanation.score.contribution_total,
             "match_score": explanation.score.match_score,
             "resolution": explanation.score.resolution,

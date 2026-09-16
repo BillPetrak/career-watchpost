@@ -243,6 +243,7 @@ def build_ranked_records(
         include_statuses=request.include_statuses,
         exclude_statuses=request.exclude_statuses,
         feedback=feedback,
+        use_adaptive=request.use_adaptive,
     )
 
     if request.grouped:
@@ -335,6 +336,7 @@ def build_review_records(
         limit=MAX_EXPORT_RECORDS,
         grouped=request.grouped,
         feedback=feedback,
+        use_adaptive=request.use_adaptive,
     )
 
     if request.grouped:

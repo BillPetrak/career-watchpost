@@ -2416,6 +2416,7 @@ def create_app(
                 stored,
                 profile=_to_profile(request.profile),
                 feedback=None,
+                use_adaptive=request.use_learned_preferences,
             )
             if outcome.grouped:
                 ranked = outcome.grouped_ranked
@@ -3033,6 +3034,7 @@ def create_app(
             include_statuses=include_statuses,
             exclude_statuses=exclude_statuses,
             feedback=None,
+            use_adaptive=payload.use_learned_preferences,
         )
 
         review_active = (
@@ -3141,6 +3143,7 @@ def create_app(
                 limit=MAX_FETCH_QUEUE,
                 grouped=grouped,
                 feedback=None,
+                use_adaptive=payload.use_learned_preferences,
             )
         except ReviewValidationError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
@@ -3228,6 +3231,9 @@ def create_app(
                 limit=limit,
                 grouped=grouped,
                 feedback=None,
+                use_adaptive=(
+                    payload.use_learned_preferences if payload is not None else True
+                ),
             )
         )
 

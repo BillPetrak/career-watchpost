@@ -702,6 +702,7 @@ class SavedSearchExecuteRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     profile: CandidateProfileRequest | None = None
+    use_learned_preferences: bool = True
 
 
 class SavedSearchExecutionResponse(BaseModel):
@@ -1054,6 +1055,7 @@ class RankRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     profile: CandidateProfileRequest
+    use_learned_preferences: bool = True
     untracked: bool | None = None
     include_statuses: list[str] | None = None
     exclude_statuses: list[str] | None = None
@@ -1076,6 +1078,7 @@ class ExplanationFactor(BaseModel):
         "excluded_term",
         "hard_exclusion",
         "feedback",
+        "learned_preference",
     ]
     label: str
     value: str | None
@@ -1084,6 +1087,8 @@ class ExplanationFactor(BaseModel):
 
 
 class ExplanationScore(BaseModel):
+    base_score: int
+    preference_adjustment: int
     contribution_total: int
     match_score: int
     resolution: Literal["unchanged", "capped", "floored", "excluded"]
@@ -1155,6 +1160,7 @@ class ReviewQueueRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     profile: CandidateProfileRequest
+    use_learned_preferences: bool = True
 
 
 class ReviewQueueItem(BaseModel):
@@ -1363,6 +1369,7 @@ class ReportRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     profile: CandidateProfileRequest | None = None
+    use_learned_preferences: bool = True
 
 
 class ReportResponse(BaseModel):

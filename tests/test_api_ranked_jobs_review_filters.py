@@ -148,11 +148,12 @@ def _seed(
       (shortlist on the NON-representative member, making the group reviewed;
       offer)
 
-    Against ``_MAIN_PROFILE`` the raw match scores are: a-1 53, r-1 53, j-1 25,
-    e-1 10, w-2 10, k-1 8; the canonical grouped order is engineer group (53),
-    j-1 (25), widgets group (10), k-1 (8). Returns a mapping of source-job-id to
-    ``jobs.id`` plus the canonical group IDs of the Senior Engineer pair and the
-    Endless Widgets pair.
+    Against ``_MAIN_PROFILE`` the pre-adaptive raw match scores are: a-1 53,
+    r-1 53, j-1 25, e-1 10, w-2 10, k-1 8. The two canonical positive review
+    authorities also activate learned company/employment preferences, while the
+    supplied profile locks remote learning. Returns a mapping of source-job-id
+    to ``jobs.id`` plus the canonical group IDs of the Senior Engineer pair and
+    the Endless Widgets pair.
     """
     connection = connect(path)
     initialize_schema(connection)
@@ -339,6 +340,10 @@ def test_flat_baseline_byte_identical_without_review_fields(
 
     with TestClient(app) as client:
         payload = _rank(client, {"profile": _MAIN_PROFILE})
+        opted_out = _rank(
+            client,
+            {"profile": _MAIN_PROFILE, "use_learned_preferences": False},
+        )
         response = _post(client, {"profile": _MAIN_PROFILE})
 
     assert list(payload) == ["items", "total", "offset", "limit"]
@@ -353,7 +358,8 @@ def test_flat_baseline_byte_identical_without_review_fields(
         job_ids["w-2"],
         job_ids["k-1"],
     ]
-    assert [item["score"] for item in payload["items"]] == [53, 53, 25, 10, 10, 8]  # type: ignore[index]
+    assert [item["score"] for item in payload["items"]] == [55, 55, 26, 12, 12, 8]  # type: ignore[index]
+    assert [item["score"] for item in opted_out["items"]] == [53, 53, 25, 10, 10, 8]  # type: ignore[index]
     for item in payload["items"]:
         assert list(item) == ["job", "match_score", "score", "explanation"]
         assert list(item["job"]) == _JOB_FIELDS

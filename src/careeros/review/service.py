@@ -68,6 +68,8 @@ from careeros.preferences.learning import (
     remove_review_evidence,
     replace_review_evidence,
 )
+from careeros.preferences.models import AdaptivePreferenceSet
+from careeros.preferences.service import build_adaptive_preference_set
 from careeros.ranking.feedback import FeedbackSet
 from careeros.ranking.scorer import CandidateProfile, RankedGroup, score_groups
 from careeros.review.models import (
@@ -561,6 +563,8 @@ def build_queue(
     limit: int = 20,
     grouped: bool = True,
     feedback: FeedbackSet | None = None,
+    adaptive_preferences: AdaptivePreferenceSet | None = None,
+    use_adaptive: bool = True,
 ) -> QueueOutcome:
     """Build a ranked review queue (read-only).
 
@@ -643,10 +647,18 @@ def build_queue(
             include_tracked=include_tracked,
         )
 
+    if adaptive_preferences is None:
+        adaptive_preferences = build_adaptive_preference_set(
+            connection,
+            supplied_profile=profile,
+            enabled=use_adaptive,
+        )
+
     ranked: Sequence[RankedGroup] = score_groups(
         [entry[0] for entry in eligible],
         profile,
         feedback=feedback,
+        adaptive_preferences=adaptive_preferences,
     )
     if min_score > 0:
         ranked = [entry for entry in ranked if entry.match_score >= min_score]

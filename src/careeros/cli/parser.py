@@ -442,6 +442,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable review-feedback adjustments to match scores.",
     )
     rank_parser.add_argument(
+        "--no-adaptive",
+        action="store_true",
+        help="Disable persistent learned-preference adjustments.",
+    )
+    rank_parser.add_argument(
         "--database",
         type=Path,
         default=DEFAULT_DATABASE_PATH,
@@ -613,6 +618,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-feedback",
         action="store_true",
         help="Disable review-feedback adjustments to recommended scores.",
+    )
+    report_parser.add_argument(
+        "--no-adaptive",
+        action="store_true",
+        help="Disable persistent learned-preference adjustments.",
     )
 
     source_parser = subparsers.add_parser(
@@ -851,6 +861,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-feedback",
         action="store_true",
         help="Disable review-feedback adjustments to queue scores.",
+    )
+    next_parser.add_argument(
+        "--no-adaptive",
+        action="store_true",
+        help="Disable persistent learned-preference adjustments.",
     )
     next_parser.add_argument(
         "--database",
@@ -1164,6 +1179,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("name", help="Workflow name.")
     run_parser.add_argument(
+        "--no-adaptive",
+        action="store_true",
+        help="Disable persistent learned-preference adjustments for rank mode.",
+    )
+    run_parser.add_argument(
         "--database",
         type=Path,
         default=DEFAULT_DATABASE_PATH,
@@ -1299,6 +1319,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable review-feedback adjustments to exported scores.",
     )
+    ranked_parser.add_argument(
+        "--no-adaptive",
+        action="store_true",
+        help="Disable persistent learned-preference adjustments.",
+    )
     _add_export_common_flags(ranked_parser)
 
     review_parser = export_commands.add_parser(
@@ -1332,6 +1357,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-feedback",
         action="store_true",
         help="Disable review-feedback adjustments to exported scores.",
+    )
+    review_parser.add_argument(
+        "--no-adaptive",
+        action="store_true",
+        help="Disable persistent learned-preference adjustments.",
     )
     _add_export_filter_flags(review_parser)
     review_grouped = review_parser.add_mutually_exclusive_group()

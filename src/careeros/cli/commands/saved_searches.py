@@ -410,6 +410,7 @@ def _run_saved_search_run(arguments: argparse.Namespace) -> int:
                     search,
                     profile=profile,
                     feedback=build_feedback_set(connection),
+                    use_adaptive=not arguments.no_adaptive,
                 )
             else:
                 search_outcome = execute_search(connection, search)

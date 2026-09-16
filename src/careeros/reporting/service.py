@@ -17,6 +17,8 @@ from careeros.database.applications import StoredApplication
 from careeros.database.groups import grouping_summary
 from careeros.database.jobs import JOB_COLUMNS, job_from_row
 from careeros.notifications.service import notification_summary
+from careeros.preferences.models import AdaptivePreferenceSet
+from careeros.preferences.service import build_adaptive_preference_set
 from careeros.ranking.feedback import FeedbackSet
 from careeros.ranking.scorer import CandidateProfile
 from careeros.reminders.service import (
@@ -138,6 +140,7 @@ def _build_recommendations(
     limit: int,
     grouped: bool,
     feedback: FeedbackSet | None,
+    adaptive_preferences: AdaptivePreferenceSet,
 ) -> Recommendations:
     """Score opportunities for the report using the shared ranking engine.
 
@@ -153,7 +156,11 @@ def _build_recommendations(
     if saved_search is not None:
         assert profile is not None
         outcome = execute_rank(
-            connection, saved_search, profile=profile, feedback=feedback
+            connection,
+            saved_search,
+            profile=profile,
+            feedback=feedback,
+            adaptive_preferences=adaptive_preferences,
         )
         min_score = saved_search.min_score or 0
         if outcome.grouped:
@@ -187,6 +194,7 @@ def _build_recommendations(
             untracked=True,
             limit=None,
             feedback=feedback,
+            adaptive_preferences=adaptive_preferences,
         )
         if outcome.grouped:
             return Recommendations(
@@ -254,6 +262,7 @@ def _build_review_queue(
     limit: int,
     grouped: bool,
     feedback: FeedbackSet | None,
+    adaptive_preferences: AdaptivePreferenceSet,
 ) -> ReviewQueue:
     """Rank the daily review queue for the report (read-only).
 
@@ -284,6 +293,7 @@ def _build_review_queue(
         limit=limit,
         grouped=grouped,
         feedback=feedback,
+        adaptive_preferences=adaptive_preferences,
     )
 
     if saved_search is not None:
@@ -320,6 +330,7 @@ def build_report(
     limit: int = 10,
     grouped: bool = False,
     feedback: FeedbackSet | None = None,
+    use_adaptive: bool = True,
 ) -> Report:
     """Build a complete Career Snapshot from stored state (read-only).
 
@@ -373,6 +384,16 @@ def build_report(
 
     reminders = _build_reminders(connection, now=now, limit=limit)
 
+    adaptive_preferences = (
+        build_adaptive_preference_set(
+            connection,
+            supplied_profile=profile,
+            enabled=use_adaptive,
+        )
+        if profile is not None
+        else AdaptivePreferenceSet.disabled()
+    )
+
     review = _build_review_queue(
         connection,
         profile=profile,
@@ -380,6 +401,7 @@ def build_report(
         limit=limit,
         grouped=grouped,
         feedback=feedback,
+        adaptive_preferences=adaptive_preferences,
     )
 
     recommendations = _build_recommendations(
@@ -389,6 +411,7 @@ def build_report(
         limit=limit,
         grouped=grouped,
         feedback=feedback,
+        adaptive_preferences=adaptive_preferences,
     )
 
     return Report(
