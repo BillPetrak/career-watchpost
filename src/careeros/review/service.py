@@ -64,6 +64,10 @@ from careeros.database.review import (
 from careeros.database.review import (
     list_decisions as _list_decisions,
 )
+from careeros.preferences.learning import (
+    remove_review_evidence,
+    replace_review_evidence,
+)
 from careeros.ranking.feedback import FeedbackSet
 from careeros.ranking.scorer import CandidateProfile, RankedGroup, score_groups
 from careeros.review.models import (
@@ -237,7 +241,7 @@ def set_decision(
                 created_at=timestamp,
                 updated_at=timestamp,
             )
-            append_event(
+            event_id = append_event(
                 connection,
                 job_id=job_id,
                 old_decision=None,
@@ -245,6 +249,16 @@ def set_decision(
                 note=note,
                 created_at=timestamp,
             )
+            if decision in ("shortlist", "dismiss"):
+                replace_review_evidence(
+                    connection,
+                    job_id=job_id,
+                    review_event_id=event_id,
+                    decision=decision,
+                    observed_at=timestamp,
+                )
+            else:
+                remove_review_evidence(connection, job_id=job_id)
             connection.commit()
             return SetDecisionResult(
                 decision_id=decision_id,
@@ -259,7 +273,7 @@ def set_decision(
                 decision=decision,
                 updated_at=timestamp,
             )
-            append_event(
+            event_id = append_event(
                 connection,
                 job_id=job_id,
                 old_decision=existing.decision,
@@ -267,6 +281,16 @@ def set_decision(
                 note=note,
                 created_at=timestamp,
             )
+            if decision in ("shortlist", "dismiss"):
+                replace_review_evidence(
+                    connection,
+                    job_id=job_id,
+                    review_event_id=event_id,
+                    decision=decision,
+                    observed_at=timestamp,
+                )
+            else:
+                remove_review_evidence(connection, job_id=job_id)
             connection.commit()
             return SetDecisionResult(
                 decision_id=existing.id,
@@ -301,7 +325,7 @@ def set_decision(
             created=False,
             changed=False,
         )
-    except sqlite3.Error:
+    except Exception:
         connection.rollback()
         raise
 
@@ -335,8 +359,9 @@ def clear_decision(
             note=None,
             created_at=timestamp,
         )
+        remove_review_evidence(connection, job_id=job_id)
         connection.commit()
-    except sqlite3.Error:
+    except Exception:
         connection.rollback()
         raise
     return ClearDecisionResult(changed=True)
