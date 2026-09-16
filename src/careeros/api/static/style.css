@@ -153,6 +153,20 @@ main {
 .profile-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 .profile-actions button { padding: 7px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); color: var(--color-text); font: inherit; cursor: pointer; }
 .stale-note { color: var(--color-warn); font-weight: 600; }
+.matching-authority h3 { margin: 18px 0 8px; font-size: 1rem; }
+.learned-preference-list { display: grid; gap: 10px; margin: 10px 0 14px; }
+.learned-preference { padding: 12px; border: 1px solid var(--color-border); border-left-width: 4px; border-radius: var(--radius); background: var(--color-surface); }
+.learned-preference.active { border-left-color: var(--color-ok); }
+.learned-preference.inactive { border-left-color: var(--color-muted); }
+.learned-preference.suppressed { border-left-color: var(--color-warn); }
+.learned-preference h4 { margin: 0 0 4px; }
+.learned-preference button, #matching-reset-learned { padding: 6px 10px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface); color: var(--color-text); cursor: pointer; }
+.preference-state { font-weight: 600; text-transform: capitalize; }
+.preference-state.active { color: var(--color-ok); }
+.preference-state.inactive { color: var(--color-muted); }
+.preference-state.suppressed { color: var(--color-warn); }
+.preference-examples { margin: 4px 0 10px; padding-left: 20px; }
+.saved-profile-summary { margin-bottom: 6px; }
 @media (max-width: 600px) { .site-header { align-items: flex-start; } .nav { flex-wrap: wrap; } main { padding: 18px 12px 36px; } .profile-controls { align-items: stretch; flex-direction: column; } .profile-actions button { width: 100%; } }
 
 /* Deterministic ranking explanation disclosures. */

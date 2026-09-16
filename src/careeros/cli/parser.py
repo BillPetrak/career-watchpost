@@ -507,6 +507,64 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    preference_parser = subparsers.add_parser(
+        "preference",
+        help="Inspect and control persistent matching preferences.",
+    )
+    preference_commands = preference_parser.add_subparsers(
+        dest="preference_command",
+        required=True,
+    )
+    preference_show = preference_commands.add_parser(
+        "show", help="Show stored explicit and learned preference state."
+    )
+    preference_show.add_argument("--format", choices=("text", "json"), default="text")
+    preference_show.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+
+    preference_explicit = preference_commands.add_parser(
+        "explicit", help="Replace or clear stored explicit preferences."
+    )
+    preference_explicit_commands = preference_explicit.add_subparsers(
+        dest="preference_explicit_command",
+        required=True,
+    )
+    preference_replace = preference_explicit_commands.add_parser(
+        "replace", help="Replace the complete stored explicit profile."
+    )
+    preference_replace.add_argument("profile", type=Path)
+    preference_replace.add_argument(
+        "--database", type=Path, default=DEFAULT_DATABASE_PATH
+    )
+    preference_clear = preference_explicit_commands.add_parser(
+        "clear", help="Remove stored explicit preference authority."
+    )
+    preference_clear.add_argument(
+        "--database", type=Path, default=DEFAULT_DATABASE_PATH
+    )
+
+    for command, help_text in (
+        ("suppress", "Suppress one learned preference."),
+        ("restore", "Restore one learned preference."),
+    ):
+        preference_learned = preference_commands.add_parser(command, help=help_text)
+        preference_learned.add_argument("key")
+        preference_learned.add_argument(
+            "--database", type=Path, default=DEFAULT_DATABASE_PATH
+        )
+
+    preference_reset = preference_commands.add_parser(
+        "reset-learned", help="Delete all learned evidence and suppressions."
+    )
+    preference_reset.add_argument(
+        "--confirm",
+        action="store_true",
+        required=True,
+        help="Confirm destructive learned-state reset.",
+    )
+    preference_reset.add_argument(
+        "--database", type=Path, default=DEFAULT_DATABASE_PATH
+    )
+
     report_parser = subparsers.add_parser(
         "report",
         help=(

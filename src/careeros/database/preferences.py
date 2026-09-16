@@ -212,3 +212,40 @@ def delete_suppression(connection: sqlite3.Connection, preference_key: str) -> N
         "DELETE FROM learned_preference_suppressions WHERE preference_key = ?",
         (preference_key,),
     )
+
+
+def delete_all_preference_evidence(connection: sqlite3.Connection) -> None:
+    """Delete the current learned-evidence epoch without committing."""
+    connection.execute("DELETE FROM preference_evidence")
+
+
+def delete_all_suppressions(connection: sqlite3.Connection) -> None:
+    """Delete every learned-preference suppression without committing."""
+    connection.execute("DELETE FROM learned_preference_suppressions")
+
+
+def maximum_review_event_id(connection: sqlite3.Connection) -> int:
+    """Return the current append-only review-event boundary, or zero."""
+    row = connection.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM review_events"
+    ).fetchone()
+    return int(row[0])
+
+
+def set_learning_reset_boundary(
+    connection: sqlite3.Connection,
+    *,
+    reset_at: str,
+    review_event_id: int,
+) -> None:
+    """Advance the singleton learned-state reset boundary without committing."""
+    cursor = connection.execute(
+        """
+        UPDATE preference_state
+        SET learning_reset_at = ?, learning_reset_review_event_id = ?
+        WHERE singleton = 1
+        """,
+        (reset_at, review_event_id),
+    )
+    if cursor.rowcount != 1:
+        raise ValueError("preference state singleton is missing")

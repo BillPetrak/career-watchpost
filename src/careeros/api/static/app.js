@@ -46,8 +46,10 @@
   var JOB = "job";
   var initialized = false;
 
-  // Matching Preferences is intentionally process-memory only. Values are
-  // replaced with deep copies at every run boundary and never persisted.
+  // Run-scoped Matching Preferences remain process-memory only. Persistent
+  // explicit and learned authority is fetched from the server separately;
+  // local drafts are never treated as saved until an explicit write succeeds
+  // and an authoritative GET /preferences refetch completes.
   var EMPTY_PROFILE = { desiredTitles: [], requiredSkills: [], skills: [], preferredLocations: [], remotePreference: "", preferredEmploymentTypes: [], preferredSeniority: [], excludedTerms: [], hardExcludedTerms: [] };
   var matchingDraftProfile = cloneProfile(EMPTY_PROFILE);
   var matchingActiveProfile = cloneProfile(EMPTY_PROFILE);
@@ -56,9 +58,20 @@
   var matchingPreviewGeneration = 0;
   var matchingPreviewRequestSeq = 0;
   var matchingPreviewSnapshot = null;
+  var matchingPreferenceState = null;
+  var matchingPreferenceLoaded = false;
+  var matchingPreferenceRequestSeq = 0;
+  var matchingPreferenceMutationSeq = 0;
+  var matchingPreferenceViewGeneration = 0;
+  var matchingPreferenceMutationQueue = Promise.resolve();
+  var matchingPreferenceInitializationEligible = true;
   var reviewSnapshot = null;
   var matchingPreviewControls = { grouped: true, minimumScore: "0", limit: "10" };
   var matchingPreviewControlsGeneration = 0;
+
+  function consumeMatchingPreferenceInitializationEligibility() {
+    matchingPreferenceInitializationEligible = false;
+  }
 
   function cloneProfile(profile) {
     var copy = {};
@@ -397,6 +410,9 @@
     }
     if (leaving === MATCHING && name !== MATCHING) {
       matchingPreviewRequestSeq++;
+      matchingPreferenceRequestSeq++;
+      matchingPreferenceMutationSeq++;
+      matchingPreferenceViewGeneration++;
       var matchingStatus = document.getElementById("matching-status");
       if (matchingStatus) doneLoading(matchingStatus);
     }
@@ -455,6 +471,7 @@
       await renderSavedSearchesView();
     } else if (view === MATCHING) {
       renderMatchingWorkspace();
+      await refreshMatchingPreferenceState(!matchingPreferenceLoaded);
     } else if (view === REMINDERS) {
       await renderRemindersView();
     } else if (view === JOBS) {
@@ -2019,6 +2036,165 @@
 
   // ---------------------------------------------------------------------------
   // Matching Preferences workspace and its explicit, server-authoritative preview.
+  function explicitPreferencePayload(profile) {
+    return {
+      desired_titles: profile.desiredTitles.slice(),
+      skills: profile.skills.slice(),
+      required_skills: profile.requiredSkills.slice(),
+      preferred_locations: profile.preferredLocations.slice(),
+      remote_preference: profile.remotePreference.length ? profile.remotePreference : null,
+      excluded_terms: profile.excludedTerms.slice(),
+      hard_excluded_terms: profile.hardExcludedTerms.slice(),
+      preferred_employment_types: profile.preferredEmploymentTypes.slice(),
+      preferred_seniority: profile.preferredSeniority.slice(),
+    };
+  }
+
+  function profileFromPreferenceApi(profile) {
+    return {
+      desiredTitles: profile.desired_titles.slice(),
+      skills: profile.skills.slice(),
+      requiredSkills: profile.required_skills.slice(),
+      preferredLocations: profile.preferred_locations.slice(),
+      remotePreference: profile.remote_preference || "",
+      excludedTerms: profile.excluded_terms.slice(),
+      hardExcludedTerms: profile.hard_excluded_terms.slice(),
+      preferredEmploymentTypes: profile.preferred_employment_types.slice(),
+      preferredSeniority: profile.preferred_seniority.slice(),
+    };
+  }
+
+  function validPreferenceState(data) {
+    return isObject(data) && isObject(data.explicit) &&
+      typeof data.explicit.configured === "boolean" &&
+      isObject(data.explicit.profile) && Array.isArray(data.learned) &&
+      Array.isArray(data.explicit.locked_dimensions);
+  }
+
+  async function refreshMatchingPreferenceState(initializeDraft, successMessage, mutationFailure) {
+    var seq = ++matchingPreferenceRequestSeq;
+    var draftGeneration = matchingDraftGeneration;
+    var activeProfileGeneration = matchingActiveProfileGeneration;
+    var status = document.getElementById("matching-status");
+    setLoading(status, "Loading saved and learned preferences…");
+    try {
+      var data = await fetchJson("/preferences");
+      if (seq !== matchingPreferenceRequestSeq || visibleView() !== MATCHING) return;
+      if (!validPreferenceState(data)) {
+        throw new Error("The /preferences response did not match the expected shape.");
+      }
+      matchingPreferenceState = data;
+      matchingPreferenceLoaded = true;
+      if (
+        initializeDraft &&
+        matchingPreferenceInitializationEligible &&
+        draftGeneration === matchingDraftGeneration &&
+        activeProfileGeneration === matchingActiveProfileGeneration
+      ) {
+        var stored = profileFromPreferenceApi(data.explicit.profile);
+        matchingActiveProfile = cloneProfile(stored);
+        matchingActiveProfileGeneration++;
+        matchingDraftProfile = cloneProfile(stored);
+        matchingDraftGeneration++;
+        consumeMatchingPreferenceInitializationEligibility();
+      }
+      renderMatchingWorkspace();
+      doneLoading(status);
+      if (mutationFailure) {
+        renderError(
+          status,
+          "The preference change failed or could not be confirmed. Current server state was refreshed. " + mutationFailure.message,
+          function () { refreshMatchingPreferenceState(false); }
+        );
+      } else if (status) {
+        status.textContent = successMessage || "Saved and learned preferences loaded.";
+      }
+    } catch (errorResponse) {
+      if (seq !== matchingPreferenceRequestSeq || visibleView() !== MATCHING) return;
+      doneLoading(status);
+      var message = mutationFailure
+        ? "The preference change failed or could not be confirmed, and current server state could not be refreshed. " +
+          mutationFailure.message + " " + errorResponse.message
+        : errorResponse.message;
+      renderError(status, message, function () {
+        refreshMatchingPreferenceState(mutationFailure ? false : !matchingPreferenceLoaded);
+      });
+    }
+  }
+
+  async function runPreferenceMutation(url, options, successMessage) {
+    var operation = ++matchingPreferenceMutationSeq;
+    var viewGeneration = matchingPreferenceViewGeneration;
+    matchingPreferenceRequestSeq++;
+
+    async function queuedMutation() {
+      if (
+        viewGeneration !== matchingPreferenceViewGeneration ||
+        visibleView() !== MATCHING
+      ) return;
+      var status = document.getElementById("matching-status");
+      var mutationFailure = null;
+      setLoading(status, "Saving preferences…");
+      try {
+        await writeJson(url, options);
+      } catch (errorResponse) {
+        mutationFailure = errorResponse;
+      }
+      if (viewGeneration !== matchingPreferenceViewGeneration) {
+        if (visibleView() === MATCHING) {
+          await refreshMatchingPreferenceState(false);
+        }
+        return;
+      }
+      if (operation !== matchingPreferenceMutationSeq || visibleView() !== MATCHING) return;
+      await refreshMatchingPreferenceState(false, successMessage, mutationFailure);
+    }
+
+    matchingPreferenceMutationQueue = matchingPreferenceMutationQueue.then(
+      queuedMutation,
+      queuedMutation
+    );
+    return matchingPreferenceMutationQueue;
+  }
+
+  function saveExplicitPreferences() {
+    var profile = readMatchingDraft();
+    var validation = validateMatchingProfile(profile);
+    var status = document.getElementById("matching-status");
+    if (validation) {
+      announceMatchingValidation(status, validation);
+      return;
+    }
+    runPreferenceMutation("/preferences/explicit", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(explicitPreferencePayload(profile)),
+    }, "Stored explicit preferences saved and verified.");
+  }
+
+  function clearExplicitPreferences() {
+    runPreferenceMutation("/preferences/explicit", {
+      method: "DELETE",
+      headers: { "Accept": "application/json" },
+    }, "Stored explicit preferences cleared and verified.");
+  }
+
+  function setLearnedPreferenceSuppression(key, suppressed) {
+    runPreferenceMutation("/preferences/learned/" + encodeURIComponent(key), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ suppressed: suppressed }),
+    }, suppressed ? "Learned preference suppressed and verified." : "Learned preference restored and verified.");
+  }
+
+  function confirmLearnedPreferenceReset() {
+    if (!window.confirm("Reset all learned preferences? Review history and saved explicit preferences will be preserved.")) return;
+    runPreferenceMutation("/preferences/learned", {
+      method: "DELETE",
+      headers: { "Accept": "application/json" },
+    }, "Learned preferences reset and verified.");
+  }
+
   function profileFieldSpec() {
     return [
       ["desiredTitles", "Desired job titles", "matching-desired-titles", "Comma- and/or newline-separated entries."],
@@ -2041,9 +2217,11 @@
     var node = event.target;
     var spec = profileFieldSpec().find(function (entry) { return entry[2] === node.id; });
     if (spec) {
+      consumeMatchingPreferenceInitializationEligibility();
       matchingDraftProfile[spec[0]] = parseListValue(node.value);
       matchingDraftGeneration++;
     } else if (node.id === "matching-remote") {
+      consumeMatchingPreferenceInitializationEligibility();
       matchingDraftProfile.remotePreference = node.value.trim();
       matchingDraftGeneration++;
     } else if (
@@ -2089,6 +2267,100 @@
     profileFieldSpec().forEach(function (spec) { if (profile[spec[0]].length) target.appendChild(el("p", { textContent: spec[1] + ": " + profile[spec[0]].join(", ") })); });
     if (profile.remotePreference) target.appendChild(el("p", { textContent: "Remote preference: " + profile.remotePreference }));
   }
+
+  function renderLearnedExamples(card, label, examples) {
+    var heading = el("h4", { textContent: label + " (up to 3)" });
+    card.appendChild(heading);
+    if (!examples.length) {
+      card.appendChild(el("p", { className: "empty-note", textContent: "None." }));
+      return;
+    }
+    var list = el("ul", { className: "preference-examples" });
+    examples.forEach(function (example) {
+      list.appendChild(el("li", {
+        textContent: "Job " + example.job_id + ": " + example.title +
+          (example.company ? " — " + example.company : ""),
+      }));
+    });
+    card.appendChild(list);
+  }
+
+  function renderSavedAndLearnedPreferences(target) {
+    var section = el("section", { className: "chunk matching-authority" });
+    section.appendChild(el("h2", { textContent: "Saved and learned" }));
+    if (!matchingPreferenceState) {
+      section.appendChild(el("p", { className: "empty-note", textContent: "Loading server-authoritative preference state…" }));
+      target.appendChild(section);
+      return;
+    }
+
+    var explicit = matchingPreferenceState.explicit;
+    section.appendChild(el("h3", { textContent: "Stored explicit preferences" }));
+    section.appendChild(el("p", {
+      className: explicit.configured ? "preference-state active" : "preference-state inactive",
+      textContent: explicit.configured
+        ? (Object.keys(explicit.profile).some(function (key) {
+            var value = explicit.profile[key];
+            return Array.isArray(value) ? value.length > 0 : Boolean(value);
+          }) ? "Configured with saved values." : "Configured deliberately empty.")
+        : "Unconfigured — no stored explicit authority.",
+    }));
+    var savedSummary = el("div", { className: "profile-summary saved-profile-summary" });
+    renderProfileSummary(savedSummary, profileFromPreferenceApi(explicit.profile));
+    section.appendChild(savedSummary);
+    section.appendChild(el("p", {
+      className: "field-hint",
+      textContent: "Learned dimension locks: " + (explicit.locked_dimensions.join(", ") || "none"),
+    }));
+    var explicitActions = el("div", { className: "profile-actions" });
+    var save = el("button", { type: "button", textContent: "Save draft as stored preferences" });
+    save.id = "matching-save-explicit";
+    save.addEventListener("click", saveExplicitPreferences);
+    explicitActions.appendChild(save);
+    var clear = el("button", { type: "button", textContent: "Clear stored preferences" });
+    clear.id = "matching-clear-explicit";
+    clear.disabled = !explicit.configured;
+    clear.addEventListener("click", clearExplicitPreferences);
+    explicitActions.appendChild(clear);
+    section.appendChild(explicitActions);
+
+    section.appendChild(el("h3", { textContent: "Learned preferences" }));
+    if (!matchingPreferenceState.learned.length) {
+      section.appendChild(el("p", { className: "empty-note", textContent: "No learned preferences in the current reset epoch." }));
+    } else {
+      var learnedList = el("div", { className: "learned-preference-list" });
+      matchingPreferenceState.learned.forEach(function (preference) {
+        var state = preference.suppressed ? "suppressed" : (preference.active ? "active" : "inactive");
+        var card = el("article", { className: "learned-preference " + state });
+        card.appendChild(el("h4", { textContent: preference.dimension + ": " + preference.display_value }));
+        card.appendChild(el("p", { className: "preference-state " + state, textContent: state }));
+        card.appendChild(el("p", {
+          textContent: "Evidence +" + preference.positive_count + " / -" + preference.negative_count +
+            " (net " + (preference.net_evidence >= 0 ? "+" : "") + preference.net_evidence +
+            "), " + (preference.polarity || "neutral") + ", strength " + preference.strength_level + ".",
+        }));
+        card.appendChild(el("p", { className: "field-hint", textContent: preference.activation_reason }));
+        renderLearnedExamples(card, "Positive examples", preference.positive_examples);
+        renderLearnedExamples(card, "Negative examples", preference.negative_examples);
+        var toggle = el("button", {
+          type: "button",
+          textContent: preference.suppressed ? "Restore" : "Suppress",
+        });
+        toggle.addEventListener("click", function () {
+          setLearnedPreferenceSuppression(preference.key, !preference.suppressed);
+        });
+        card.appendChild(toggle);
+        learnedList.appendChild(card);
+      });
+      section.appendChild(learnedList);
+    }
+    var reset = el("button", { type: "button", textContent: "Reset all learned preferences" });
+    reset.id = "matching-reset-learned";
+    reset.addEventListener("click", confirmLearnedPreferenceReset);
+    section.appendChild(reset);
+    target.appendChild(section);
+  }
+
   function renderMatchingWorkspace() {
     var content = document.getElementById("matching-content");
     if (!content) return;
@@ -2181,6 +2453,7 @@
     });
     reset.id = "matching-reset";
     reset.addEventListener("click", function () {
+      consumeMatchingPreferenceInitializationEligibility();
       matchingDraftProfile = cloneProfile(matchingActiveProfile);
       matchingDraftGeneration++;
       renderMatchingWorkspace();
@@ -2198,6 +2471,7 @@
     summary.id = "matching-active-summary";
     renderProfileSummary(summary, matchingActiveProfile);
     content.appendChild(summary);
+    renderSavedAndLearnedPreferences(content);
     if (matchingPreviewSnapshot) renderMatchingPreview(matchingPreviewSnapshot, content);
   }
   function validateMatchingProfile(profile) {
@@ -2219,6 +2493,7 @@
       announceMatchingValidation(status, error);
       return;
     }
+    consumeMatchingPreferenceInitializationEligibility();
     matchingPreviewRequestSeq++;
     matchingActiveProfile = cloneProfile(profile);
     matchingActiveProfileGeneration++;

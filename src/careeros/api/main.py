@@ -1,6 +1,6 @@
 """FastAPI application for the CareerOS API slice.
 
-The slice exposes twenty-two read-only GET endpoints backed by the shared database
+The slice exposes twenty-four read-only GET endpoints backed by the shared database
 and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /jobs/{job_id}/group``,
 ``GET /sources/stats``, ``GET /collection-runs``, ``GET /application-pipeline``,
@@ -12,7 +12,8 @@ and presentation layers (``GET /health``, ``GET /jobs``, ``GET /jobs/{job_id}``,
 ``GET /review-decisions/{job_id}``,
 ``GET /review-decisions/{job_id}/history``, ``GET /reviewed-opportunities``,
 ``GET /saved-searches``,
-``GET /saved-searches/{name}``, and ``GET /report``) plus four
+``GET /saved-searches/{name}``, ``GET /preferences``,
+``GET /preferences/learned``, and ``GET /report``) plus four
 computation-only ``POST``
 endpoints: ``POST /ranked-jobs``, ``POST /review-queue``, and
 ``POST /saved-searches/{name}/execute`` and ``POST /report``. Every read and
@@ -79,8 +80,11 @@ and rank mode requires the candidate profile inline (search mode rejects one).
 ``PUT /reminders/{reminder_id}/reopen``,
 ``DELETE /reminders/{reminder_id}``,
 ``POST /saved-searches``,
-``DELETE /saved-searches/{name}``, and
-``PATCH /saved-searches/{name}`` are the slice's mutation endpoints:
+``DELETE /saved-searches/{name}``,
+``PATCH /saved-searches/{name}``,
+``PUT /preferences/explicit``, ``DELETE /preferences/explicit``,
+``PUT /preferences/learned/{key}``, and
+``DELETE /preferences/learned`` are the slice's mutation endpoints:
 ``PUT /review-decisions/{job_id}`` sets or replaces
 one job's current review decision through the shared ``review.service.set_decision``
 domain service, ``DELETE /review-decisions/{job_id}`` clears one job's current
@@ -222,12 +226,19 @@ from careeros.api.schemas import (
     CollectionRun,
     CollectionRunListResponse,
     EmptyPackageRequest,
+    ExplicitPreferenceProfileResponse,
+    ExplicitPreferenceRequest,
+    ExplicitPreferenceStateResponse,
     Group,
     GroupListResponse,
     GroupSummaryResponse,
     HealthResponse,
     Job,
     JobListResponse,
+    LearnedPreferenceExampleResponse,
+    LearnedPreferenceListResponse,
+    LearnedPreferenceResponse,
+    LearnedPreferenceSuppressionRequest,
     MaterialDetail,
     MaterialListResponse,
     MaterialSelectionRequest,
@@ -241,6 +252,7 @@ from careeros.api.schemas import (
     PackageFinalizedDetail,
     PackageRebaseRequest,
     PackageSummaryResponse,
+    PreferenceResponse,
     RankedGroupItem,
     RankedJobItem,
     RankedJobsResponse,
@@ -378,6 +390,17 @@ from careeros.materials.upload import (
     UploadMetadataError,
     upload_admission,
     validate_scope,
+)
+from careeros.preferences.learning import LearnedPreference, OpportunityReference
+from careeros.preferences.models import ExplicitPreferenceProfile
+from careeros.preferences.service import (
+    PreferenceInspection,
+    clear_explicit_profile,
+    inspect_preferences,
+    replace_explicit_profile,
+    reset_learned_preferences,
+    restore_learned_preference,
+    suppress_learned_preference,
 )
 from careeros.preparations.service import (
     PreparationError,
@@ -661,6 +684,92 @@ def _to_profile(request_profile: CandidateProfileRequest) -> CandidateProfile:
         hard_excluded_terms=tuple(request_profile.hard_excluded_terms),
         preferred_employment_types=tuple(request_profile.preferred_employment_types),
         preferred_seniority=tuple(request_profile.preferred_seniority),
+    )
+
+
+def _to_explicit_profile(
+    request_profile: ExplicitPreferenceRequest,
+) -> ExplicitPreferenceProfile:
+    """Build the complete persistent explicit profile from its strict request."""
+    return ExplicitPreferenceProfile(
+        desired_titles=tuple(request_profile.desired_titles),
+        skills=tuple(request_profile.skills),
+        required_skills=tuple(request_profile.required_skills),
+        preferred_locations=tuple(request_profile.preferred_locations),
+        remote_preference=request_profile.remote_preference or None,
+        excluded_terms=tuple(request_profile.excluded_terms),
+        hard_excluded_terms=tuple(request_profile.hard_excluded_terms),
+        preferred_employment_types=tuple(request_profile.preferred_employment_types),
+        preferred_seniority=tuple(request_profile.preferred_seniority),
+    )
+
+
+def _preference_example_response(
+    example: OpportunityReference,
+) -> LearnedPreferenceExampleResponse:
+    return LearnedPreferenceExampleResponse(
+        job_id=example.job_id,
+        title=example.title,
+        company=example.company,
+    )
+
+
+def _learned_preference_response(
+    preference: LearnedPreference,
+) -> LearnedPreferenceResponse:
+    """Project learned state through the frozen privacy-safe allow-list."""
+    return LearnedPreferenceResponse(
+        key=preference.preference_key,
+        dimension=preference.dimension,
+        display_value=preference.display_value,
+        normalized_value=preference.normalized_value,
+        polarity=cast(Literal["positive", "negative"] | None, preference.polarity),
+        positive_count=preference.positive_count,
+        negative_count=preference.negative_count,
+        net_evidence=preference.net_evidence,
+        strength_level=preference.strength_level,
+        active=preference.active,
+        activation_reason=preference.activation_reason,
+        suppressed=preference.suppressed,
+        positive_examples=[
+            _preference_example_response(example)
+            for example in preference.positive_examples
+        ],
+        negative_examples=[
+            _preference_example_response(example)
+            for example in preference.negative_examples
+        ],
+    )
+
+
+def _preference_response(inspection: PreferenceInspection) -> PreferenceResponse:
+    """Project one preference snapshot without serializing domain/database rows."""
+    profile = inspection.explicit.profile
+    return PreferenceResponse(
+        explicit=ExplicitPreferenceStateResponse(
+            configured=inspection.explicit.configured,
+            updated_at=inspection.explicit.updated_at,
+            profile=ExplicitPreferenceProfileResponse(
+                desired_titles=list(profile.desired_titles),
+                skills=list(profile.skills),
+                required_skills=list(profile.required_skills),
+                preferred_locations=list(profile.preferred_locations),
+                remote_preference=profile.remote_preference,
+                excluded_terms=list(profile.excluded_terms),
+                hard_excluded_terms=list(profile.hard_excluded_terms),
+                preferred_employment_types=list(profile.preferred_employment_types),
+                preferred_seniority=list(profile.preferred_seniority),
+            ),
+            locked_dimensions=sorted(inspection.explicit.locked_dimensions),
+        ),
+        learned=[
+            _learned_preference_response(preference)
+            for preference in inspection.learned
+        ],
+        learning_reset_at=inspection.state.learning_reset_at,
+        learning_reset_review_event_id=(
+            inspection.state.learning_reset_review_event_id
+        ),
     )
 
 
@@ -986,6 +1095,85 @@ def create_app(
             database="present",
             schema_version=_read_schema_version(connection),
         )
+
+    @app.get("/preferences", response_model=PreferenceResponse)
+    def get_preferences(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+    ) -> PreferenceResponse:
+        """Inspect persistent explicit and learned preference authority."""
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        try:
+            return _preference_response(inspect_preferences(connection))
+        except ValueError:
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+
+    @app.get("/preferences/learned", response_model=LearnedPreferenceListResponse)
+    def get_learned_preferences(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+    ) -> LearnedPreferenceListResponse:
+        """Inspect active, inactive, and suppressed learned preferences."""
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        try:
+            inspection = inspect_preferences(connection)
+        except ValueError:
+            raise HTTPException(
+                status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE
+            ) from None
+        return LearnedPreferenceListResponse(
+            items=[
+                _learned_preference_response(preference)
+                for preference in inspection.learned
+            ]
+        )
+
+    @app.put("/preferences/explicit", response_model=PreferenceResponse)
+    def put_explicit_preferences(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        payload: ExplicitPreferenceRequest,
+    ) -> PreferenceResponse:
+        """Replace the complete stored explicit profile, including empty."""
+        try:
+            replace_explicit_profile(connection, _to_explicit_profile(payload))
+            return _preference_response(inspect_preferences(connection))
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+
+    @app.delete("/preferences/explicit", response_model=PreferenceResponse)
+    def delete_explicit_preferences(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+    ) -> PreferenceResponse:
+        """Clear stored explicit authority without touching learned state."""
+        clear_explicit_profile(connection)
+        return _preference_response(inspect_preferences(connection))
+
+    @app.put("/preferences/learned/{key}", response_model=PreferenceResponse)
+    def put_learned_preference(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+        key: str,
+        payload: LearnedPreferenceSuppressionRequest,
+    ) -> PreferenceResponse:
+        """Suppress or restore one validated, currently derived preference."""
+        try:
+            if payload.suppressed:
+                suppress_learned_preference(connection, key)
+            else:
+                restore_learned_preference(connection, key)
+        except ValueError as error:
+            status = 404 if str(error) == "unknown learned preference key" else 422
+            raise HTTPException(status_code=status, detail=str(error)) from None
+        return _preference_response(inspect_preferences(connection))
+
+    @app.delete("/preferences/learned", response_model=PreferenceResponse)
+    def delete_learned_preferences(
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+    ) -> PreferenceResponse:
+        """Reset all learned evidence and suppressions transactionally."""
+        reset_learned_preferences(connection)
+        return _preference_response(inspect_preferences(connection))
 
     @app.get("/ui")
     def ui_index() -> Response:

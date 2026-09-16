@@ -30,6 +30,7 @@ from careeros.cli.commands.group import (
     run_group_explain,
     run_group_regroup,
 )
+from careeros.cli.commands.preferences import run_preference_command
 from careeros.cli.commands.profile import (
     run_profile_command,
     run_profile_init,
@@ -88,6 +89,7 @@ __all__ = [
     "run_profile_init",
     "run_profile_show",
     "run_profile_validate",
+    "run_preference_command",
     "run_rank",
     "run_rank_command",
     "run_reminder_add",

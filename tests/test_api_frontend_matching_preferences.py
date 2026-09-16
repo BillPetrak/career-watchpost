@@ -255,3 +255,287 @@ def test_privacy_no_persistence_no_client_scoring_and_safe_rendering() -> None:
     for forbidden in ("_TITLE_POINTS", "SKILL_POINTS", "scoreJob", "rerank", ".sort("):
         assert forbidden not in matching
     assert "textContent" in combined
+
+
+def test_saved_and_learned_state_is_loaded_from_authoritative_endpoint() -> None:
+    js = text("app.js")
+    refresh = region(
+        js,
+        "async function refreshMatchingPreferenceState",
+        "async function runPreferenceMutation",
+    )
+    assert 'await fetchJson("/preferences")' in refresh
+    assert "matchingPreferenceState = data" in refresh
+    assert "profileFromPreferenceApi(data.explicit.profile)" in refresh
+    assert "var draftGeneration = matchingDraftGeneration" in refresh
+    assert "var activeProfileGeneration = matchingActiveProfileGeneration" in refresh
+    assert "initializeDraft &&" in refresh
+    assert "matchingPreferenceInitializationEligible &&" in refresh
+    assert "draftGeneration === matchingDraftGeneration" in refresh
+    assert "activeProfileGeneration === matchingActiveProfileGeneration" in refresh
+    assert refresh.index("var draftGeneration") < refresh.index(
+        'await fetchJson("/preferences")'
+    )
+    assert refresh.index("draftGeneration === matchingDraftGeneration") < refresh.index(
+        "matchingDraftProfile = cloneProfile(stored)"
+    )
+    assert refresh.index("matchingPreferenceState = data") < refresh.index(
+        "matchingPreferenceInitializationEligible &&"
+    )
+    assert "matchingDraftProfile = cloneProfile(stored)" in refresh
+    assert refresh.index("matchingDraftGeneration++") < refresh.index(
+        "consumeMatchingPreferenceInitializationEligibility()"
+    )
+    assert "Configured deliberately empty." in js
+    assert "Unconfigured — no stored explicit authority." in js
+
+
+def test_preference_initialization_eligibility_is_durable_and_one_way() -> None:
+    js = text("app.js")
+    declaration = "var matchingPreferenceInitializationEligible = true;"
+    assert js.count(declaration) == 1
+    assert js.count("matchingPreferenceInitializationEligible = true") == 1
+
+    consumer = region(
+        js,
+        "function consumeMatchingPreferenceInitializationEligibility",
+        "function cloneProfile",
+    )
+    assert "matchingPreferenceInitializationEligible = false" in consumer
+    assert "matchingPreferenceInitializationEligible = true" not in consumer
+    assert js.count("matchingPreferenceInitializationEligible = false") == 1
+
+    navigate = region(js, "async function navigate", "// DOM helpers")
+    assert "matchingPreferenceInitializationEligible" not in navigate
+
+    refresh = region(
+        js,
+        "async function refreshMatchingPreferenceState",
+        "async function runPreferenceMutation",
+    )
+    successful_path, failure_path = refresh.split("} catch (errorResponse)", 1)
+    assert (
+        successful_path.count("consumeMatchingPreferenceInitializationEligibility()")
+        == 1
+    )
+    assert "consumeMatchingPreferenceInitializationEligibility()" not in failure_path
+    assert "!matchingPreferenceLoaded" in failure_path
+
+
+def test_only_local_profile_actions_consume_initialization_eligibility() -> None:
+    js = text("app.js")
+    editing = region(
+        js, "function matchingDraftInputChanged", "function matchingSnapshotIsStale"
+    )
+    profile_edit = region(
+        editing, "if (spec)", '} else if (node.id === "matching-remote")'
+    )
+    remote_edit = region(
+        editing,
+        '} else if (node.id === "matching-remote")',
+        '} else if (\n      node.id === "matching-grouped"',
+    )
+    preview_controls = editing[editing.index('node.id === "matching-grouped"') :]
+    for profile_action in (profile_edit, remote_edit):
+        assert "consumeMatchingPreferenceInitializationEligibility()" in profile_action
+        assert profile_action.index(
+            "consumeMatchingPreferenceInitializationEligibility()"
+        ) < profile_action.index("matchingDraftGeneration++")
+    assert (
+        "consumeMatchingPreferenceInitializationEligibility()" not in preview_controls
+    )
+
+    workspace = region(
+        js, "function renderMatchingWorkspace", "function validateMatchingProfile"
+    )
+    draft_reset = region(
+        workspace,
+        'reset.addEventListener("click", function ()',
+        "actions.appendChild(reset)",
+    )
+    assert "consumeMatchingPreferenceInitializationEligibility()" in draft_reset
+    assert draft_reset.index(
+        "consumeMatchingPreferenceInitializationEligibility()"
+    ) < draft_reset.index("matchingDraftProfile = cloneProfile(matchingActiveProfile)")
+
+    adoption = region(
+        js, "function adoptMatchingProfile", "function validateMatchingPreviewControls"
+    )
+    assert "consumeMatchingPreferenceInitializationEligibility()" in adoption
+    assert adoption.index(
+        "consumeMatchingPreferenceInitializationEligibility()"
+    ) < adoption.index("matchingActiveProfile = cloneProfile(profile)")
+
+
+def test_local_draft_save_clear_and_authoritative_refetch_are_separate() -> None:
+    js = text("app.js")
+    save = region(
+        js, "function saveExplicitPreferences", "function clearExplicitPreferences"
+    )
+    clear = region(
+        js,
+        "function clearExplicitPreferences",
+        "function setLearnedPreferenceSuppression",
+    )
+    mutation = region(
+        js,
+        "async function runPreferenceMutation",
+        "function saveExplicitPreferences",
+    )
+    assert "readMatchingDraft()" in save
+    assert 'runPreferenceMutation("/preferences/explicit"' in save
+    assert 'method: "PUT"' in save
+    assert 'method: "DELETE"' in clear
+    assert "matchingPreferenceState =" not in save + clear
+    assert "await writeJson(url, options)" in mutation
+    assert "var data = await writeJson" not in mutation
+    assert "matchingPreferenceState =" not in mutation
+    assert (
+        "await refreshMatchingPreferenceState(false, successMessage, mutationFailure)"
+        in mutation
+    )
+
+
+def test_learned_rendering_states_provenance_suppress_restore_and_safe_text() -> None:
+    js = text("app.js")
+    rendering = region(
+        js,
+        "function renderLearnedExamples",
+        "function renderMatchingWorkspace",
+    )
+    assert 'preference.suppressed ? "suppressed"' in rendering
+    assert 'preference.active ? "active" : "inactive"' in rendering
+    assert 'preference.suppressed ? "Restore" : "Suppress"' in rendering
+    assert "preference.positive_examples" in rendering
+    assert "preference.negative_examples" in rendering
+    assert "preference.positive_count" in rendering
+    assert "preference.negative_count" in rendering
+    assert "textContent" in rendering
+    for unsafe in ("innerHTML", "insertAdjacentHTML", "document.write"):
+        assert unsafe not in rendering
+
+
+def test_preference_stale_responses_cannot_overwrite_newer_state() -> None:
+    js = text("app.js")
+    refresh = region(
+        js,
+        "async function refreshMatchingPreferenceState",
+        "async function runPreferenceMutation",
+    )
+    mutation = region(
+        js,
+        "async function runPreferenceMutation",
+        "function saveExplicitPreferences",
+    )
+    assert "var seq = ++matchingPreferenceRequestSeq" in refresh
+    assert "seq !== matchingPreferenceRequestSeq" in refresh
+    assert "visibleView() !== MATCHING" in refresh
+    assert refresh.index("seq !== matchingPreferenceRequestSeq") < refresh.index(
+        "matchingPreferenceState = data"
+    )
+    assert "matchingPreferenceRequestSeq++" in mutation
+    assert "operation !== matchingPreferenceMutationSeq" in mutation
+    assert mutation.index("matchingPreferenceRequestSeq++") < mutation.index(
+        "matchingPreferenceMutationQueue = matchingPreferenceMutationQueue.then"
+    )
+    catch = refresh[refresh.index("} catch (errorResponse)") :]
+    assert catch.index("seq !== matchingPreferenceRequestSeq") < catch.index(
+        "renderError(status"
+    )
+
+
+def test_preference_mutations_are_serialized_and_every_current_outcome_reconciles() -> (
+    None
+):
+    js = text("app.js")
+    mutation = region(
+        js,
+        "async function runPreferenceMutation",
+        "function saveExplicitPreferences",
+    )
+    assert "var matchingPreferenceMutationQueue = Promise.resolve()" in js
+    assert "matchingPreferenceMutationQueue.then(" in mutation
+    assert mutation.count("queuedMutation") >= 3
+    assert "await writeJson(url, options)" in mutation
+    assert "mutationFailure = errorResponse" in mutation
+    assert mutation.index("await writeJson(url, options)") < mutation.index(
+        "mutationFailure = errorResponse"
+    )
+    assert mutation.index("mutationFailure = errorResponse") < mutation.index(
+        "operation !== matchingPreferenceMutationSeq"
+    )
+    assert mutation.index(
+        "operation !== matchingPreferenceMutationSeq"
+    ) < mutation.index(
+        "await refreshMatchingPreferenceState(false, successMessage, mutationFailure)"
+    )
+    assert "renderError(" not in mutation
+
+
+def test_matching_navigation_invalidates_hidden_rendering_and_reentry_refreshes() -> (
+    None
+):
+    js = text("app.js")
+    navigate = region(js, "async function navigate", "// DOM helpers")
+    leave = region(
+        navigate,
+        "if (leaving === MATCHING && name !== MATCHING)",
+        "if (name === REVIEWED",
+    )
+    assert "matchingPreferenceRequestSeq++" in leave
+    assert "matchingPreferenceMutationSeq++" in leave
+    assert "matchingPreferenceViewGeneration++" in leave
+    assert "doneLoading(matchingStatus)" in leave
+    assert "await refreshMatchingPreferenceState(!matchingPreferenceLoaded)" in navigate
+
+    mutation = region(
+        js,
+        "async function runPreferenceMutation",
+        "function saveExplicitPreferences",
+    )
+    generation_guard = region(
+        mutation,
+        "if (viewGeneration !== matchingPreferenceViewGeneration)",
+        "if (operation !== matchingPreferenceMutationSeq",
+    )
+    assert "if (visibleView() === MATCHING)" in generation_guard
+    assert "await refreshMatchingPreferenceState(false)" in generation_guard
+
+
+def test_preference_failure_clears_busy_and_recovery_only_refetches() -> None:
+    js = text("app.js")
+    refresh = region(
+        js,
+        "async function refreshMatchingPreferenceState",
+        "async function runPreferenceMutation",
+    )
+    mutation_failure = region(refresh, "if (mutationFailure)", "} else if (status)")
+    assert refresh.index("doneLoading(status)") < refresh.index("if (mutationFailure)")
+    assert "renderError(" in mutation_failure
+    assert "function () { refreshMatchingPreferenceState(false); }" in mutation_failure
+    assert "runPreferenceMutation(" not in mutation_failure
+
+    catch = refresh[refresh.index("} catch (errorResponse)") :]
+    assert catch.index("doneLoading(status)") < catch.index("renderError(status")
+    assert "refreshMatchingPreferenceState(" in catch
+    assert "runPreferenceMutation(" not in catch
+
+
+def test_reset_requires_confirmation_and_preference_client_does_no_learning() -> None:
+    js = text("app.js")
+    reset = region(
+        js,
+        "function confirmLearnedPreferenceReset",
+        "function profileFieldSpec",
+    )
+    assert "window.confirm(" in reset
+    assert reset.index("window.confirm(") < reset.index(
+        'runPreferenceMutation("/preferences/learned"'
+    )
+    authority = region(
+        js,
+        "function explicitPreferencePayload",
+        "function profileFieldSpec",
+    )
+    for forbidden in ("scoreJob", "rerank", "deriveLearned", "positive_count++"):
+        assert forbidden not in authority

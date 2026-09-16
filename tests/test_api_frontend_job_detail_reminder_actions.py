@@ -697,7 +697,7 @@ def test_no_private_fields_or_unsafe_sinks() -> None:
     # destructive requirement deletion; retries and other paths do not confirm.
     # Reminder deletion, Preparation requirement deletion, and package-version
     # deletion each have an explicit native confirmation gate.
-    assert js.count("window.confirm(") == 3
+    assert js.count("window.confirm(") == 4
     assert js.replace("window.confirm(", "").count("confirm(") == 0
 
 
@@ -729,6 +729,10 @@ def test_method_set_is_exactly_post_post_put_patch_delete_in_order() -> None:
         "POST",
         "PUT",
         "PATCH",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
         "DELETE",
         "DELETE",
         "PUT",

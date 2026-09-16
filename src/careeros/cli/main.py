@@ -13,6 +13,7 @@ from careeros.cli.commands import (
     run_collect_command,
     run_export_command,
     run_group_command,
+    run_preference_command,
     run_profile_command,
     run_rank_command,
     run_reminder_command,
@@ -115,6 +116,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if arguments.command == "profile":
         return run_profile_command(arguments)
+
+    if arguments.command == "preference":
+        return run_preference_command(arguments)
 
     if arguments.command == "report":
         return run_report_command(arguments, parser)

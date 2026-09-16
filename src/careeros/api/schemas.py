@@ -941,6 +941,99 @@ class CandidateProfileRequest(BaseModel):
     )
 
 
+class ExplicitPreferenceRequest(BaseModel):
+    """One complete replacement for persistent explicit preference authority."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    desired_titles: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    skills: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    required_skills: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    preferred_locations: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    remote_preference: Annotated[
+        str | None, StringConstraints(max_length=MAX_REMOTE_PREFERENCE)
+    ] = None
+    excluded_terms: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    hard_excluded_terms: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    preferred_employment_types: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+    preferred_seniority: list[ProfileTerm] = Field(
+        default_factory=list, max_length=MAX_PROFILE_ITEMS
+    )
+
+
+class ExplicitPreferenceProfileResponse(BaseModel):
+    desired_titles: list[str]
+    skills: list[str]
+    required_skills: list[str]
+    preferred_locations: list[str]
+    remote_preference: str | None
+    excluded_terms: list[str]
+    hard_excluded_terms: list[str]
+    preferred_employment_types: list[str]
+    preferred_seniority: list[str]
+
+
+class ExplicitPreferenceStateResponse(BaseModel):
+    configured: bool
+    updated_at: str | None
+    profile: ExplicitPreferenceProfileResponse
+    locked_dimensions: list[str]
+
+
+class LearnedPreferenceExampleResponse(BaseModel):
+    job_id: int
+    title: str
+    company: str | None
+
+
+class LearnedPreferenceResponse(BaseModel):
+    key: str
+    dimension: str
+    display_value: str
+    normalized_value: str
+    polarity: Literal["positive", "negative"] | None
+    positive_count: int
+    negative_count: int
+    net_evidence: int
+    strength_level: int
+    active: bool
+    activation_reason: str
+    suppressed: bool
+    positive_examples: list[LearnedPreferenceExampleResponse]
+    negative_examples: list[LearnedPreferenceExampleResponse]
+
+
+class LearnedPreferenceListResponse(BaseModel):
+    items: list[LearnedPreferenceResponse]
+
+
+class PreferenceResponse(BaseModel):
+    explicit: ExplicitPreferenceStateResponse
+    learned: list[LearnedPreferenceResponse]
+    learning_reset_at: str | None
+    learning_reset_review_event_id: int
+
+
+class LearnedPreferenceSuppressionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    suppressed: Annotated[bool, Field(strict=True)]
+
+
 class RankRequest(BaseModel):
     """Request body for ``POST /ranked-jobs``: an inline candidate profile.
 

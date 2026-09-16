@@ -301,7 +301,7 @@ def test_confirm_before_delete() -> None:
         'if (!window.confirm("Delete this reminder? This cannot be undone.")) return;'
         in js
     )
-    assert js.count("window.confirm(") == 3
+    assert js.count("window.confirm(") == 4
 
 
 def test_cancel_is_a_true_noop() -> None:
@@ -477,7 +477,7 @@ def test_no_private_fields_or_unsafe_sinks() -> None:
         assert forbidden not in js, forbidden
     # Native confirmation gates reminder deletion and preparation requirement
     # deletion; the reminder retry path itself never confirms again.
-    assert js.count("window.confirm(") == 3
+    assert js.count("window.confirm(") == 4
     assert js.replace("window.confirm(", "").count("confirm(") == 0
 
 
@@ -510,6 +510,10 @@ def test_method_set_is_exactly_post_post_put_patch_delete_in_order() -> None:
         "POST",
         "PUT",
         "PATCH",
+        "DELETE",
+        "PUT",
+        "DELETE",
+        "PUT",
         "DELETE",
         "DELETE",
         "PUT",

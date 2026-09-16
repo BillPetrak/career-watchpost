@@ -1,11 +1,13 @@
-"""Transaction-owning explicit-profile persistence and authority resolution."""
+"""Transaction-owning preference inspection and reversal operations."""
 
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from careeros.database import preferences as preference_database
+from careeros.preferences.learning import LearnedPreference, derive_learned_preferences
 from careeros.preferences.models import (
     EXPLICIT_LIST_DIMENSIONS,
     EXPLICIT_PREFERENCE_DIMENSIONS,
@@ -14,8 +16,29 @@ from careeros.preferences.models import (
     MAX_REMOTE_PREFERENCE_LENGTH,
     EffectivePreferenceContext,
     ExplicitPreferenceProfile,
+    LearnedPreferenceSuppression,
+    PreferenceState,
 )
 from careeros.ranking.scorer import CandidateProfile
+
+
+@dataclass(frozen=True)
+class ExplicitPreferenceInspection:
+    """Authoritative stored explicit state, including configured-empty."""
+
+    configured: bool
+    updated_at: str | None
+    profile: ExplicitPreferenceProfile
+    locked_dimensions: frozenset[str]
+
+
+@dataclass(frozen=True)
+class PreferenceInspection:
+    """One immutable snapshot of persistent explicit and learned authority."""
+
+    explicit: ExplicitPreferenceInspection
+    learned: tuple[LearnedPreference, ...]
+    state: PreferenceState
 
 
 def _serialize(value: datetime) -> str:
@@ -191,3 +214,106 @@ def resolve_explicit_profile(
     return EffectivePreferenceContext(
         explicit_profile=ExplicitPreferenceProfile(), source="default"
     )
+
+
+def inspect_preferences(connection: sqlite3.Connection) -> PreferenceInspection:
+    """Assemble the allow-list-ready persistent preference authority snapshot."""
+    state = preference_database.get_preference_state(connection)
+    stored = load_stored_explicit_profile(connection)
+    profile = stored if stored is not None else ExplicitPreferenceProfile()
+    return PreferenceInspection(
+        explicit=ExplicitPreferenceInspection(
+            configured=state.explicit_configured,
+            updated_at=state.explicit_updated_at,
+            profile=profile,
+            locked_dimensions=profile.locked_dimensions,
+        ),
+        learned=derive_learned_preferences(connection),
+        state=state,
+    )
+
+
+def _learned_preference_for_key(
+    connection: sqlite3.Connection, preference_key: str
+) -> LearnedPreference:
+    if len(preference_key) != 32 or any(
+        character not in "0123456789abcdef" for character in preference_key
+    ):
+        raise ValueError("invalid learned preference key")
+    learned = next(
+        (
+            preference
+            for preference in derive_learned_preferences(connection)
+            if preference.preference_key == preference_key
+        ),
+        None,
+    )
+    if learned is None:
+        raise ValueError("unknown learned preference key")
+    return learned
+
+
+def suppress_learned_preference(
+    connection: sqlite3.Connection,
+    preference_key: str,
+    *,
+    now: datetime | None = None,
+) -> LearnedPreference:
+    """Suppress one currently derived preference while preserving its evidence."""
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        learned = _learned_preference_for_key(connection, preference_key)
+        if not learned.suppressed:
+            preference_database.upsert_suppression(
+                connection,
+                LearnedPreferenceSuppression(
+                    preference_key=learned.preference_key,
+                    dimension=learned.dimension,
+                    normalized_value=learned.normalized_value,
+                    suppressed_at=_serialize(
+                        now if now is not None else datetime.now(UTC)
+                    ),
+                ),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return _learned_preference_for_key(connection, preference_key)
+
+
+def restore_learned_preference(
+    connection: sqlite3.Connection, preference_key: str
+) -> LearnedPreference:
+    """Restore one currently derived preference; an unsuppressed key is a no-op."""
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        _learned_preference_for_key(connection, preference_key)
+        preference_database.delete_suppression(connection, preference_key)
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return _learned_preference_for_key(connection, preference_key)
+
+
+def reset_learned_preferences(
+    connection: sqlite3.Connection, *, now: datetime | None = None
+) -> PreferenceState:
+    """Atomically clear learned state and advance the review-event boundary."""
+    reset_at = _serialize(now if now is not None else datetime.now(UTC))
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        boundary = preference_database.maximum_review_event_id(connection)
+        preference_database.delete_all_preference_evidence(connection)
+        preference_database.delete_all_suppressions(connection)
+        preference_database.set_learning_reset_boundary(
+            connection,
+            reset_at=reset_at,
+            review_event_id=boundary,
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return preference_database.get_preference_state(connection)
