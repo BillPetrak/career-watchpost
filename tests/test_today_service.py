@@ -95,6 +95,12 @@ def test_reminder_boundaries_are_disjoint_and_ordered() -> None:
 def test_missing_connection_is_empty_without_side_effect() -> None:
     result = build_today(None, now=datetime(2026, 8, 27, tzinfo=UTC))
     assert result.overdue.total == result.due_today.total == result.unstarted.total == 0
+    assert (
+        result.application_overdue.total
+        == result.application_due_today.total
+        == result.application_work.total
+        == 0
+    )
 
 
 def test_naive_now_is_rejected() -> None:
@@ -212,6 +218,6 @@ def test_query_count_is_constant_and_bounded() -> None:
     db.set_trace_callback(statements.append)
     build_today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC), limit=2)
     db.set_trace_callback(None)
-    assert len(statements) <= 8
+    assert len(statements) <= 10
     assert not any("review_events" in statement for statement in statements)
     assert not any("application_events" in statement for statement in statements)

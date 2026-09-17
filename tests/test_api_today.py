@@ -14,6 +14,11 @@ def test_today_missing_database_is_empty_and_does_not_create_file(
     response = TestClient(create_app()).get("/today")
     assert response.status_code == 200
     assert response.json()["reminders"]["overdue"] == {"total": 0, "items": []}
+    assert response.json()["applications"] == {
+        "overdue": {"total": 0, "items": []},
+        "due_today": {"total": 0, "items": []},
+        "work": {"total": 0, "items": []},
+    }
     assert not path.exists()
 
 
@@ -40,8 +45,10 @@ def test_today_response_is_publicly_pruned_and_uses_server_sections(
         "today_ends_at",
         "limit",
         "reminders",
+        "applications",
         "shortlist",
     }
     assert payload["timezone"] == "UTC"
     assert set(payload["reminders"]) == {"overdue", "due_today"}
+    assert set(payload["applications"]) == {"overdue", "due_today", "work"}
     assert set(payload["shortlist"]) == {"unstarted"}

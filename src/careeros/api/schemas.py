@@ -489,6 +489,50 @@ class TodayReminderSection(BaseModel):
     items: list[TodayReminderItem]
 
 
+class TodayApplicationPreparation(BaseModel):
+    category: Literal[
+        "unknown", "incomplete", "requirements_satisfied", "user_confirmed_ready"
+    ]
+    blocking_count: int
+
+
+class TodayApplicationPackage(BaseModel):
+    has_draft: Literal[True]
+    draft_approved_for_current_revision: bool
+    draft_preparation_revision_stale: bool
+
+
+class TodayApplicationItem(BaseModel):
+    application_id: int
+    job_id: int
+    current_status: Literal["interested", "applied", "interview", "offer"]
+    updated_at: str
+    job: Job
+    classification: Literal["overdue", "due_today", "attention"]
+    next_action: Literal[
+        "review_preparation_deadline",
+        "complete_preparation",
+        "confirm_preparation_ready",
+        "review_rebase_package",
+        "continue_package",
+        "manage_application",
+    ]
+    earliest_deadline_at: str | None
+    preparation: TodayApplicationPreparation | None
+    package: TodayApplicationPackage | None
+
+
+class TodayApplicationSection(BaseModel):
+    total: int
+    items: list[TodayApplicationItem]
+
+
+class TodayApplications(BaseModel):
+    overdue: TodayApplicationSection
+    due_today: TodayApplicationSection
+    work: TodayApplicationSection
+
+
 class TodayShortlistSection(BaseModel):
     total: int
     items: list[ReviewedOpportunityItem]
@@ -511,6 +555,7 @@ class TodayResponse(BaseModel):
     today_ends_at: str
     limit: int
     reminders: TodayReminders
+    applications: TodayApplications
     shortlist: TodayShortlist
 
 
@@ -1439,6 +1484,9 @@ __all__: tuple[str, ...] = (
     "ReminderListResponse",
     "TodayReminderItem",
     "TodayReminderSection",
+    "TodayApplicationItem",
+    "TodayApplicationSection",
+    "TodayApplications",
     "TodayResponse",
     "TodayReminders",
     "TodayShortlist",

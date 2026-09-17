@@ -5,7 +5,11 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime, time, timedelta
 
-from careeros.database.today import list_today_reminders, list_today_shortlist
+from careeros.database.today import (
+    list_today_applications,
+    list_today_reminders,
+    list_today_shortlist,
+)
 from careeros.today.models import TodaySection, TodaySnapshot
 
 
@@ -36,11 +40,27 @@ def build_today(
             limit=limit,
             overdue=TodaySection((), 0),
             due_today=TodaySection((), 0),
+            application_overdue=TodaySection((), 0),
+            application_due_today=TodaySection((), 0),
+            application_work=TodaySection((), 0),
             unstarted=TodaySection((), 0),
         )
     connection.execute("BEGIN")
     try:
         overdue, overdue_total, due, due_total = list_today_reminders(
+            connection,
+            as_of=as_of_text,
+            today_ends_at=tomorrow_text,
+            limit=limit,
+        )
+        (
+            application_overdue,
+            application_overdue_total,
+            application_due,
+            application_due_total,
+            application_work,
+            application_work_total,
+        ) = list_today_applications(
             connection,
             as_of=as_of_text,
             today_ends_at=tomorrow_text,
@@ -56,5 +76,10 @@ def build_today(
         limit=limit,
         overdue=TodaySection(overdue, overdue_total),
         due_today=TodaySection(due, due_total),
+        application_overdue=TodaySection(
+            application_overdue, application_overdue_total
+        ),
+        application_due_today=TodaySection(application_due, application_due_total),
+        application_work=TodaySection(application_work, application_work_total),
         unstarted=TodaySection(shortlist, shortlist_total),
     )

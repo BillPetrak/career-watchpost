@@ -293,6 +293,9 @@ from careeros.api.schemas import (
     SavedSearchUpdateRequest,
     SourceStats,
     SourceStatsListResponse,
+    TodayApplicationItem,
+    TodayApplications,
+    TodayApplicationSection,
     TodayReminderItem,
     TodayReminders,
     TodayReminderSection,
@@ -434,6 +437,7 @@ from careeros.presenters import (
     saved_search_item_dict,
     source_stats_dict,
     source_status_item_dict,
+    today_application_dict,
     today_reminder_dict,
     today_shortlist_dict,
 )
@@ -1588,6 +1592,35 @@ def create_app(
                     items=[
                         TodayReminderItem.model_validate(today_reminder_dict(item))
                         for item in snapshot.due_today.items
+                    ],
+                ),
+            ),
+            applications=TodayApplications(
+                overdue=TodayApplicationSection(
+                    total=snapshot.application_overdue.total,
+                    items=[
+                        TodayApplicationItem.model_validate(
+                            today_application_dict(item)
+                        )
+                        for item in snapshot.application_overdue.items
+                    ],
+                ),
+                due_today=TodayApplicationSection(
+                    total=snapshot.application_due_today.total,
+                    items=[
+                        TodayApplicationItem.model_validate(
+                            today_application_dict(item)
+                        )
+                        for item in snapshot.application_due_today.items
+                    ],
+                ),
+                work=TodayApplicationSection(
+                    total=snapshot.application_work.total,
+                    items=[
+                        TodayApplicationItem.model_validate(
+                            today_application_dict(item)
+                        )
+                        for item in snapshot.application_work.items
                     ],
                 ),
             ),

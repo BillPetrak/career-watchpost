@@ -11,6 +11,33 @@ from careeros.database.reminders import StoredReminder
 
 
 @dataclass(frozen=True)
+class TodayPreparation:
+    category: str
+    blocking_count: int
+
+
+@dataclass(frozen=True)
+class TodayPackage:
+    has_draft: bool
+    draft_approved_for_current_revision: bool
+    draft_preparation_revision_stale: bool
+
+
+@dataclass(frozen=True)
+class TodayApplication:
+    application_id: int
+    job_id: int
+    current_status: str
+    updated_at: str
+    job: StoredJob
+    classification: str
+    next_action: str
+    earliest_deadline_at: str | None
+    preparation: TodayPreparation | None
+    package: TodayPackage | None
+
+
+@dataclass(frozen=True)
 class TodayReminder:
     reminder: StoredReminder
     job: StoredJob
@@ -43,4 +70,7 @@ class TodaySnapshot:
     limit: int
     overdue: TodaySection[TodayReminder]
     due_today: TodaySection[TodayReminder]
+    application_overdue: TodaySection[TodayApplication]
+    application_due_today: TodaySection[TodayApplication]
+    application_work: TodaySection[TodayApplication]
     unstarted: TodaySection[TodayShortlist]

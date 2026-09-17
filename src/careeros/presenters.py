@@ -28,7 +28,7 @@ from careeros.ranking.explanations import explain_result, explanation_to_dict
 from careeros.ranking.scorer import RankedGroup, RankedJob, component_to_dict
 from careeros.review.service import QueueItem, ReviewedOpportunity
 from careeros.saved_searches.models import SavedSearch
-from careeros.today.models import TodayReminder, TodayShortlist
+from careeros.today.models import TodayApplication, TodayReminder, TodayShortlist
 
 if TYPE_CHECKING:
     from careeros.reporting.models import (
@@ -277,6 +277,41 @@ def today_reminder_dict(item: TodayReminder) -> dict[str, Any]:
     }
 
 
+def today_application_dict(item: TodayApplication) -> dict[str, Any]:
+    """Serialize the strict public allow-list for Application work."""
+    return {
+        "application_id": item.application_id,
+        "job_id": item.job_id,
+        "current_status": item.current_status,
+        "updated_at": item.updated_at,
+        "job": job_dict(item.job),
+        "classification": item.classification,
+        "next_action": item.next_action,
+        "earliest_deadline_at": item.earliest_deadline_at,
+        "preparation": (
+            None
+            if item.preparation is None
+            else {
+                "category": item.preparation.category,
+                "blocking_count": item.preparation.blocking_count,
+            }
+        ),
+        "package": (
+            None
+            if item.package is None
+            else {
+                "has_draft": item.package.has_draft,
+                "draft_approved_for_current_revision": (
+                    item.package.draft_approved_for_current_revision
+                ),
+                "draft_preparation_revision_stale": (
+                    item.package.draft_preparation_revision_stale
+                ),
+            }
+        ),
+    }
+
+
 def today_shortlist_dict(item: TodayShortlist) -> dict[str, Any]:
     """Serialize a canonical unstarted shortlist opportunity."""
     return {
@@ -432,6 +467,7 @@ __all__: tuple[str, ...] = (
     "review_decision_item_dict",
     "reviewed_opportunity_item_dict",
     "today_reminder_dict",
+    "today_application_dict",
     "today_shortlist_dict",
     "review_queue_item_dict",
     "saved_search_item_dict",
