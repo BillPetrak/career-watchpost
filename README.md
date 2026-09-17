@@ -2,6 +2,79 @@
 
 CareerOS is a privacy-first career intelligence platform.
 
+## Adaptive matching preferences (R4)
+
+CareerOS schema v12 adds persistent **Matching Preferences** to the local
+SQLite database. Explicit preferences are the profile values you deliberately
+save; learned preferences are deterministic, structured signals derived from
+meaningful `shortlist` and `dismiss` review transitions. Existing reviews are
+not backfilled during upgrade, `review_later` is neutral, and review notes and
+raw job descriptions never become preference evidence.
+
+Learned preferences remain inactive until repeated evidence crosses the frozen
+threshold (two positive opportunities or three negative opportunities with a
+net difference of at least two). Canonical duplicate opportunities count once.
+You can inspect evidence counts and bounded example opportunities, suppress or
+restore one learned preference, or reset only learned state while preserving
+explicit preferences and review history:
+
+```bash
+uv run careeros preference show --format text
+uv run careeros preference explicit replace config/candidate_profile.example.yaml
+uv run careeros preference explicit clear
+uv run careeros preference suppress KEY
+uv run careeros preference restore KEY
+uv run careeros preference reset-learned --confirm
+```
+
+The Matching Preferences web workspace provides the same explicit save/clear
+and learned inspection, suppression, restore, and reset controls. A deliberately
+saved empty explicit profile remains configured, creates no learned-dimension
+locks, and does not silently fall back to a private profile file.
+
+Active learned preferences apply a bounded adjustment to ranked surfaces,
+including rank, Review, rank-mode saved searches, ranked reports/exports, and
+their HTTP/web equivalents. Use `--no-adaptive` on supported CLI commands, or
+turn off **Use learned preferences** in the web UI, to disable only this learned
+layer. This is distinct from `--no-feedback`, which controls the pre-existing
+direct review-feedback adjustment on CLI/service paths. Ranked explanations
+show only the effective learned points actually applied; full evidence remains
+in the dedicated preference inspection surface.
+
+Preference learning, ranking, and explanations are local, deterministic, and
+model-free: they make no LLM call and have no recurring model cost. Chronological
+search, administrative/audit views, Today/Attention, and the profile-less Home
+report do not become personalized feeds.
+
+### Schema v12 upgrade and recovery
+
+Upgrade an existing v11 database explicitly while CareerOS processes using it
+are stopped:
+
+```bash
+uv run careeros database migrate --database /path/to/careeros.sqlite3
+```
+
+Before the normal v11-to-v12 migration, the administration flow creates the
+SQLite backup
+`/path/to/careeros.sqlite3.pre-v12.backup.sqlite3` (unless an operator explicitly
+selects the acknowledged no-backup path; `--backup` chooses another destination).
+There is no down migration. To recover, stop CareerOS processes and restore the
+pre-v12 backup:
+
+```bash
+uv run careeros database restore \
+  /path/to/careeros.sqlite3.pre-v12.backup.sqlite3 \
+  --database /path/to/careeros.sqlite3 \
+  --confirm-replace
+```
+
+This returns the SQLite database to its pre-upgrade v11 state and intentionally
+discards preference changes made after the backup. Private candidate-profile
+files remain separate from SQLite recovery. Managed Material bytes also remain
+outside SQLite and must be preserved/restored with their matching materials
+root.
+
 ## Private reusable Materials (R3 M2)
 
 CareerOS schema v11 includes a local Materials library for reusable private
@@ -74,7 +147,7 @@ Current CLI capabilities include multi-source job collection (`collect
 persistent run history, read-only collection observability (`collect status`,
 `collect history`), plus `search`, `show`, `rank`, `group`,
 `saved-search`, `application`, `reminder` (including local `notify-due`/`
-notify-history` notifications), `review`, `profile` (init/show/
+notify-history` notifications), `review`, `preference`, `profile` (init/show/
 validate for JSON or YAML candidate profiles), a read-only `report` (Career
 Snapshot), and `diagnose` (including notification readiness).
 Collection commands are mutually exclusive per database via an OS advisory

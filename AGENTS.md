@@ -19,7 +19,10 @@ uv run careeros diagnose      # verify environment
 | `uv run ruff format --check src tests` | Format check |
 | `uv run ruff format src tests` | Auto-format |
 | `uv run mypy` | Typecheck (strict) |
-| `uv run uvicorn careeros.api:app` | Serve the FastAPI read-only API |
+| `uv run uvicorn careeros.api:app` | Serve the local FastAPI application |
+| `uv run careeros serve --database PATH` | Serve the protected local web application against an explicit database |
+| `uv run careeros database migrate --database PATH` | Explicitly migrate a supported old schema; default backup suffix is `.pre-v12.backup.sqlite3` |
+| `uv run careeros database restore BACKUP --database PATH --confirm-replace` | Replace a SQLite database from a validated backup (managed Material files are separate) |
 | `uv run careeros collect arbeitnow --limit 10` | Collect jobs |
 | `uv run careeros collect arbeitnow --database /tmp/test.db` | Override DB path |
 | `uv run careeros collect remotive --limit 10` | Collect jobs from Remotive |
@@ -37,13 +40,20 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --grouped` | Rank jobs, one scored result per duplicate group |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --format json` | Rank results as JSON with a `score_components` breakdown per result |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --no-feedback` | Rank without review-feedback adjustments |
+| `uv run careeros rank engineer --profile config/candidate_profile.example.json --no-adaptive` | Rank without persistent learned-preference adjustments |
 | `uv run careeros profile init [PATH] [--force]` | Create a starter candidate profile (default: private `config/candidate_profile.yaml`; refuses to overwrite without `--force`) |
 | `uv run careeros profile validate [PATH]` | Validate a JSON/YAML candidate profile (default: private path) |
 | `uv run careeros profile show [PATH]` | Show a candidate profile readably (default: private path) |
-| `uv run careeros report [--format {text,json}] [--profile PATH] [--saved-search NAME] [--limit N] [--grouped] [--no-feedback]` | Read-only Career Snapshot dashboard (default format: text) |
+| `uv run careeros preference show [--format {text,json}] [--database PATH]` | Inspect stored explicit and learned matching preferences |
+| `uv run careeros preference explicit replace PROFILE [--database PATH]` | Replace the complete stored explicit profile, including configured-empty state |
+| `uv run careeros preference explicit clear [--database PATH]` | Remove stored explicit authority without changing learned state |
+| `uv run careeros preference suppress KEY [--database PATH]` | Suppress one learned preference while retaining evidence |
+| `uv run careeros preference restore KEY [--database PATH]` | Restore one learned preference |
+| `uv run careeros preference reset-learned --confirm [--database PATH]` | Delete learned evidence/suppressions while preserving explicit preferences and review history |
+| `uv run careeros report [--format {text,json}] [--profile PATH] [--saved-search NAME] [--limit N] [--grouped] [--no-feedback] [--no-adaptive]` | Read-only Career Snapshot dashboard (default format: text) |
 | `uv run careeros export jobs [--query Q] [--grouped] [--remote] [--location L] [--source S] [--employment-type ET] [--clean-descriptions] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of stored jobs (read-only) |
-| `uv run careeros export ranked --query Q --profile PATH [--grouped] [--min-score N] [--no-feedback] [--remote] [--location L] [--source S] [--employment-type ET] [--clean-descriptions] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of profile-ranked jobs (read-only) |
-| `uv run careeros export review --profile PATH [--state S] [--min-score N] [--include-tracked] [--grouped\|--no-grouped] [--no-feedback] [--remote] [--location L] [--source S] [--employment-type ET] [--clean-descriptions] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of the review queue (read-only) |
+| `uv run careeros export ranked --query Q --profile PATH [--grouped] [--min-score N] [--no-feedback] [--no-adaptive] [--remote] [--location L] [--source S] [--employment-type ET] [--clean-descriptions] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of profile-ranked jobs (read-only) |
+| `uv run careeros export review --profile PATH [--state S] [--min-score N] [--include-tracked] [--grouped\|--no-grouped] [--no-feedback] [--no-adaptive] [--remote] [--location L] [--source S] [--employment-type ET] [--clean-descriptions] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of the review queue (read-only) |
 | `uv run careeros export source-stats [--source S] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of unified per-source statistics (read-only) |
 | `uv run careeros export collection-history [--source S] [--failed] [--format {json,jsonl,csv}] [--limit N] [--output PATH] [--overwrite] [--database PATH]` | Deterministic export of collection run history (read-only) |
 | `uv run careeros group regroup [--database PATH]` | Recompute canonical duplicate groups (write; locks the DB) |
@@ -69,7 +79,7 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros saved-search create NAME QUERY --mode {search,rank} [--profile PATH] [FILTERS...]` | Create a reusable search/rank workflow (write; locks the DB) |
 | `uv run careeros saved-search list [--database PATH]` | List saved workflows, ordered case-insensitively by name |
 | `uv run careeros saved-search show NAME [--database PATH]` | Show a saved workflow definition |
-| `uv run careeros saved-search run NAME [--database PATH]` | Execute a saved workflow against the current DB (read-only) |
+| `uv run careeros saved-search run NAME [--no-adaptive] [--database PATH]` | Execute a saved workflow against the current DB (read-only; opt-out applies to rank mode) |
 | `uv run careeros saved-search update NAME [--query TEXT] [--grouped/--no-grouped] [--untracked/--no-untracked] [--status S] [--exclude-status S] [--source S] [--location S] [--remote] [--min-score N] [--limit N] [--profile PATH] [--clear-*]` | Change a saved workflow (write; locks the DB) |
 | `uv run careeros saved-search rename NAME NEW_NAME [--database PATH]` | Rename a saved workflow (write; locks the DB) |
 | `uv run careeros saved-search delete NAME [--database PATH]` | Delete a saved workflow (write; locks the DB) |
@@ -78,7 +88,7 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros review show JOB_ID [--database PATH]` | Show the current review decision for one job (read-only) |
 | `uv run careeros review list [--decision D] [--limit N] [--database PATH]` | List review decisions, optionally filtered (read-only) |
 | `uv run careeros review history JOB_ID [--limit N] [--database PATH]` | Show the decision history for one job (read-only) |
-| `uv run careeros review next --profile PATH [--state S] [--min-score N] [--include-tracked] [--source S] [--location L] [--remote] [--grouped\|--no-grouped] [--limit N] [--format {text,json}] [--no-feedback] [--database PATH]` | Rank the personalized daily review queue (read-only) |
+| `uv run careeros review next --profile PATH [--state S] [--min-score N] [--include-tracked] [--source S] [--location L] [--remote] [--grouped\|--no-grouped] [--limit N] [--format {text,json}] [--no-feedback] [--no-adaptive] [--database PATH]` | Rank the personalized daily review queue (read-only) |
 | `uv run python systemd/install.py --dry-run` | Preview systemd user-unit install (writes nothing) |
 | `uv run python systemd/install.py` | Install the systemd user service+timer (not enabled) |
 | `uv run python systemd/install.py --enable` | Install, then enable and start the timer |
@@ -489,6 +499,87 @@ The default text output keeps the existing layout and adds a `Feedback:` line
 only when a non-zero feedback adjustment applies; it never shows the full
 component breakdown. `review next --format json` and `report --format json`
 carry the same `score_components` data.
+
+## R4 adaptive matching preferences
+
+`SCHEMA_VERSION` is 12. R4 adds four preference tables:
+`preference_state`, `explicit_preferences`, `preference_evidence`, and
+`learned_preference_suppressions`. Learned aggregates are derived on read and
+must not be materialized. Fresh v12 databases and v11-to-v12 migration create
+one singleton state row; migration creates no explicit, evidence, or
+suppression rows and sets `learning_reset_review_event_id` to the pre-upgrade
+maximum `review_events.id`. Historical reviews are never seeded into learned
+state.
+
+Explicit preference authority preserves all nine `CandidateProfile` fields,
+including list order and duplicates. Invocation-scoped supplied profiles
+replace stored explicit state for that invocation. Otherwise a configured
+stored profile is authoritative; `explicit_configured` distinguishes a saved
+empty profile from absent stored state. Only populated explicit title,
+location, remote, employment-type, and seniority dimensions lock the matching
+learned dimension. Company has no explicit lock.
+
+Meaningful review transitions update current structured evidence atomically
+with the review decision and event. `shortlist` is positive, `dismiss` is
+negative, and `review_later`/clear remove current evidence. Same-decision notes
+remain audit-only. Evidence uses structured title, company, non-generic
+location, explicit remote status, stated employment type, and title-derived
+seniority; never descriptions, skills inferred from descriptions, notes,
+paths, or sensitive attributes. Canonical duplicate opportunities contribute
+once using the existing lowest-decided-job authority.
+
+Activation requires at least two positives with net evidence at least `+2`, or
+three negatives with net evidence at most `-2`; contradiction cancels
+arithmetically and there is no time decay. Suppression preserves evidence but
+makes the preference score-neutral. Restore removes suppression. Global reset
+deletes evidence and suppressions, advances the review-event boundary, and
+preserves explicit preferences, current review decisions, and review history.
+
+The learned scoring layer is deterministic: title contributes up to `±4`, each
+other learned dimension up to `±2`, and raw learned contribution is capped at
+`±8`. Each surface preserves its pre-R4 direct `FeedbackSet` policy; effective
+learned points use the combined legacy-feedback-plus-learned `±10` envelope.
+`--no-feedback` controls only legacy direct review feedback, while
+`--no-adaptive` controls only persistent learned preferences. HTTP requests
+use `use_learned_preferences` (default true). Explanations expose only the
+effective learned points applied after headroom/caps and never expose raw notes,
+descriptions, filesystem paths, or preference provenance.
+
+Adapted ranked surfaces are CLI rank/review/report, rank-mode saved-search
+execution, ranked/review exports, `POST /ranked-jobs`, `POST /review-queue`,
+personalized `POST /report`, and their web views. HTTP/web scoring keeps legacy
+direct feedback disabled. Chronological
+search, search-mode saved searches, Reviewed Opportunities, Application
+Pipeline, administrative/audit views, Today/Attention, and profile-less
+`GET /report` remain unchanged and non-adaptive. Ranked Job Detail renders the
+originating response explanation and must never rerank.
+
+Preference writes use the collection lock and existing local write-header
+protections. The Matching Preferences UI keeps unsaved drafts local, then
+refetches server-authoritative state after explicit save/clear,
+suppress/restore, or reset. Request generations prevent stale responses from
+clobbering newer edits. Learning, aggregation, ranking, and explanations are
+local deterministic code with no model call or recurring model cost.
+
+The normal v11-to-v12 administration flow creates a SQLite backup before
+migration at `<database>.pre-v12.backup.sqlite3` unless the operator supplies
+`--backup` or explicitly acknowledges `--no-backup`. The migration validates
+the target structure before advancing metadata and rolls back DDL/data/metadata
+together on failure. Current valid v12 migration is idempotent. There is no
+down migration; recovery is:
+
+```bash
+uv run careeros database restore \
+  /path/to/careeros.sqlite3.pre-v12.backup.sqlite3 \
+  --database /path/to/careeros.sqlite3 \
+  --confirm-replace
+```
+
+Recovery intentionally discards preference changes made after that backup.
+Private profile files are outside SQLite recovery. Managed Material bytes are
+also outside SQLite and must be preserved/restored as the matching materials
+root. Always rehearse migration and recovery on temporary copies; never mutate
+the user's real database during development or qualification.
 
 ## Candidate profile
 
@@ -1738,9 +1829,9 @@ A present-but-uninitialized database yields a `500` with instructions to run a
 collection, matching the strict no-DDL policy (no DDL on read paths, and the
 write endpoint never initializes the database either).
 
-## Read-only static UI (`/ui`)
+## Static UI (`/ui`)
 
-`src/careeros/api/static/` holds a zero-build, no-framework read-only frontend
+`src/careeros/api/static/` holds a zero-build, no-framework local frontend
 served by the FastAPI slice at `GET /ui` (`index.html`), `GET /ui/app.js`
 (vanilla JavaScript), and `GET /ui/style.css` (plain CSS). The assets are read
 from the packaged `careeros.api` resources via `importlib.resources` — never
@@ -1748,7 +1839,8 @@ from `cwd`-relative paths — and are included in installed wheels by the
 `[tool.setuptools.package-data]` entry for `"careeros.api"` in
 `pyproject.toml`; a wheel built without that entry would silently drop the
 static files. `uv build --wheel` then
-`unzip -l dist/*.whl | grep 'careeros/api/static'` verifies all three assets.
+`unzip -l dist/*.whl | grep 'careeros/api/static'` verifies the packaged HTML,
+JavaScript, CSS, and favicon assets.
 
 Architecture boundary: the frontend is **HTTP-only and computation-free**. It
 calls the documented endpoints — `GET /report` (Home view), `GET /jobs` (Jobs
@@ -1756,7 +1848,9 @@ view, including the `query` keyword parameter), and the computation-only
 ranking endpoints (`POST /ranked-jobs`, `POST /review-queue`, and
 `POST /saved-searches/{name}/execute?snapshot=true`) only after an explicit
 user action. Matching Preferences exposes all nine CandidateProfile fields;
-its draft and active profile live only in browser memory. List entries accept
+unsaved drafts stay in browser memory, while explicit save/clear and learned
+inspection/control use server-authoritative preference endpoints. List entries
+accept
 comma- and/or newline-separated values that are trimmed and empty tokens
 removed, while preserving order and duplicates; client checks mirror the
 server limits (`<=100` entries, `<=100` chars/entry, `<=50` chars for
@@ -1770,7 +1864,7 @@ default to `#home`), loading/error/empty/retry state, and formatting of already-
 values. It must never re-implement ranking, grouping, tracking, review-state,
 reporting, or database logic, and never read SQLite, config files, candidate
 profiles, `profile_path`, filesystem paths, private notes/messages, or logs.
-Mutations live in exactly two places: the Job Detail view (see below) — the
+Workflow mutations live in the Job Detail view (see below) — the
 Review-decision actions call `PUT /review-decisions/{job_id}` /
 `DELETE /review-decisions/{job_id}`, the Application-status actions call
 `PUT /applications/{job_id}`, and the Reminders actions call
@@ -1783,9 +1877,14 @@ a Retry re-issues the exact DELETE without re-confirming) — and the Review
 view's Review Queue cards (see below), which call
 `PUT /review-decisions/{representative job id}` followed, after success, by
 the existing authoritative `POST /review-queue` refresh; every other endpoint
-call is read-only
+call outside Matching Preferences is read-only
 (`GET /report`, `GET /jobs`, `GET /jobs/{id}` and its section companions) or
 the Review view's computation-only `POST /report`.
+Matching Preferences additionally uses `GET /preferences`,
+`PUT`/`DELETE /preferences/explicit`, `GET /preferences/learned`,
+`PUT /preferences/learned/{key}`, and confirmed
+`DELETE /preferences/learned`; successful writes always trigger an
+authoritative refetch rather than an optimistic state change.
 Job descriptions are not rendered because the public `GET /jobs` projection
 intentionally omits them. Navigation uses semantic hash links so deep-link
 refresh of `/ui/#jobs` works with no server-side route per view. Browser
@@ -2078,7 +2177,8 @@ there is no explanation endpoint or persistence. Grouped explanations belong
 to the union-scored opportunity and retain the exact response member count.
 ## R3 M2 private Materials library
 
-`SCHEMA_VERSION` is 11. Materials are global reusable private records with
+Materials were introduced in schema v11; the current `SCHEMA_VERSION` is 12.
+They are global reusable private records with
 immutable versions; they are not owned by jobs or applications. Managed bytes
 live outside the checkout under an XDG-configured root, with a DB/root marker
 pair, mode 0700 directories, mode 0600 files, no arbitrary durable paths, and
@@ -2086,7 +2186,7 @@ no destructive deletion or history erasure. Browser uploads are raw bounded
 `application/octet-stream` streams; multipart, parsing, OCR, indexing,
 preview, cloud storage, and AI generation are out of scope.
 
-Material writes require an explicit current-v11 database and enforce the
+Material writes require an explicit current-schema database and enforce the
 managed-root A–G binding state machine; the first successful import may safely
 create and bind an absent/empty root. Startup and read-only commands never
 migrate or initialize databases or create roots. Scheduled `collect due`
@@ -2094,8 +2194,8 @@ retains its existing fresh-database bootstrap behavior, but never migrates or
 changes an existing old-schema database. Use temporary databases and roots for
 development and tests. SQLite backup/restore/migration operations contain
 database pages only; managed material bytes and their root must be preserved
-separately as a matching pair. Production migration to v11 is an explicit
-post-commit user decision.
+separately as a matching pair. Production migration remains an explicit
+operator decision.
 
 Material commands are available as `careeros material list`, `show`, `import`,
 `add-version`, `update`, `retire`, `restore`, `export-version`, and `audit`.

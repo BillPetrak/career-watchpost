@@ -2,7 +2,7 @@
 
 > **Release:** R4 — Adaptive Recommendations
 >
-> **Status:** Accepted architecture / implementation not yet started
+> **Status:** Accepted architecture; M1-M4 implemented; M5 qualification complete; R4 ready for closure
 >
 > **Design baseline commit:** the documented baseline
 >
@@ -10,9 +10,19 @@
 >
 
 This document is the canonical implementation contract for CareerOS R4. It
-freezes the accepted architecture and milestone boundaries. It contains no
-PRE-R4 operational evidence, qualification logs, transcripts, temporary data,
-or implementation claims.
+freezes the accepted architecture and milestone boundaries. Apart from the
+implementation-status marker below, it contains no PRE-R4 operational evidence,
+qualification logs, transcripts, temporary data, or rewritten design claims.
+
+## Implementation status
+
+The frozen M1-M4 scope is implemented on schema v12 at accepted M4 baseline
+the documented baseline. M5 qualification of that implementation
+is complete: full regression, v11-to-v12 migration and recovery rehearsal,
+packaged-wheel verification, temporary-database browser acceptance, and factual
+documentation all passed. R4 is ready for closure. This marker records implementation
+state only; the design decisions and milestone boundaries below remain the historical
+architecture authority.
 
 ## 1. Purpose and product boundary
 
