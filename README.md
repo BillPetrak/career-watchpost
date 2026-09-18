@@ -43,8 +43,10 @@ in the dedicated preference inspection surface.
 
 Preference learning, ranking, and explanations are local, deterministic, and
 model-free: they make no LLM call and have no recurring model cost. Chronological
-search, administrative/audit views, Today/Attention, and the profile-less Home
-report do not become personalized feeds.
+search, administrative/audit views, and the profile-less Home report do not
+become personalized feeds. Today uses preferences only for its bounded Review
+next section, with **Use learned preferences** controlling the learned layer for
+that invocation.
 
 ### Schema v12 upgrade and recovery
 
@@ -154,19 +156,19 @@ Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
 
-A local web dashboard (Home, Jobs, Review, Reviewed, Applications, Reminders, and a per-job
-detail view) is served by the optional
-FastAPI slice at <http://127.0.0.1:8000/ui>:
+A local web dashboard (Home, Today, Jobs, Review, Reviewed, Applications,
+Reminders, Matching Preferences, and a per-job detail view) is served by the
+optional FastAPI slice at <http://127.0.0.1:8000/ui>:
 
 ```bash
 uv sync --extra development --extra api   # install the API extra
 uv run uvicorn careeros.api:app           # serve; then open /ui in a browser
 ```
 
-It calls only the documented read endpoints (`GET /report`, `GET /jobs`,
-`GET /jobs/{id}`, `GET /jobs/{id}/group`,
+Representative documented read endpoints include `GET /report`, `GET /today`,
+`GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/group`,
 `GET /applications?job_id={id}`, `GET /review-decisions?job_id={id}`,
-`GET /reviewed-opportunities`, `GET /reminders?job_id={id}`) plus the
+`GET /reviewed-opportunities`, and `GET /reminders?job_id={id}`. The UI also uses the
 computation-only `POST /report` (the Review view's inline candidate-profile
 form) and the workflow mutations: the Job Detail review-decision
 `PUT`/`DELETE /review-decisions/{id}`, application-status
@@ -642,12 +644,32 @@ without a login session, enable lingering manually with
 installer after moving the repository, since the units embed the absolute
 project path.
 
-## Today / Action Center
+## Today / Workflow and Attention Center
 
-`GET /today?limit=10` provides a bounded, read-only UTC snapshot of overdue
-reminders, reminders due later today, and unstarted canonical shortlist
-opportunities. It captures one server-side `as_of` instant and uses one
-SQLite read transaction; totals precede each independent limit (maximum 20).
+Today is the single action-oriented Workflow / Attention Center. Home remains
+the separate profile-less operational and system overview, including collection
+and source health. `GET /today?limit=10` captures one server-side UTC `as_of`
+instant and one coherent SQLite read transaction. It returns these
+server-classified sections in order: overdue reminders, overdue application
+work, reminders due later today, application work due later today,
+non-temporal application attention, shortlisted opportunities not yet started,
+and Review next. Totals precede each section's independent limit (maximum 20;
+Review next is a three-item score-qualified preview).
+
+Review next reuses the stored explicit and learned Matching Preferences
+authority. The **Use learned preferences** checkbox is enabled by default and
+changes only that request; turning it off neither changes stored preferences nor
+disables explicit preference matching. Today remains deterministic, local-first,
+and model-free.
+
+Completing a Reminder is the only inline Today write. Application,
+Preparation, Package, and Review details and mutations stay in their
+authoritative workspaces, reached through Today links. Loading Today never
+creates a Reminder or notification, executes a saved search, or turns source
+health into an attention category. Its public projection omits reminder
+messages, workflow notes/events, requirement text, Package answers and Material
+metadata, private profile paths, raw preference evidence, provider errors, and
+private scorer diagnostics.
 
 ## Ranking explanations
 

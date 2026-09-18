@@ -1843,7 +1843,8 @@ static files. `uv build --wheel` then
 JavaScript, CSS, and favicon assets.
 
 Architecture boundary: the frontend is **HTTP-only and computation-free**. It
-calls the documented endpoints — `GET /report` (Home view), `GET /jobs` (Jobs
+calls the documented endpoints — `GET /report` (Home view), `GET /today`
+(Today view), `GET /jobs` (Jobs
 view, including the `query` keyword parameter), and the computation-only
 ranking endpoints (`POST /ranked-jobs`, `POST /review-queue`, and
 `POST /saved-searches/{name}/execute?snapshot=true`) only after an explicit
@@ -1859,11 +1860,12 @@ server limits (`<=100` entries, `<=100` chars/entry, `<=50` chars for
 and `preferred_seniority` accepts arbitrary list terms; neither is narrowed by
 the UI. Results render server-returned order with `textContent`/`createElement`
 (never unsafe `innerHTML` with API values). It manages only local presentation,
-navigation (`#home`/`#jobs`/`#review`/`#matching` hash routing; unknown hashes
-default to `#home`), loading/error/empty/retry state, and formatting of already-returned
-values. It must never re-implement ranking, grouping, tracking, review-state,
-reporting, or database logic, and never read SQLite, config files, candidate
-profiles, `profile_path`, filesystem paths, private notes/messages, or logs.
+navigation (`#home`/`#today`/`#jobs`/`#review`/`#matching` hash routing;
+unknown hashes default to `#home`), loading/error/empty/retry state, and
+formatting of already-returned values. It must never re-implement ranking,
+grouping, tracking, review-state, reporting, or database logic, and never read
+SQLite, config files, candidate profiles, `profile_path`, filesystem paths,
+private notes/messages, or logs.
 Workflow mutations live in the Job Detail view (see below) — the
 Review-decision actions call `PUT /review-decisions/{job_id}` /
 `DELETE /review-decisions/{job_id}`, the Application-status actions call
@@ -2154,15 +2156,30 @@ can assert on stable strings:
 - All DB tests use `tmp_path` for disposable SQLite files (no fixtures, no external DB)
 - Collector unit tests pass without network (test `normalize_job()` only, not `fetch_jobs()`)
 - Grouping tests use the pure matcher (`assign_groups`) and a seeded `tmp_path` DB (no network)
-- No integration/e2e tests yet
+- Static frontend contracts run in Node harnesses; integrated browser
+  qualification uses a temporary deterministic database and real local browser
+  without adding a project Playwright dependency
 
 ## Today read model
 
-`GET /today` is a bounded read-only Action Center snapshot. It uses one UTC
-`as_of` and one SQLite read transaction, half-open reminder buckets, canonical
-lowest-decided-member review resolution, and opportunity-wide application
-exclusion. It never initializes a missing database or runs ranking/report
-computation.
+`GET /today` is the bounded read-only projection for the one Workflow /
+Attention Center. Home remains the separate profile-less operational/system
+overview. Today uses one UTC `as_of` and one SQLite read transaction and returns,
+in order: overdue Reminders, overdue Application work, Reminders due later
+today, Application work due later today, non-temporal Application attention,
+shortlisted opportunities not yet started, and a three-item score-qualified
+Review next preview. One concrete Application produces at most one card.
+
+Review next reuses R4 stored explicit and learned preference authority;
+`use_learned_preferences` is an invocation-scoped opt-out for only the learned
+contribution. Completing a Reminder through its existing endpoint is the only
+inline Today write. Detailed Application, Preparation, Package, and Review work
+stays in the authoritative workspaces. Today never creates Reminders or
+notifications, executes saved searches, escalates source health, uses direct
+`FeedbackSet`, reads a private profile path, or exposes private workflow text,
+Package/Material details, raw preference evidence, provider errors, or private
+scorer diagnostics. It never initializes a missing database or makes model or
+network calls.
 
 ## Ranking explanation API boundary
 
