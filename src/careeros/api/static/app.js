@@ -285,6 +285,7 @@
   var todayRefreshActive = false;
   var todayRefreshOwner = null;
   var todayRefreshDirty = false;
+  var todayRefreshSaved = false;
   var todayOperationSeq = 0;
   var todayReminderInFlight = {};
   var todayFocusTarget = null;
@@ -371,6 +372,8 @@
       todayRequestSeq++;
       todayViewGeneration++;
       todayRefreshDirty = false;
+      todayRefreshSaved = false;
+      todayFocusTarget = null;
     }
     if (leaving === REVIEW && name !== REVIEW) {
       // Invalidate any in-flight Review continuation (the form's POST /report
@@ -449,6 +452,7 @@
     if (name === TODAY && leaving !== TODAY) {
       todayViewGeneration++;
       todayRefreshDirty = false;
+      todayRefreshSaved = false;
     }
     showView(name);
     // Only re-render when a real view route is set; otherwise (e.g. the #main
@@ -4383,8 +4387,9 @@
   // Today workspace (#today)
   //
   // GET /today is the sole authority for UTC classification, totals, ordering,
-  // duplicate context, and application state. The browser only renders the
-  // three already-classified collections and formats due_at for display.
+  // duplicate context, application attention, and Review-next ranking. The
+  // browser renders the seven already-classified collections in their frozen
+  // order and formats timestamps for display without reclassifying them.
   // ---------------------------------------------------------------------------
 
   function todayJob(item) {
@@ -4435,11 +4440,82 @@
     return card;
   }
 
-  function buildTodaySection(title, bucket, cardBuilder) {
+  var TODAY_APPLICATION_ACTIONS = Object.freeze({
+    review_preparation_deadline: "Review preparation deadline",
+    complete_preparation: "Complete preparation",
+    confirm_preparation_ready: "Confirm preparation ready",
+    review_rebase_package: "Review and rebase package",
+    continue_package: "Continue package",
+    manage_application: "Manage application",
+  });
+
+  var TODAY_PREPARATION_LABELS = Object.freeze({
+    unknown: "Needs review",
+    incomplete: "Incomplete",
+    requirements_satisfied: "Ready to confirm",
+    user_confirmed_ready: "Ready",
+  });
+
+  function buildTodayApplicationCard(item) {
+    var job = todayJob(item);
+    if (!job) return null;
+    var card = el("li", { className: "job-card today-application-card" });
+    card.appendChild(el("h3", { className: "job-title", textContent: displayText(job.title) }));
+    var fields = el("dl", { className: "job-fields" });
+    addField(fields, "Company", job.company);
+    addField(fields, "Application", applicationStatusLabel(item.current_status));
+    if (typeof item.earliest_deadline_at === "string" && item.earliest_deadline_at) {
+      addField(fields, "Preparation deadline", displayLocalDateTime(item.earliest_deadline_at));
+    }
+    if (isObject(item.preparation)) {
+      addField(
+        fields,
+        "Preparation",
+        TODAY_PREPARATION_LABELS[item.preparation.category] || "Needs attention"
+      );
+      addField(fields, "Blocking items", String(countValue(item.preparation.blocking_count)));
+    }
+    if (isObject(item.package) && item.package.has_draft === true) {
+      var packageLabel = item.package.draft_preparation_revision_stale === true
+        ? "Draft needs rebase"
+        : (item.package.draft_approved_for_current_revision === true
+          ? "Draft approved"
+          : "Draft in progress");
+      addField(fields, "Package", packageLabel);
+    }
+    card.appendChild(fields);
+    var actions = el("div", { className: "job-actions" });
+    var actionLabel = TODAY_APPLICATION_ACTIONS[item.next_action] || "Open application workflow";
+    var action = todayViewJobLink(job, actionLabel);
+    if (action) actions.appendChild(action);
+    actions.appendChild(el("a", { className: "job-link", href: "#applications", textContent: "Applications" }));
+    card.appendChild(actions);
+    return card;
+  }
+
+  function buildTodayReviewCard(item) {
+    var group = isObject(item.group) ? item.group : null;
+    var job = group && isObject(group.representative) ? group.representative : null;
+    if (!job) return null;
+    var card = buildJobCard(job, item.match_score, null, group);
+    if (!card) return null;
+    card.className += " today-review-card";
+    appendCardExplanation(card, item.explanation);
+    var actions = card.querySelector(".job-actions");
+    if (!actions) {
+      actions = el("div", { className: "job-actions" });
+      card.appendChild(actions);
+    }
+    actions.appendChild(el("a", { className: "job-link", href: "#review", textContent: "Open Review" }));
+    return card;
+  }
+
+  function buildTodaySection(title, bucket, cardBuilder, emptyText) {
     var section = el("section", { className: "chunk" });
     section.appendChild(el("h2", { textContent: title }));
     section.appendChild(el("p", { className: "result-summary", textContent: "" }));
     var list = el("ul", { className: "job-list" });
+    bucket = isObject(bucket) ? bucket : { total: 0, items: [] };
     var items = Array.isArray(bucket.items) ? bucket.items : [];
     items.forEach(function (item) {
       if (isObject(item)) {
@@ -4449,8 +4525,49 @@
     });
     var total = countValue(bucket.total);
     section.querySelector(".result-summary").textContent = String(total) + " needing attention.";
-    if (total === 0) section.appendChild(el("p", { className: "empty-note", textContent: "Nothing here today." }));
+    if (total === 0) section.appendChild(el("p", { className: "empty-note", textContent: emptyText || "Nothing here today." }));
     else section.appendChild(list);
+    return section;
+  }
+
+  function buildTodayReviewSection(reviewNext) {
+    reviewNext = isObject(reviewNext) ? reviewNext : {};
+    var section = el("section", { className: "chunk today-review-next" });
+    section.appendChild(el("h2", { textContent: "Review next" }));
+    var items = Array.isArray(reviewNext.items) ? reviewNext.items : [];
+    section.appendChild(el("p", {
+      className: "result-summary",
+      textContent: "Showing " + items.length + " of " + countValue(reviewNext.total) +
+        " score-qualified opportunities from " + countValue(reviewNext.candidate_total) +
+        " eligible candidates.",
+    }));
+    if (reviewNext.personalized === true) {
+      section.appendChild(el("p", { className: "due-note", textContent: "Personalized using your active matching preferences." }));
+    } else {
+      section.appendChild(el("p", { className: "due-note", textContent: "Review next is not personalized yet." }));
+    }
+    if (reviewNext.use_learned_preferences === false) {
+      section.appendChild(el("p", { className: "due-note", textContent: "Learned preferences are off for this snapshot." }));
+    }
+    if (items.length > 0) {
+      var list = el("ul", { className: "job-list" });
+      items.forEach(function (item) {
+        if (!isObject(item)) return;
+        var card = buildTodayReviewCard(item);
+        if (card) list.appendChild(card);
+      });
+      section.appendChild(list);
+    } else {
+      var empty = countValue(reviewNext.candidate_total) === 0
+        ? "No eligible opportunities to review."
+        : "No eligible opportunities currently meet the minimum match score.";
+      section.appendChild(el("p", { className: "empty-note", textContent: empty }));
+    }
+    var actions = el("p", { className: "today-workspace-links" });
+    actions.appendChild(el("a", { href: "#review", textContent: "Open Review" }));
+    actions.appendChild(document.createTextNode(" · "));
+    actions.appendChild(el("a", { href: "#matching", textContent: "Matching Preferences" }));
+    section.appendChild(actions);
     return section;
   }
 
@@ -4464,42 +4581,71 @@
     });
     content.appendChild(links);
     var reminders = isObject(data.reminders) ? data.reminders : {};
+    var applications = isObject(data.applications) ? data.applications : {};
     var shortlist = isObject(data.shortlist) ? data.shortlist : {};
+    var review = isObject(data.review) ? data.review : {};
     var overdue = isObject(reminders.overdue) ? reminders.overdue : { total: 0, items: [] };
     var due = isObject(reminders.due_today) ? reminders.due_today : { total: 0, items: [] };
+    var applicationOverdue = isObject(applications.overdue) ? applications.overdue : { total: 0, items: [] };
+    var applicationDue = isObject(applications.due_today) ? applications.due_today : { total: 0, items: [] };
+    var applicationWork = isObject(applications.work) ? applications.work : { total: 0, items: [] };
     var unstarted = isObject(shortlist.unstarted) ? shortlist.unstarted : { total: 0, items: [] };
-    var total = countValue(overdue.total) + countValue(due.total) + countValue(unstarted.total);
+    var reviewNext = isObject(review.next) ? review.next : {};
+    var total = countValue(overdue.total) + countValue(applicationOverdue.total) +
+      countValue(due.total) + countValue(applicationDue.total) +
+      countValue(applicationWork.total) + countValue(unstarted.total) +
+      countValue(reviewNext.total);
     if (total === 0) {
       content.appendChild(el("p", { className: "empty-note", textContent: "Nothing needs attention today." }));
-      content.appendChild(el("p", { className: "today-boundary-note", textContent: "Reminder sections are classified by the server using UTC; due times are displayed in your browser's local time." }));
-      return;
     }
     content.appendChild(buildTodaySection("Overdue reminders", overdue, buildTodayReminderCard));
-    content.appendChild(buildTodaySection("Due later today", due, buildTodayReminderCard));
+    content.appendChild(buildTodaySection("Overdue application work", applicationOverdue, buildTodayApplicationCard));
+    content.appendChild(buildTodaySection("Reminders due later today", due, buildTodayReminderCard));
+    content.appendChild(buildTodaySection("Application work due later today", applicationDue, buildTodayApplicationCard));
+    content.appendChild(buildTodaySection("Application attention", applicationWork, buildTodayApplicationCard));
     content.appendChild(buildTodaySection("Shortlisted, not started", unstarted, buildTodayShortlistCard));
-    content.appendChild(el("p", { className: "today-boundary-note", textContent: "Reminder sections are classified by the server using UTC; due times are displayed in your browser's local time." }));
+    content.appendChild(buildTodayReviewSection(reviewNext));
+    content.appendChild(el("p", { className: "today-boundary-note", textContent: "Reminder and Application deadline sections are classified by the server using UTC; timestamps are displayed in your browser's local time." }));
+  }
+
+  function todayUsesLearnedPreferences() {
+    var toggle = document.getElementById("today-use-learned");
+    return !toggle || toggle.checked;
   }
 
   async function renderTodayView(options) {
     options = options || {};
     var generation = todayViewGeneration;
     var seq = ++todayRequestSeq;
-    todayDataGeneration++;
+    var dataGeneration = todayDataGeneration;
+    var useLearnedPreferences = todayUsesLearnedPreferences();
     var status = document.getElementById("today-status");
     var content = document.getElementById("today-content");
     if (!status || !content) return;
     setLoading(status, "Loading today…");
     if (!options.refresh) clearText(content);
     try {
-      var data = await fetchJson("/today?limit=10");
-      if (seq !== todayRequestSeq || generation !== todayViewGeneration || visibleView() !== TODAY) return;
-      if (!isObject(data) || !isObject(data.reminders) || !isObject(data.shortlist)) throw new Error("The /today response did not match the expected shape.");
+      var data = await fetchJson(
+        "/today?limit=10&use_learned_preferences=" + String(useLearnedPreferences)
+      );
+      if (seq !== todayRequestSeq || generation !== todayViewGeneration ||
+          dataGeneration !== todayDataGeneration ||
+          useLearnedPreferences !== todayUsesLearnedPreferences() ||
+          visibleView() !== TODAY) return;
+      if (!isObject(data) || !isObject(data.reminders) ||
+          !isObject(data.applications) || !isObject(data.shortlist) ||
+          !isObject(data.review) || !isObject(data.review.next)) {
+        throw new Error("The /today response did not match the expected shape.");
+      }
       renderTodayContent(content, data);
       doneLoading(status);
       if (options.saved) status.textContent = "Reminder saved. Today refreshed.";
       restoreTodayFocus(status, content);
     } catch (error) {
-      if (seq !== todayRequestSeq || generation !== todayViewGeneration || visibleView() !== TODAY) return;
+      if (seq !== todayRequestSeq || generation !== todayViewGeneration ||
+          dataGeneration !== todayDataGeneration ||
+          useLearnedPreferences !== todayUsesLearnedPreferences() ||
+          visibleView() !== TODAY) return;
       if (options.saved) {
         status.parentNode.removeAttribute("aria-busy");
         renderError(status, "Reminder saved, but Today could not be refreshed. " + error.message, function () { renderTodayView({ refresh: true }); });
@@ -4519,8 +4665,13 @@
       var button = card.querySelector("button");
       if (button) { button.focus(); return; }
     }
-    var next = content.querySelector(".today-reminder-card button, .today-shortlist-card a");
+    var next = content.querySelector(
+      ".today-reminder-card button, .today-application-card a, " +
+      ".today-shortlist-card a, .today-review-card a"
+    );
     if (next) { next.focus(); return; }
+    var toggle = document.getElementById("today-use-learned");
+    if (toggle) { toggle.focus(); return; }
     status.textContent = "Today updated.";
     status.focus();
   }
@@ -4528,6 +4679,7 @@
   function requestTodayRefresh(saved) {
     if (visibleView() !== TODAY) return;
     todayRefreshDirty = true;
+    if (saved === true) todayRefreshSaved = true;
     var generation = todayViewGeneration;
     if (todayRefreshActive && todayRefreshOwner && todayRefreshOwner.generation === generation) return;
     var owner = { generation: generation, dataGeneration: todayDataGeneration };
@@ -4536,7 +4688,9 @@
       try {
         while (todayRefreshDirty && todayRefreshOwner === owner && owner.generation === todayViewGeneration && visibleView() === TODAY) {
           todayRefreshDirty = false;
-          await renderTodayView({ refresh: true, saved: saved === true });
+          var showSaved = todayRefreshSaved;
+          await renderTodayView({ refresh: true, saved: showSaved });
+          if (!todayRefreshDirty) todayRefreshSaved = false;
           owner.dataGeneration = todayDataGeneration;
         }
       } finally {
@@ -4549,12 +4703,15 @@
     if (!isObject(reminder) || !isFiniteNumber(reminder.reminder_id) || todayReminderInFlight[reminder.reminder_id] || visibleView() !== TODAY) return;
     var operation = { id: ++todayOperationSeq, generation: todayViewGeneration };
     todayReminderInFlight[reminder.reminder_id] = operation;
-    todayFocusTarget = { reminderId: reminder.reminder_id };
     card.setAttribute("aria-busy", "true");
     card.querySelectorAll("button").forEach(function (button) { button.disabled = true; });
     try {
       await putJson("/reminders/" + reminder.reminder_id + "/complete", {});
-      if (operation.generation === todayViewGeneration && visibleView() === TODAY) requestTodayRefresh(true);
+      if (visibleView() === TODAY) {
+        todayFocusTarget = { reminderId: reminder.reminder_id };
+        todayDataGeneration++;
+        requestTodayRefresh(true);
+      }
     } catch (error) {
       if (operation.generation !== todayViewGeneration || visibleView() !== TODAY) return;
       card.removeAttribute("aria-busy");
@@ -4564,6 +4721,12 @@
     } finally {
       if (todayReminderInFlight[reminder.reminder_id] === operation) delete todayReminderInFlight[reminder.reminder_id];
     }
+  }
+
+  function todayLearnedPreferenceChanged() {
+    if (visibleView() !== TODAY) return;
+    todayDataGeneration++;
+    requestTodayRefresh(false);
   }
 
   // ---------------------------------------------------------------------------
@@ -7452,6 +7615,10 @@
   // ---------------------------------------------------------------------------
 
   document.addEventListener("DOMContentLoaded", function () {
+    var todayUseLearned = document.getElementById("today-use-learned");
+    if (todayUseLearned) {
+      todayUseLearned.addEventListener("change", todayLearnedPreferenceChanged);
+    }
     var reviewForm = document.getElementById("review-form");
     if (reviewForm) {
       reviewForm.addEventListener("submit", reviewFormSubmitted);

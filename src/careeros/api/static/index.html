@@ -30,6 +30,13 @@
   <main id="main">
     <section id="view-today" class="view" data-view="today" hidden>
       <h1>Today</h1>
+      <p class="view-intro">Your server-ordered workflow and attention center. Dates are classified in UTC and displayed in your local time.</p>
+      <p>
+        <label class="inline-label" for="today-use-learned">
+          <input id="today-use-learned" name="use_learned_preferences" type="checkbox" checked>
+          Use learned preferences
+        </label>
+      </p>
       <div id="today-status" class="status" role="status" aria-live="polite" tabindex="-1"></div>
       <div id="today-content" class="view-content"></div>
     </section>
