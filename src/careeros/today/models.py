@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Generic, Literal, TypeVar
 
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
 from careeros.database.reminders import StoredReminder
+from careeros.review.service import QueueItem
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,17 @@ class TodaySection(Generic[T]):
 
 
 @dataclass(frozen=True)
+class TodayReviewNext:
+    candidate_total: int
+    total: int
+    limit: Literal[3]
+    minimum_score: Literal[1]
+    personalized: bool
+    use_learned_preferences: bool
+    items: tuple[QueueItem, ...]
+
+
+@dataclass(frozen=True)
 class TodaySnapshot:
     as_of: str
     timezone: str
@@ -74,3 +86,4 @@ class TodaySnapshot:
     application_due_today: TodaySection[TodayApplication]
     application_work: TodaySection[TodayApplication]
     unstarted: TodaySection[TodayShortlist]
+    review_next: TodayReviewNext

@@ -300,6 +300,8 @@ from careeros.api.schemas import (
     TodayReminders,
     TodayReminderSection,
     TodayResponse,
+    TodayReview,
+    TodayReviewNext,
     TodayShortlist,
     TodayShortlistSection,
 )
@@ -1571,9 +1573,14 @@ def create_app(
     def today_endpoint(
         connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
         limit: Annotated[int, Query(ge=1, le=20)] = 10,
+        use_learned_preferences: bool = True,
     ) -> TodayResponse:
         """Return one bounded, coherent UTC Action Center snapshot."""
-        snapshot = build_today(connection, limit=limit)
+        snapshot = build_today(
+            connection,
+            limit=limit,
+            use_learned_preferences=use_learned_preferences,
+        )
         return TodayResponse(
             as_of=snapshot.as_of,
             timezone="UTC",
@@ -1632,6 +1639,22 @@ def create_app(
                             today_shortlist_dict(item)
                         )
                         for item in snapshot.unstarted.items
+                    ],
+                )
+            ),
+            review=TodayReview(
+                next=TodayReviewNext(
+                    candidate_total=snapshot.review_next.candidate_total,
+                    total=snapshot.review_next.total,
+                    limit=snapshot.review_next.limit,
+                    minimum_score=snapshot.review_next.minimum_score,
+                    personalized=snapshot.review_next.personalized,
+                    use_learned_preferences=(
+                        snapshot.review_next.use_learned_preferences
+                    ),
+                    items=[
+                        ReviewQueueItem.model_validate(review_queue_item_dict(item))
+                        for item in snapshot.review_next.items
                     ],
                 )
             ),

@@ -285,6 +285,8 @@ def test_min_score_filters_after_scoring(tmp_path: Path) -> None:
 
     assert len(all_outcome.items) == 3
     assert len(min_outcome.items) == 1
+    assert min_outcome.candidate_count == 3
+    assert min_outcome.qualified_count == 1
     assert min_outcome.items[0].ranked.match_score == 53
 
 
@@ -295,6 +297,7 @@ def test_limit_applies_after_min_score(tmp_path: Path) -> None:
 
     assert len(outcome.items) == 1
     assert outcome.candidate_count == 3
+    assert outcome.qualified_count == 3
 
 
 def test_source_filter_before_grouping(tmp_path: Path) -> None:

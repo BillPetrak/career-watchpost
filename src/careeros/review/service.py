@@ -135,6 +135,7 @@ class QueueOutcome:
     state: str
     items: tuple[QueueItem, ...]
     candidate_count: int
+    qualified_count: int
     min_score: int
     include_tracked: bool
 
@@ -643,6 +644,7 @@ def build_queue(
             state=state,
             items=(),
             candidate_count=0,
+            qualified_count=0,
             min_score=min_score,
             include_tracked=include_tracked,
         )
@@ -662,6 +664,7 @@ def build_queue(
     )
     if min_score > 0:
         ranked = [entry for entry in ranked if entry.match_score >= min_score]
+    qualified_count = len(ranked)
 
     meta = {
         group.representative.id: (resolved, tracking)
@@ -685,6 +688,7 @@ def build_queue(
         state=state,
         items=tuple(items[:limit]),
         candidate_count=candidate_count,
+        qualified_count=qualified_count,
         min_score=min_score,
         include_tracked=include_tracked,
     )

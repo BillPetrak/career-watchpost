@@ -547,6 +547,20 @@ class TodayShortlist(BaseModel):
     unstarted: TodayShortlistSection
 
 
+class TodayReviewNext(BaseModel):
+    candidate_total: int
+    total: int
+    limit: Literal[3]
+    minimum_score: Literal[1]
+    personalized: bool
+    use_learned_preferences: bool
+    items: list[ReviewQueueItem]
+
+
+class TodayReview(BaseModel):
+    next: TodayReviewNext
+
+
 class TodayResponse(BaseModel):
     """One bounded, coherent Action Center snapshot."""
 
@@ -557,6 +571,7 @@ class TodayResponse(BaseModel):
     reminders: TodayReminders
     applications: TodayApplications
     shortlist: TodayShortlist
+    review: TodayReview
 
 
 class ReminderCreateRequest(BaseModel):
@@ -1489,6 +1504,8 @@ __all__: tuple[str, ...] = (
     "TodayApplications",
     "TodayResponse",
     "TodayReminders",
+    "TodayReview",
+    "TodayReviewNext",
     "TodayShortlist",
     "TodayShortlistSection",
     "ReminderUpdateRequest",

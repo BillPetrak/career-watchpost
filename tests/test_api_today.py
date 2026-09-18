@@ -19,6 +19,17 @@ def test_today_missing_database_is_empty_and_does_not_create_file(
         "due_today": {"total": 0, "items": []},
         "work": {"total": 0, "items": []},
     }
+    assert response.json()["review"] == {
+        "next": {
+            "candidate_total": 0,
+            "total": 0,
+            "limit": 3,
+            "minimum_score": 1,
+            "personalized": False,
+            "use_learned_preferences": True,
+            "items": [],
+        }
+    }
     assert not path.exists()
 
 
@@ -47,8 +58,10 @@ def test_today_response_is_publicly_pruned_and_uses_server_sections(
         "reminders",
         "applications",
         "shortlist",
+        "review",
     }
     assert payload["timezone"] == "UTC"
     assert set(payload["reminders"]) == {"overdue", "due_today"}
     assert set(payload["applications"]) == {"overdue", "due_today", "work"}
     assert set(payload["shortlist"]) == {"unstarted"}
+    assert set(payload["review"]) == {"next"}
