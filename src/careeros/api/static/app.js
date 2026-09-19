@@ -1852,11 +1852,11 @@
       { label: "Saved searches", value: overview.saved_searches },
     ];
     stats.forEach(function (stat) {
-      statCards.appendChild(
-        el("div", { className: "stat-card", textContent: stat.label }),
-      );
+      var card = el("div", { className: "stat-card" });
+      card.appendChild(el("span", { className: "stat-label", textContent: stat.label }));
       var value = el("div", { className: "stat-value", textContent: String(countValue(stat.value)) });
-      statCards.appendChild(value);
+      card.appendChild(value);
+      statCards.appendChild(card);
     });
     content.appendChild(statCards);
 
@@ -1891,7 +1891,8 @@
   }
 
   function buildPipelineChunk(content, statusCounts) {
-    var section = el("section", { className: "chunk", textContent: "Application pipeline" });
+    var section = el("section", { className: "chunk" });
+    section.appendChild(el("h2", { textContent: "Application pipeline" }));
     var list = el("ul", { className: "pipeline-list" });
     var hasAny = false;
     Object.keys(statusCounts).forEach(function (status) {
@@ -1910,7 +1911,8 @@
   }
 
   function buildActionItemsChunk(content, actions) {
-    var section = el("section", { className: "chunk", textContent: "Actions" });
+    var section = el("section", { className: "chunk" });
+    section.appendChild(el("h2", { textContent: "Actions" }));
     var list = el("ul", { className: "action-list" });
     var hasAny = false;
     ["interview", "offer", "interested", "awaiting_progress"].forEach(function (kind) {
@@ -1937,7 +1939,8 @@
     var overdue = countValue(reminders.overdue_count);
     var openTotal = countValue(reminders.open_total);
     if (overdue === 0 && openTotal === 0) return;
-    var section = el("section", { className: "chunk", textContent: "Reminders" });
+    var section = el("section", { className: "chunk" });
+    section.appendChild(el("h2", { textContent: "Reminders" }));
     var summary = el("p", {
       className: "reminder-summary",
       textContent: overdue + " overdue, " + openTotal + " open.",
@@ -1970,7 +1973,8 @@
   }
 
   function buildHealthChunk(content, dueSources, sources) {
-    var section = el("section", { className: "chunk", textContent: "Source health" });
+    var section = el("section", { className: "chunk" });
+    section.appendChild(el("h2", { textContent: "Source health" }));
     var list = el("ul", { className: "health-list" });
     sources.forEach(function (source) {
       if (!isObject(source)) return;
@@ -1980,11 +1984,14 @@
       else statusText = "never";
       var note = "last " + statusText;
       if (source.due) note += ", due";
-      var item = el("li", { className: "health-item" });
+      var healthClass = source.last_succeeded === true
+        ? "health-success"
+        : (source.last_succeeded === false ? "health-failure" : "health-neutral");
+      var item = el("li", { className: "health-item " + healthClass });
       item.appendChild(el("span", { className: "health-source", textContent: displayText(source.source) }));
       item.appendChild(el("span", { className: "health-count", textContent: source.fetched + " fetched" }));
       item.appendChild(el("span", { className: "health-count", textContent: source.inserted + " inserted" }));
-      item.appendChild(el("span", { className: "health-ok", textContent: note }));
+      item.appendChild(el("span", { className: "health-state " + healthClass, textContent: "Status: " + note }));
       list.appendChild(item);
     });
     section.appendChild(list);
@@ -4338,9 +4345,9 @@
     var failedAny = false;
     REMINDER_OVERVIEW_SECTIONS.forEach(function (section) {
       var container = el("section", {
-        className: "chunk",
-        textContent: section.heading,
+        className: "chunk reminders-" + section.key.replace(/([A-Z])/g, "-$1").toLowerCase(),
       });
+      container.appendChild(el("h2", { textContent: section.heading }));
       var body = el("div", { className: "section-body" });
       container.appendChild(body);
       var outcome = fillRemindersSection(
@@ -4547,7 +4554,10 @@
   }
 
   function buildTodaySection(title, bucket, cardBuilder, emptyText) {
-    var section = el("section", { className: "chunk" });
+    var urgencyClass = title.indexOf("Overdue") === 0
+      ? " today-urgency-overdue"
+      : (title.indexOf("due later today") !== -1 ? " today-urgency-due" : "");
+    var section = el("section", { className: "chunk" + urgencyClass });
     section.appendChild(el("h2", { textContent: title }));
     section.appendChild(el("p", { className: "result-summary", textContent: "" }));
     var list = el("ul", { className: "job-list" });
@@ -4560,6 +4570,7 @@
       }
     });
     var total = countValue(bucket.total);
+    if (total === 0) section.className += " today-section-empty";
     section.querySelector(".result-summary").textContent = String(total) + " needing attention.";
     if (total === 0) section.appendChild(el("p", { className: "empty-note", textContent: emptyText || "Nothing here today." }));
     else section.appendChild(list);
