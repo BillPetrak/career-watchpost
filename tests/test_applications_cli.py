@@ -81,7 +81,7 @@ def test_application_set_first_output(tmp_path: Path, capsys) -> None:
         == 0
     )
     captured = capsys.readouterr()
-    assert f"Tracked job {job_id} as applied." in captured.out
+    assert f"Tracked job {job_id} as Applied." in captured.out
 
 
 def test_application_set_same_status_is_noop(tmp_path: Path, capsys) -> None:
@@ -100,7 +100,7 @@ def test_application_set_same_status_is_noop(tmp_path: Path, capsys) -> None:
         == 0
     )
     captured = capsys.readouterr()
-    assert f"Job {job_id} is already applied; no change." in captured.out
+    assert f"Job {job_id} is already Applied; no change." in captured.out
 
 
 def test_application_set_unknown_job(tmp_path: Path, capsys) -> None:
@@ -189,8 +189,8 @@ def test_application_history_output(tmp_path: Path, capsys) -> None:
     captured = capsys.readouterr()
     assert exit_code == 0
     assert f"Application history for job {job_id}" in captured.out
-    assert "- -> applied" in captured.out
-    assert "applied -> interview" in captured.out
+    assert "- -> Applied" in captured.out
+    assert "Applied -> Interview" in captured.out
     assert "sent CV" in captured.out
 
 

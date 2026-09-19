@@ -40,6 +40,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "careeros.api" = ["static/*.html", "static/*.js", "static/*.css", "static/*.svg"]
+"careeros.systemd" = ["*.service", "*.timer"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

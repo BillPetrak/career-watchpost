@@ -189,8 +189,10 @@ def get_job_by_id(
 def save_jobs(
     connection: sqlite3.Connection,
     jobs: Iterable[CollectedJob],
+    *,
+    commit: bool = True,
 ) -> SaveResult:
-    """Insert new jobs and update previously collected jobs."""
+    """Insert or update jobs, optionally leaving commit ownership to the caller."""
     inserted = 0
     updated = 0
 
@@ -252,7 +254,8 @@ def save_jobs(
             ),
         )
 
-    connection.commit()
+    if commit:
+        connection.commit()
     return SaveResult(inserted=inserted, updated=updated)
 
 

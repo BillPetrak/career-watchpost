@@ -49,7 +49,7 @@ def test_cli_profile_show_valid_json(
     assert "Skills:                 Python, SQL" in captured.out
     assert "Required skills:        Python" in captured.out
     assert "Preferred locations:    Greece, Remote" in captured.out
-    assert "Remote preference:      remote" in captured.out
+    assert "Remote preference:      Remote" in captured.out
     assert "Excluded terms:         intern" in captured.out
     assert "Hard excluded terms:    commission" in captured.out
     assert "Employment types:       Full-time" in captured.out
@@ -68,7 +68,7 @@ def test_cli_profile_show_valid_yaml(
 
     assert exit_code == 0
     assert "Machine Learning Engineer" in captured.out
-    assert "Remote preference:      remote" in captured.out
+    assert "Remote preference:      Remote" in captured.out
 
 
 def test_cli_profile_show_minimal_profile(
@@ -230,14 +230,29 @@ def test_cli_profile_init_defaults_to_private_path(
     capsys: pytest.CaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = tmp_path / "config" / "candidate_profile.yaml"
-    monkeypatch.setattr("careeros.cli.common.DEFAULT_PROFILE_PATH", target)
+    config_home = tmp_path / "config"
+    target = config_home / "careeros" / "candidate_profile.yaml"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
 
     exit_code = cli.main(["profile", "init"])
     capsys.readouterr()
 
     assert exit_code == 0
     assert target.exists()
+
+
+@pytest.mark.parametrize("command", ("init", "show", "validate"))
+def test_cli_profile_help_names_private_xdg_default(
+    command: str,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["profile", command, "--help"])
+
+    assert exit_info.value.code == 0
+    output = " ".join(capsys.readouterr().out.split())
+    assert "private XDG configuration path" in output
+    assert "${XDG_CONFIG_HOME:-~/.config}/careeros/candidate_profile.yaml" in output
 
 
 def test_cli_profile_init_refuses_existing_file(
@@ -291,10 +306,11 @@ def test_cli_profile_show_defaults_to_private_path(
     capsys: pytest.CaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = tmp_path / "config" / "candidate_profile.yaml"
+    config_home = tmp_path / "config"
+    target = config_home / "careeros" / "candidate_profile.yaml"
     target.parent.mkdir(parents=True, exist_ok=True)
     _write_yaml_profile(target, _ALL_FIELDS)
-    monkeypatch.setattr("careeros.cli.common.DEFAULT_PROFILE_PATH", target)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
 
     exit_code = cli.main(["profile", "show"])
     captured = capsys.readouterr()
@@ -309,10 +325,11 @@ def test_cli_profile_validate_defaults_to_private_path(
     capsys: pytest.CaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = tmp_path / "config" / "candidate_profile.yaml"
+    config_home = tmp_path / "config"
+    target = config_home / "careeros" / "candidate_profile.yaml"
     target.parent.mkdir(parents=True, exist_ok=True)
     _write_yaml_profile(target, _ALL_FIELDS)
-    monkeypatch.setattr("careeros.cli.common.DEFAULT_PROFILE_PATH", target)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
 
     exit_code = cli.main(["profile", "validate"])
     captured = capsys.readouterr()

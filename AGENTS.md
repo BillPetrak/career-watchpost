@@ -1,5 +1,17 @@
 # CareerOS — Agent instructions
 
+Product 1 Core is complete. Product 1 is in the v1.0 hardening/release phase;
+H2 is bounded visual polish, RC is integrated qualification, and additional
+job-source expansion is deferred to v1.1.
+
+Stable private defaults are XDG-based and independent of the checkout or
+installed environment: database
+`${XDG_DATA_HOME:-~/.local/share}/careeros/careeros.sqlite3`, Materials
+`${XDG_DATA_HOME:-~/.local/share}/careeros/materials`, and private profile
+`${XDG_CONFIG_HOME:-~/.config}/careeros/candidate_profile.yaml`. Explicit CLI
+paths win, then `CAREEROS_DATABASE` / `CAREEROS_MATERIALS_ROOT`, then XDG
+defaults. Read-only operations do not create absent persistent state.
+
 ## Quick start
 
 ```bash
@@ -21,6 +33,7 @@ uv run careeros diagnose      # verify environment
 | `uv run mypy` | Typecheck (strict) |
 | `uv run uvicorn careeros.api:app` | Serve the local FastAPI application |
 | `uv run careeros serve --database PATH` | Serve the protected local web application against an explicit database |
+| `uv run careeros database backup DESTINATION --database PATH` | Create a supported SQLite-only backup; Materials/profile remain separate |
 | `uv run careeros database migrate --database PATH` | Explicitly migrate a supported old schema; default backup suffix is `.pre-v12.backup.sqlite3` |
 | `uv run careeros database restore BACKUP --database PATH --confirm-replace` | Replace a SQLite database from a validated backup (managed Material files are separate) |
 | `uv run careeros collect arbeitnow --limit 10` | Collect jobs |
@@ -41,7 +54,7 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --format json` | Rank results as JSON with a `score_components` breakdown per result |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --no-feedback` | Rank without review-feedback adjustments |
 | `uv run careeros rank engineer --profile config/candidate_profile.example.json --no-adaptive` | Rank without persistent learned-preference adjustments |
-| `uv run careeros profile init [PATH] [--force]` | Create a starter candidate profile (default: private `config/candidate_profile.yaml`; refuses to overwrite without `--force`) |
+| `uv run careeros profile init [PATH] [--force]` | Create a starter candidate profile (default: private XDG config path; refuses to overwrite without `--force`) |
 | `uv run careeros profile validate [PATH]` | Validate a JSON/YAML candidate profile (default: private path) |
 | `uv run careeros profile show [PATH]` | Show a candidate profile readably (default: private path) |
 | `uv run careeros preference show [--format {text,json}] [--database PATH]` | Inspect stored explicit and learned matching preferences |
@@ -89,11 +102,10 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros review list [--decision D] [--limit N] [--database PATH]` | List review decisions, optionally filtered (read-only) |
 | `uv run careeros review history JOB_ID [--limit N] [--database PATH]` | Show the decision history for one job (read-only) |
 | `uv run careeros review next --profile PATH [--state S] [--min-score N] [--include-tracked] [--source S] [--location L] [--remote] [--grouped\|--no-grouped] [--limit N] [--format {text,json}] [--no-feedback] [--no-adaptive] [--database PATH]` | Rank the personalized daily review queue (read-only) |
-| `uv run python systemd/install.py --dry-run` | Preview systemd user-unit install (writes nothing) |
-| `uv run python systemd/install.py` | Install the systemd user service+timer (not enabled) |
-| `uv run python systemd/install.py --enable` | Install, then enable and start the timer |
-| `uv run python systemd/uninstall.py --dry-run` | Preview uninstall (writes nothing) |
-| `uv run python systemd/uninstall.py` | Remove the installed systemd user units |
+| `uv run careeros systemd install --dry-run` | Preview packaged systemd user-unit install (writes nothing) |
+| `uv run careeros systemd install [--units collect\|notify\|all] [--enable]` | Install wheel/source-packaged user units and optionally enable timers |
+| `uv run careeros systemd uninstall --dry-run [--units collect\|notify\|all]` | Preview exact-owned unit removal |
+| `uv run careeros systemd uninstall [--units collect\|notify\|all]` | Remove exact generated user units |
 | `loginctl enable-linger "$USER"` | Manual only: run the timer without a login session |
 
 The web Applications workspace uses `GET /application-pipeline` (default
@@ -110,10 +122,11 @@ registry order, and applies `--limit` per source. Respect provider polling
 limits — do not run repeated all-source collections more often than the most
 restrictive source permits (Himalayas: at most once per day).
 
-`collect due` collects only sources whose last completed run (success or
-failure) is older than their polling interval. A source with no completed run
-is due immediately, and a failed run delays the next automatic attempt by
-exactly one interval. Polling intervals live in
+`collect due` collects sources whose last completed run (success or failure)
+is older than their polling interval. A source with no completed run is due
+immediately, and a failed run delays the next automatic attempt by exactly one
+interval. If the newest attempt is incomplete, it is due immediately even when
+an older completion is recent. Polling intervals live in
 `src/careeros/collection_policies.py` (jobicy: 60 minutes, documented;
 remotive: 6 hours, documented per Remotive's "no more than four times a day"
 guidance; himalayas: 24 hours, documented because the feed refreshes every 24
@@ -129,6 +142,21 @@ attempt is recorded in the `collection_runs` table. `collect due` exits 0 when
 nothing is due or all due sources succeed, 1 when any due source fails or setup
 fails, and 75 when another collection already holds the database lock.
 
+A source's start marker commits first for crash observability. After fetch,
+job upserts, deterministic regrouping, and successful run bookkeeping commit
+atomically. An interruption before that commit leaves only an incomplete run;
+an interruption after it leaves an unambiguous success. On restart, a
+collection command repairs derived grouping when the newest attempt is
+incomplete and `collect due` retries it immediately. Source upserts remain
+idempotent; failed retries remain completed failures, distinct from the older
+incomplete attempt.
+
+All shared collector GET/POST helpers enforce a 16 MiB response ceiling from
+both `Content-Length` and a bounded actual read. Oversize bodies are explicit
+collection failures. Jobicy's request limit is the documented provider maximum
+of 200 results. The existing seven-source registry is frozen for v1.0;
+additional sources belong to v1.1.
+
 `collect status` and `collect history` are read-only observability commands:
 they never fetch jobs, never write to the database, and never alter scheduling
 state. `collect status` shows, per registered source in registry order: the
@@ -136,8 +164,9 @@ polling interval (documented or provisional), the last completed attempt and
 its outcome, fetched/inserted/updated counts, the last error when present, the
 next due timestamp, and the current due state. It captures one timezone-aware
 UTC `now` per invocation and uses the same scheduling rules as `collect due`
-(a source with no completed attempt is due, and a malformed stored timestamp
-is treated as due). `collect history` lists collection runs newest first
+(a source with no completed attempt or a newest incomplete attempt is due, and
+a malformed stored timestamp is treated as due). `collect history` lists
+collection runs newest first
 (default `--limit 20`), including incomplete/crashed attempts labelled
 `incomplete`; `--failed` restricts the list to completed failed attempts, and
 `--source` filters to one registered source. Both exit 0 on success and 1 on
@@ -199,6 +228,14 @@ operating system, so a stale companion file left behind after a crash never
 blocks a later run — do not delete lock files as a remedy. Lock-file contents
 are informational metadata only (pid, command, acquisition time, database
 path); the OS lock, not file contents, determines ownership.
+
+Every lock family uses the same fail-closed companion open: symlinks,
+directories/non-regular objects, link counts other than one, files not owned by
+the effective user, and pre-existing modes other than `0600` are rejected
+before metadata can be written. `O_NOFOLLOW`/`O_CLOEXEC` are used when
+available and the opened descriptor is validated with `fstat`; unsafe paths
+and their targets remain unmodified. A normal owned stale regular `0600` file
+continues to work.
 
 On contention a collection command prints a message to stderr, does not fetch
 any source, does not touch run history or the jobs table, and exits with code
@@ -575,11 +612,27 @@ uv run careeros database restore \
   --confirm-replace
 ```
 
-Recovery intentionally discards preference changes made after that backup.
-Private profile files are outside SQLite recovery. Managed Material bytes are
-also outside SQLite and must be preserved/restored as the matching materials
-root. Always rehearse migration and recovery on temporary copies; never mutate
-the user's real database during development or qualification.
+Recovery intentionally discards changes newer than the selected backup.
+Complete private state is a coordinated set: SQLite, the matching managed
+Materials root (including `.careeros-store`), and the private profile/config.
+SQLite backup/restore never includes the other two.
+
+The production runbook is: (1) stop the server, collection/notification
+workers, and enabled timers; (2) run `careeros database backup DEST --database
+DB`; (3) while all writers remain stopped, copy the entire matching Materials
+root with private permissions and marker intact, plus the private profile when
+applicable; (4) record the selected paths and backup time together; (5) restore
+SQLite only with `database restore` (which has no Materials-root option), then
+separately restore the matching Materials root to its XDG location and select
+it for subsequent operation with `CAREEROS_MATERIALS_ROOT`, or pass
+`--materials-root` only to a supporting command such as `material audit` or
+`serve`; restore/select the profile separately; (6) run `careeros material audit
+--database DB --materials-root ROOT` before restarting writers. The DB
+`material_store.store_id` and root marker are one binding. Missing/mismatched
+markers, corrupt/missing objects, unsafe paths/permissions, and inconsistent
+metadata fail closed; never edit markers or the DB to bypass the audit. Always
+rehearse migration/recovery on temporary copies; never mutate real private
+state during development or qualification.
 
 ## Candidate profile
 
@@ -592,7 +645,7 @@ top-level fields are silently ignored. All fields are optional:
 `preferred_employment_types`, `preferred_seniority`.
 
 ```bash
-uv run careeros profile init                       # create private config/candidate_profile.yaml
+uv run careeros profile init                       # create the private XDG profile
 uv run careeros profile init --force               # overwrite an existing profile
 uv run careeros profile init /tmp/me.json          # JSON starter at an explicit path
 uv run careeros profile validate                   # validate the private profile
@@ -600,9 +653,10 @@ uv run careeros profile validate config/candidate_profile.example.yaml
 uv run careeros profile show config/candidate_profile.example.json
 ```
 
-The default path is the **private** `config/candidate_profile.yaml`, which is
-gitignored and must never be committed; `init` refuses to overwrite an existing
-file unless `--force` is passed. The committed fictional examples
+The default path is the **private**
+`${XDG_CONFIG_HOME:-~/.config}/careeros/candidate_profile.yaml`, which must
+never be committed; `init` refuses to overwrite an existing file unless
+`--force` is passed. The committed fictional examples
 `config/candidate_profile.example.json` and
 `config/candidate_profile.example.yaml` are safe to use in docs, tests, and
 smoke runs — never the private path. `init` writes a commented starter whose
@@ -2035,8 +2089,10 @@ no-`careeros.cli`-import guarantee, and static-asset hygiene.
 
 ## systemd user units
 
-The `systemd/` directory holds templates, an installer, and an uninstaller for
-periodic user-manager jobs. Two independent unit sets exist:
+Unit templates ship as `careeros.systemd` package resources, so wheel and
+source installations expose the same `careeros systemd install|uninstall`
+contract. The top-level `systemd/*.py` files are compatibility wrappers only.
+Two independent unit sets exist:
 
 - **`collect`** — the `careeros-collect` oneshot service runs
   `careeros collect due` so CareerOS stays authoritative for source
@@ -2053,30 +2109,29 @@ periodic user-manager jobs. Two independent unit sets exist:
   a reminder that comes due while no desktop is available pops up once the next
   run finds one.
 
-`SuccessExitStatus=75` (exit 75 is the expected temporary lock-contention
-result and is treated as success; genuine failures still mark the service
-failed). The installer renders the templates with the absolute `uv` binary path
-and absolute project root, writes them to `~/.config/systemd/user`, and runs
-`systemctl --user daemon-reload`. It never touches the database. Existing unit
-files that differ from the generated content abort the install unless
-`--force` is passed. `--units {collect,notify,all}` selects which unit set to
-install (default `collect`), and `--enable` enables and starts the selected
-timer(s); without it the units are installed but not started. `--dry-run`
-previews everything without writing, and `--no-systemctl` writes the units
-while only printing the systemctl commands (used by tests). The uninstaller
-removes only files whose content matches the rendered templates and never
-touches the database.
+`SuccessExitStatus=75` (exit 75 is expected temporary lock contention and is
+treated as success; genuine failures still mark the service failed). The
+installer renders `ExecStart` with the absolute active Python interpreter and
+`-m careeros`, writes only to
+`${XDG_CONFIG_HOME:-~/.config}/systemd/user`, and runs `systemctl --user
+daemon-reload`. It never assumes a checkout or `uv`, never uses `sudo`, never
+touches system-wide units, and never touches the database. Differing existing
+unit files abort unless `--force` is passed. `--units
+{collect,notify,all}` selects the unit set (default `collect`); `--enable`
+starts selected timers. `--dry-run` writes nothing, and `--no-systemctl` is the
+isolated-test mode. Uninstall removes only exact generated content. Reinstall
+after deliberately replacing/moving the Python environment, using `--force`
+when replacing the old generated interpreter path.
 
 Lingering is intentionally never enabled automatically; run
 `loginctl enable-linger "$USER"` manually if a timer must run without a login
-session. The units embed the absolute project path, so re-run the installer
-after moving the repository (uninstall first if the old units should go).
+session.
 
 ## Project structure
 
 - `src/careeros/` — package root, entrypoint `careeros.cli:main`
-- `src/careeros/api/` — FastAPI application (first read-only slice: `/health`, `/jobs`, `/jobs/{job_id}`)
-- `src/careeros/api/static/` — zero-build read-only frontend (`/ui`): `index.html`, `app.js`, `style.css`
+- `src/careeros/api/` — protected local FastAPI application with Product-1 read and workflow-write endpoints
+- `src/careeros/api/static/` — zero-build local Product-1 workspace (`/ui`): `index.html`, `app.js`, `style.css`
 - `src/careeros/applications/` — application-tracking workflow (models, service)
 - `src/careeros/collectors/` — job-board API clients
 - `src/careeros/database/` — SQLite layer (schema, connection, persistence)
@@ -2084,16 +2139,16 @@ after moving the repository (uninstall first if the old units should go).
 - `src/careeros/notifications/` — local notification delivery (models, backend, service)
 - `src/careeros/presenters.py` — shared presentation helpers (job/group/ranked/coverage dicts, location display)
 - `src/careeros/saved_searches/` — saved workflow definitions and shared execution
-- `src/careeros/settings.py` — runtime settings (e.g. the `CAREEROS_DATABASE` env var)
+- `src/careeros/settings.py` — XDG defaults and explicit runtime overrides
+- `src/careeros/systemd/` — packaged user-unit templates and installed administration
 - `src/careeros/reminders/` — local follow-up reminders (models, service)
 - `src/careeros/review/` — daily review queue (models, service, render)
 - `src/careeros/source_stats/` — unified per-source statistics and quality diagnostics
 - `src/careeros/reporting/` — Career Snapshot dashboard (models, service, renderers)
 - `src/careeros/export/` — deterministic read-only exports (models, service, serializers, writer)
-- `src/careeros/{job_hunter,privacy,ranking}/` — stubs (empty, not implemented)
 - `tests/` — pytest suite, uses `tmp_path` for isolated SQLite databases
 - `config/` — YAML config (settings.example.yaml, candidate_profile.example.yaml)
-- `data/database/careeros.sqlite3` — default SQLite DB path
+- `data/database/` — legacy checkout-local/development directory, not the runtime default
 - `.env` — not loaded by app yet; reserved for future provider keys
 
 ## Shared presentation helpers
@@ -2144,10 +2199,10 @@ can assert on stable strings:
 
 ## Toolchain quirks
 
-- **No external runtime dependencies** — only stdlib + dev tools
+- **Bounded runtime dependencies** — PyYAML for profiles; FastAPI/Uvicorn only in the optional `api` extra; collector HTTP remains stdlib-only
 - **SQLite only** — schema managed in `schema.py`, not via migration tooling
 - **No CI/CD**, no pre-commit hooks, no Makefile
-- Module sub-packages beyond `collectors`, `database`, `grouping`, `saved_searches`, `reminders`, `review`, `source_stats`, `reporting`, and `export` are stubs; adding real code there is expected
+- Product-1 packages are implemented; do not describe `ranking`, `job_hunter`, or the API/static workspace as stubs
 - Ruff: `line-length = 88`, selected rules `E F I UP B`
 - `mypy` is strict, scoped to `src/careeros` only (not tests)
 

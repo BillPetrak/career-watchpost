@@ -37,6 +37,7 @@ from careeros.database.admin import (
     restore as restore_database,
 )
 from careeros.server import serve
+from careeros.systemd import run_command as run_systemd_command
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -46,6 +47,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if arguments.command == "diagnose":
         return print_diagnostics()
+
+    if arguments.command == "systemd":
+        return run_systemd_command(arguments)
 
     if arguments.command == "database":
         try:

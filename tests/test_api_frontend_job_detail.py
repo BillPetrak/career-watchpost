@@ -518,8 +518,8 @@ def test_core_job_section_renders_public_fields_only() -> None:
         'addField(fields, "Title", job.title);',
         'addField(fields, "Company", job.company);',
         'addField(fields, "Location", job.location);',
-        'addField(fields, "Remote", job.remote_status);',
-        'addField(fields, "Employment type", job.employment_type);',
+        'addField(fields, "Remote", publicEnumLabel(job.remote_status));',
+        'addField(fields, "Employment type", publicEnumLabel(job.employment_type));',
         'addField(fields, "Source", job.source);',
         'addField(fields, "Published", displayDate(job.published_at));',
     ):
@@ -598,7 +598,7 @@ def test_review_not_reviewed_and_public_shape() -> None:
     assert "data.items.length === 0" in render
     assert "renderReviewDecisionSection(body, job, null);" in render
     assert "data.items.length > 1" in render
-    assert 'addField(fields, "Decision", review.decision);' in js
+    assert 'addField(fields, "Decision", publicEnumLabel(review.decision));' in js
     assert 'addField(fields, "Decided", displayDate(review.created_at));' in js
     assert 'addField(fields, "Last updated", displayDate(review.updated_at));' in js
     assert 'typeof review.decision !== "string"' in js

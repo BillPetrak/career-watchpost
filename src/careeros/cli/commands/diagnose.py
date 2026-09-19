@@ -15,13 +15,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-from careeros.cli.common import PROJECT_ROOT
 from careeros.locking import lock_path_for
 from careeros.notifications.backend import BackendUnavailable, resolve_backend
+from careeros.settings import database_path
+from careeros.systemd import default_unit_dir
 
 NOTIFY_SERVICE_NAME = "careeros-reminder-notify.service"
 NOTIFY_TIMER_NAME = "careeros-reminder-notify.timer"
-NOTIFY_UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
+# Tests may replace this explicit probe directory. Normal runtime resolution is
+# dynamic so XDG_CONFIG_HOME set before invocation remains authoritative.
+NOTIFY_UNIT_DIR: Path | None = None
 
 _SYSTEMCTL_TIMEOUT_SECONDS = 10.0
 
@@ -53,9 +56,10 @@ def _timer_state() -> tuple[bool, str | None, str | None]:
     when they cannot be determined (no systemctl, timer not known to the
     manager).
     """
-    installed = (NOTIFY_UNIT_DIR / NOTIFY_TIMER_NAME).exists()
-    enabled = _systemctl(["--user", "is-enabled", NOTIFY_TIMER_NAME]) or None
-    active = _systemctl(["--user", "is-active", NOTIFY_TIMER_NAME]) or None
+    unit_dir = NOTIFY_UNIT_DIR or default_unit_dir()
+    installed = (unit_dir / NOTIFY_TIMER_NAME).exists()
+    enabled = _systemctl(["is-enabled", NOTIFY_TIMER_NAME]) or None
+    active = _systemctl(["is-active", NOTIFY_TIMER_NAME]) or None
     return installed, enabled, active
 
 
@@ -83,7 +87,7 @@ def _guidance(
     if not installed:
         steps.append(
             "Install and enable the notification timer with: "
-            "uv run python systemd/install.py --units notify --enable"
+            "careeros systemd install --units notify --enable"
         )
     elif enabled != "enabled":
         steps.append(
@@ -101,12 +105,12 @@ def _guidance(
 
 def print_diagnostics() -> int:
     """Print basic CareerOS environment and notification readiness."""
-    database_directory = PROJECT_ROOT / "data" / "database"
-    managed_database = database_directory / "careeros.sqlite3"
+    managed_database = database_path()
+    database_directory = managed_database.parent
 
     print("CareerOS diagnostics")
     print("--------------------")
-    print(f"Project root:      {PROJECT_ROOT}")
+    print(f"Database path:    {managed_database}")
     print(f"Python version:    {sys.version.split()[0]}")
     print(f"Python executable: {sys.executable}")
     print(f"SQLite library:    {sqlite3.sqlite_version}")

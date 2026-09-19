@@ -6,9 +6,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from careeros.cli import common
 from careeros.cli.common import load_profile_or_error
+from careeros.presentation import enum_label
 from careeros.ranking.scorer import CandidateProfile
+from careeros.settings import default_profile_path
 
 _PROFILE_YAML_SUFFIXES = {".yaml", ".yml"}
 _PROFILE_JSON_SUFFIXES = {".json"}
@@ -64,7 +65,9 @@ def _render_profile(profile: CandidateProfile) -> None:
     print(
         f"{'Preferred locations:':<24}{', '.join(profile.preferred_locations) or '-'}"
     )
-    print(f"{'Remote preference:':<24}{profile.remote_preference or '-'}")
+    print(
+        f"{'Remote preference:':<24}{enum_label(profile.remote_preference, empty='-')}"
+    )
     print(f"{'Excluded terms:':<24}{', '.join(profile.excluded_terms) or '-'}")
     print(
         f"{'Hard excluded terms:':<24}{', '.join(profile.hard_excluded_terms) or '-'}"
@@ -83,7 +86,7 @@ def run_profile_init(profile_path: Path | None, *, force: bool) -> int:
     starter and ``.json`` a JSON starter. Refuses to overwrite an existing file
     unless ``--force`` is passed.
     """
-    path = profile_path if profile_path is not None else common.DEFAULT_PROFILE_PATH
+    path = profile_path if profile_path is not None else default_profile_path()
 
     suffix = path.suffix.lower()
     if suffix in _PROFILE_YAML_SUFFIXES:
@@ -119,7 +122,7 @@ def run_profile_init(profile_path: Path | None, *, force: bool) -> int:
 
 def run_profile_show(profile_path: Path | None) -> int:
     """Show a candidate profile from a JSON or YAML file (read-only, no DB)."""
-    path = profile_path if profile_path is not None else common.DEFAULT_PROFILE_PATH
+    path = profile_path if profile_path is not None else default_profile_path()
     profile = load_profile_or_error(path)
     if profile is None:
         return 1
@@ -132,7 +135,7 @@ def run_profile_show(profile_path: Path | None) -> int:
 
 def run_profile_validate(profile_path: Path | None) -> int:
     """Validate a candidate profile file without displaying its contents."""
-    path = profile_path if profile_path is not None else common.DEFAULT_PROFILE_PATH
+    path = profile_path if profile_path is not None else default_profile_path()
     if load_profile_or_error(path) is None:
         return 1
 

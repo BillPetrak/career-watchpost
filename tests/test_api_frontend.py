@@ -328,6 +328,22 @@ def test_no_dynamic_api_data_rendered_via_unsafe_html_sinks() -> None:
     assert ".outerHTML" not in js
 
 
+def test_public_enum_labels_are_human_readable_at_render_sites() -> None:
+    js = _asset_bytes(_JS_NAME).decode("utf-8")
+    assert 'onsite_or_unspecified: "On-site or unspecified"' in js
+    assert 'review_later: "Review later"' in js
+    assert 'follow_up: "Follow up"' in js
+    assert "function publicEnumLabel(value)" in js
+    assert 'value.replace(/[_-]+/g, " ")' in js
+    assert 'addField(fields, "Remote", job.remote_status)' not in js
+    assert 'addField(fields, "Remote", member.remote_status)' not in js
+    assert 'addField(fields, "Decision", review.decision)' not in js
+    assert "textContent: displayText(reminder.kind)" not in js
+    assert js.count("publicEnumLabel(job.remote_status)") >= 4
+    assert "publicEnumLabel(review.decision)" in js
+    assert "publicEnumLabel(reminder.kind)" in js
+
+
 def test_home_and_jobs_view_and_hash_markers_exist() -> None:
     html = _asset_bytes(_HTML_NAME).decode("utf-8")
     js = _asset_bytes(_JS_NAME).decode("utf-8")

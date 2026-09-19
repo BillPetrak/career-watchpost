@@ -1,7 +1,7 @@
 "use strict";
 
 (function () {
-  // CareerOS read-only dashboard.
+  // CareerOS local workspace.
   //
   // This file contains ONLY presentation and local navigation/loading state.
   // It calls the documented Home endpoint (GET /report), the Jobs listing
@@ -737,6 +737,42 @@
     return typeof value === "string" && value.length > 0 ? value : "—";
   }
 
+  var PUBLIC_ENUM_LABELS = {
+    remote: "Remote",
+    onsite_or_unspecified: "On-site or unspecified",
+    interested: "Interested",
+    applied: "Applied",
+    interview: "Interview",
+    offer: "Offer",
+    rejected: "Rejected",
+    withdrawn: "Withdrawn",
+    shortlist: "Shortlist",
+    dismiss: "Dismiss",
+    review_later: "Review later",
+    follow_up: "Follow up",
+    review: "Review",
+    custom: "Custom",
+    attempted: "Attempted",
+    delivered: "Delivered",
+    failed: "Failed",
+    full_time: "Full time",
+    part_time: "Part time",
+    awaiting_progress: "Awaiting progress",
+    not_applicable: "Not applicable",
+  };
+
+  function publicEnumLabel(value) {
+    if (typeof value !== "string" || value.length === 0) return "—";
+    if (Object.prototype.hasOwnProperty.call(PUBLIC_ENUM_LABELS, value)) {
+      return PUBLIC_ENUM_LABELS[value];
+    }
+    if (/^[a-z0-9]+(?:[_-][a-z0-9]+)+$/.test(value)) {
+      var readable = value.replace(/[_-]+/g, " ");
+      return readable.charAt(0).toUpperCase() + readable.slice(1);
+    }
+    return value.charAt(0).toUpperCase() + value.slice(1);
+  }
+
   // Safe external job link: only http(s) URLs become links; everything else is
   // rendered as plain text so untrusted values are never executable markup.
   function safeExternalLink(url, text) {
@@ -838,7 +874,7 @@
     var found = MATERIAL_CATEGORIES.find(function (category) {
       return category.value === value;
     });
-    return found ? found.label : displayText(value);
+    return found ? found.label : publicEnumLabel(value);
   }
 
   function materialOpaqueId(value) {
@@ -1884,7 +1920,7 @@
         if (!isObject(item)) return;
         hasAny = true;
         var entry = el("li", { className: "action-item " + kind });
-        entry.appendChild(el("span", { className: "action-kind", textContent: kind }));
+        entry.appendChild(el("span", { className: "action-kind", textContent: publicEnumLabel(kind) }));
         entry.appendChild(
           el("span", { className: "action-title", textContent: displayText(item.label) }),
         );
@@ -1914,7 +1950,7 @@
         if (!isObject(reminder)) return;
         var item = el("li", { className: "reminder-item" });
         item.appendChild(
-          el("span", { className: "reminder-kind", textContent: displayText(reminder.kind) }),
+          el("span", { className: "reminder-kind", textContent: publicEnumLabel(reminder.kind) }),
         );
         var job = isObject(reminder.job) ? reminder.job : null;
         item.appendChild(
@@ -2021,8 +2057,8 @@
       var fields = el("dl", { className: "job-fields" });
       addField(fields, "Company", job.company);
       addField(fields, "Location", job.location);
-      addField(fields, "Remote", job.remote_status);
-      addField(fields, "Employment type", job.employment_type);
+      addField(fields, "Remote", publicEnumLabel(job.remote_status));
+      addField(fields, "Employment type", publicEnumLabel(job.employment_type));
       addField(fields, "Published", displayDate(job.published_at));
       addField(fields, "Source", job.source);
       card.appendChild(fields);
@@ -2665,8 +2701,8 @@
     addField(fields, "Location", definition.location);
     addField(fields, "Remote", definition.remote === true ? "Remote only" : definition.remote === false ? "Not remote" : "No preference");
     addField(fields, "Tracking", definition.untracked ? "Untracked only" : "All applications");
-    if (Array.isArray(definition.include_statuses) && definition.include_statuses.length) addField(fields, "Statuses", definition.include_statuses.join(", "));
-    if (Array.isArray(definition.exclude_statuses) && definition.exclude_statuses.length) addField(fields, "Excluded statuses", definition.exclude_statuses.join(", "));
+    if (Array.isArray(definition.include_statuses) && definition.include_statuses.length) addField(fields, "Statuses", definition.include_statuses.map(publicEnumLabel).join(", "));
+    if (Array.isArray(definition.exclude_statuses) && definition.exclude_statuses.length) addField(fields, "Excluded statuses", definition.exclude_statuses.map(publicEnumLabel).join(", "));
     if (definition.mode === "rank") addField(fields, "Minimum score", definition.min_score === null ? "None" : definition.min_score);
     return fields;
   }
@@ -2687,7 +2723,7 @@
     appendJobCardActions(card, job);
     var fields = el("dl", { className: "job-fields" });
     addField(fields, "Company", job.company); addField(fields, "Location", job.location);
-    addField(fields, "Remote", job.remote_status); addField(fields, "Employment type", job.employment_type);
+    addField(fields, "Remote", publicEnumLabel(job.remote_status)); addField(fields, "Employment type", publicEnumLabel(job.employment_type));
     addField(fields, "Source", job.source); addField(fields, "Published", displayDate(job.published_at));
     card.appendChild(fields);
     if (isObject(group) && Array.isArray(group.members) && group.members.length > 1) card.appendChild(el("p", { className: "group-note", textContent: group.members.length + " listings combined." }));
@@ -3401,8 +3437,8 @@
     var fields = el("dl", { className: "job-fields" });
     addField(fields, "Company", job.company);
     addField(fields, "Location", job.location);
-    addField(fields, "Remote", job.remote_status);
-    addField(fields, "Employment type", job.employment_type);
+    addField(fields, "Remote", publicEnumLabel(job.remote_status));
+    addField(fields, "Employment type", publicEnumLabel(job.employment_type));
     addField(fields, "Source", job.source);
     addField(fields, "Published", displayDate(job.published_at));
     addField(fields, "Match score", String(countValue(matchScore)));
@@ -4982,8 +5018,8 @@
     addField(fields, "Title", job.title);
     addField(fields, "Company", job.company);
     addField(fields, "Location", job.location);
-    addField(fields, "Remote", job.remote_status);
-    addField(fields, "Employment type", job.employment_type);
+    addField(fields, "Remote", publicEnumLabel(job.remote_status));
+    addField(fields, "Employment type", publicEnumLabel(job.employment_type));
     addField(fields, "Source", job.source);
     addField(fields, "Published", displayDate(job.published_at));
     section.appendChild(fields);
@@ -5130,8 +5166,8 @@
     var fields = el("dl", { className: "job-fields" });
     addField(fields, "Company", member.company);
     addField(fields, "Location", member.location);
-    addField(fields, "Remote", member.remote_status);
-    addField(fields, "Employment type", member.employment_type);
+    addField(fields, "Remote", publicEnumLabel(member.remote_status));
+    addField(fields, "Employment type", publicEnumLabel(member.employment_type));
     addField(fields, "Source", member.source);
     addField(fields, "Published", displayDate(member.published_at));
     card.appendChild(fields);
@@ -5169,7 +5205,7 @@
         return APPLICATION_STATUSES[index].label;
       }
     }
-    return value;
+    return publicEnumLabel(value);
   }
 
   function renderApplication(body, job, settled, retry) {
@@ -5357,8 +5393,7 @@
 
   function prepLabel(value) {
     if (value === "open") return "Applies";
-    if (value === "not_applicable") return "Not applicable";
-    return String(value || "").replace(/_/g, " ").replace(/(^| )\w/g, function (letter) { return letter.toUpperCase(); });
+    return publicEnumLabel(value);
   }
 
   // Deadline requirements intentionally have no satisfied state in the UI.
@@ -6623,7 +6658,7 @@
       );
     } else {
       var fields = el("dl", { className: "job-fields" });
-      addField(fields, "Decision", review.decision);
+      addField(fields, "Decision", publicEnumLabel(review.decision));
       addField(fields, "Decided", displayDate(review.created_at));
       addField(fields, "Last updated", displayDate(review.updated_at));
       body.appendChild(fields);
@@ -6826,7 +6861,7 @@
         return REMINDER_KINDS[index].label;
       }
     }
-    return value;
+    return publicEnumLabel(value);
   }
 
   // The backend requires a full ISO-8601 due timestamp with an explicit UTC

@@ -15,6 +15,7 @@ from typing import Any
 
 from careeros.database.reminders import StoredReminder
 from careeros.notifications.models import NotificationSummary
+from careeros.presentation import enum_label
 from careeros.presenters import (
     group_dict,
     job_dict,
@@ -179,7 +180,7 @@ def _render_pipeline(pipeline: ApplicationPipeline) -> str:
         "--------------------",
     ]
     for status, count in pipeline.status_counts:
-        lines.append(f"  {status + ':':<11} {count}")
+        lines.append(f"  {enum_label(status) + ':':<11} {count}")
     lines.append("")
     lines.append("Recently changed:")
     if not pipeline.recently_changed:
@@ -196,7 +197,7 @@ def _snapshot_line(snapshot: ApplicationSnapshot) -> str:
     job = snapshot.job
     return (
         f"- [{job.id}] {job.title} ({job.company or 'N/A'}, {job.source}): "
-        f"{snapshot.application.current_status.capitalize()}, "
+        f"{enum_label(snapshot.application.current_status)}, "
         f"updated {snapshot.application.updated_at}"
     )
 
@@ -248,7 +249,7 @@ def _render_reminders(reminders: Reminders) -> str:
             job = snapshot.job
             lines.append(
                 f"  - [{job.id}] {job.title} ({job.company or 'N/A'}, "
-                f"{job.source}): {reminder.kind}, due {reminder.due_at}"
+                f"{job.source}): {enum_label(reminder.kind)}, due {reminder.due_at}"
             )
             if reminder.message is not None:
                 lines.append(f"      Message: {reminder.message}")

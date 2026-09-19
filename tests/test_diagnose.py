@@ -14,7 +14,7 @@ from careeros.cli.commands import diagnose
 
 
 def _fake_systemctl(arguments: list[str]) -> str | None:
-    if not arguments or arguments[0] != "--user":
+    if not arguments:
         return None
     if "is-enabled" in arguments:
         return "enabled"
@@ -47,7 +47,7 @@ def _run_diagnose(
     monkeypatch.setattr(diagnose, "resolve_backend", lambda _preference: resolve)
 
     def fake_systemctl(arguments: list[str]) -> str | None:
-        if not systemctl or not arguments or arguments[0] != "--user":
+        if not systemctl or not arguments:
             return None
         if "is-enabled" in arguments:
             return enabled
@@ -114,7 +114,7 @@ def test_reports_uninstalled_timer_and_install_command(
         resolve=("desktop", ""),
     )
     assert "installed: False" in out
-    assert "systemd/install.py --units notify --enable" in out
+    assert "careeros systemd install --units notify --enable" in out
 
 
 def test_reports_installed_but_disabled_timer(
@@ -187,6 +187,23 @@ def test_timer_state_composes_installation_and_systemctl(
     monkeypatch.setattr(diagnose, "NOTIFY_UNIT_DIR", unit_dir)
     monkeypatch.setattr(diagnose, "_systemctl", _fake_systemctl)
     installed, enabled, active = diagnose._timer_state()
+    assert (installed, enabled, active) == (True, "enabled", "active")
+
+
+def test_timer_state_uses_xdg_config_home(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    config_home = tmp_path / "config"
+    unit_dir = config_home / "systemd/user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / diagnose.NOTIFY_TIMER_NAME).touch()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.setattr(diagnose, "NOTIFY_UNIT_DIR", None)
+    monkeypatch.setattr(diagnose, "_systemctl", _fake_systemctl)
+
+    installed, enabled, active = diagnose._timer_state()
+
     assert (installed, enabled, active) == (True, "enabled", "active")
 
     empty = tmp_path / "empty"

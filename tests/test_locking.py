@@ -9,7 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from careeros.locking import CollectionLockConflict, collection_lock, lock_path_for
+from careeros.locking import (
+    CollectionLockConflict,
+    UnsafeLockPathError,
+    collection_lock,
+    database_maintenance_lock,
+    lock_path_for,
+    notification_lock,
+)
 
 
 def test_lock_path_derives_deterministically(tmp_path: Path) -> None:
@@ -71,7 +78,9 @@ def test_lock_releases_after_exception(tmp_path: Path) -> None:
 
 def test_existing_unlocked_companion_file_does_not_block(tmp_path: Path) -> None:
     database = tmp_path / "careeros.sqlite3"
-    lock_path_for(database).write_text("leftover garbage from a dead process\n")
+    lock_path = lock_path_for(database)
+    lock_path.write_text("leftover garbage from a dead process\n")
+    lock_path.chmod(0o600)
     with collection_lock(database):
         pass
 
@@ -80,6 +89,7 @@ def test_malformed_metadata_does_not_crash_conflict_reporting(tmp_path: Path) ->
     database = tmp_path / "careeros.sqlite3"
     lock_path = lock_path_for(database)
     lock_path.write_text("not json at all")
+    lock_path.chmod(0o600)
     fd = os.open(lock_path, os.O_RDWR)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -202,3 +212,92 @@ def test_lock_released_when_owning_process_dies(tmp_path: Path) -> None:
     assert lock_path_for(database).exists()
     with collection_lock(database):
         pass
+
+
+@pytest.mark.parametrize(
+    ("lock", "suffix"),
+    ((collection_lock, ".lock"), (notification_lock, ".notify.lock")),
+)
+def test_lock_rejects_symlink_without_modifying_target(
+    tmp_path: Path,
+    lock,
+    suffix: str,
+) -> None:
+    database = tmp_path / "careeros.sqlite3"
+    target = tmp_path / "valuable.txt"
+    original = b"must remain byte-for-byte unchanged\n"
+    target.write_bytes(original)
+    target.chmod(0o600)
+    Path(f"{database.resolve()}{suffix}").symlink_to(target)
+
+    with pytest.raises(UnsafeLockPathError, match="symbolic links"):
+        with lock(database):
+            pass
+
+    assert target.read_bytes() == original
+
+
+@pytest.mark.parametrize("kind", ("directory", "hardlink", "permissive"))
+def test_collection_lock_rejects_unsafe_existing_companion_unchanged(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    database = tmp_path / "careeros.sqlite3"
+    lock_path = lock_path_for(database)
+    original = b"do not replace or truncate\n"
+
+    if kind == "directory":
+        lock_path.mkdir()
+    else:
+        target = tmp_path / "target"
+        target.write_bytes(original)
+        target.chmod(0o600)
+        if kind == "hardlink":
+            os.link(target, lock_path)
+        else:
+            lock_path.write_bytes(original)
+            lock_path.chmod(0o640)
+
+    with pytest.raises(UnsafeLockPathError):
+        with collection_lock(database):
+            pass
+
+    if kind == "directory":
+        assert lock_path.is_dir()
+    else:
+        assert lock_path.read_bytes() == original
+        assert target.read_bytes() == original
+
+
+def test_collection_lock_rejects_companion_not_owned_by_effective_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "careeros.sqlite3"
+    lock_path = lock_path_for(database)
+    original = b"owned elsewhere\n"
+    lock_path.write_bytes(original)
+    lock_path.chmod(0o600)
+    actual_owner = lock_path.stat().st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: actual_owner + 1)
+
+    with pytest.raises(UnsafeLockPathError, match="not owned"):
+        with collection_lock(database):
+            pass
+
+    assert lock_path.read_bytes() == original
+
+
+def test_database_maintenance_rejects_unsafe_notification_companion(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "careeros.sqlite3"
+    target = tmp_path / "notification-target"
+    target.write_bytes(b"unchanged")
+    target.chmod(0o600)
+    lock_path_for(database, ".notify.lock").symlink_to(target)
+
+    with pytest.raises(UnsafeLockPathError):
+        with database_maintenance_lock(database):
+            pass
+
+    assert target.read_bytes() == b"unchanged"

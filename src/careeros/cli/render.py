@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from careeros.applications.service import GroupTrackingInfo, group_tracking_info
 from careeros.database.groups import GroupedJob
 from careeros.database.jobs import StoredJob
+from careeros.presentation import enum_label
 from careeros.presenters import ranked_group_dict, ranked_job_dict
 from careeros.ranking.scorer import (
     MatchResult,
@@ -130,7 +131,7 @@ def _render_rank_flat(
         print(f"   ID:       {job.job.id}")
         print(f"   Company:  {job.job.company or 'N/A'}")
         print(f"   Location: {location_part}")
-        print(f"   Remote:   {job.job.remote_status or 'N/A'}")
+        print(f"   Remote:   {enum_label(job.job.remote_status)}")
         print(f"   Source:   {job.job.source}")
         print(f"   URL:      {job.job.url or 'N/A'}")
         if tracking_statuses is not None:
@@ -180,7 +181,7 @@ def _render_rank_grouped(
         print(f"   ID:       {rep.id}")
         print(f"   Company:  {rep.company or 'N/A'}")
         print(f"   Location: {location_part}")
-        print(f"   Remote:   {rep.remote_status or 'N/A'}")
+        print(f"   Remote:   {enum_label(rep.remote_status)}")
         print(f"   Source:   {_sources_line(group)}")
         print(f"   URL:      {urls or 'N/A'}")
         if tracking_statuses is not None:
@@ -226,7 +227,7 @@ def _rank_outcome_dict(outcome: RankOutcome) -> dict[str, object]:
 
 def _format_application_status(status: str | None) -> str:
     """Render a stored application status (or 'Untracked') for display."""
-    return status.capitalize() if status else "Untracked"
+    return enum_label(status, empty="Untracked")
 
 
 def _application_line(info: GroupTrackingInfo) -> str:
@@ -237,7 +238,7 @@ def _application_line(info: GroupTrackingInfo) -> str:
     """
     if info.status is None:
         return "Untracked"
-    label = info.status.capitalize()
+    label = enum_label(info.status)
     if info.on_representative or info.owner is None:
         return label
     return f"{label} (via job {info.owner.id}, {info.owner.source})"

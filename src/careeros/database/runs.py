@@ -59,6 +59,7 @@ def complete_run(
     inserted: int,
     updated: int,
     error: str | None,
+    commit: bool = True,
 ) -> None:
     """Record the outcome of a completed collection attempt."""
     connection.execute(
@@ -82,7 +83,26 @@ def complete_run(
             run_id,
         ),
     )
-    connection.commit()
+    if commit:
+        connection.commit()
+
+
+def latest_attempt_is_incomplete(
+    connection: sqlite3.Connection,
+    source: str,
+) -> bool:
+    """Return whether the newest recorded attempt needs an immediate retry."""
+    row = connection.execute(
+        """
+        SELECT finished_at
+        FROM collection_runs
+        WHERE source = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (source,),
+    ).fetchone()
+    return row is not None and row["finished_at"] is None
 
 
 def last_completed_attempt(

@@ -64,6 +64,15 @@ class NotificationLockConflict(LockConflict):
     lock_name = "notification"
 
 
+class UnsafeLockPathError(OSError):
+    """Raised when a lock companion is not a private, owned regular file."""
+
+    def __init__(self, lock_path: Path, reason: str) -> None:
+        super().__init__(f"unsafe lock companion {lock_path}: {reason}")
+        self.lock_path = lock_path
+        self.reason = reason
+
+
 def lock_path_for(database_path: Path, suffix: str = ".lock") -> Path:
     """Return the deterministic companion lock path for a database.
 
@@ -75,16 +84,24 @@ def lock_path_for(database_path: Path, suffix: str = ".lock") -> Path:
     return Path(str(database_path.resolve()) + suffix)
 
 
-def _read_metadata(lock_path: Path) -> dict[str, str]:
+def _read_metadata(fd: int) -> dict[str, str]:
     """Read diagnostic metadata from a lock file, tolerating any damage.
 
     Malformed or missing metadata yields an empty mapping; conflict reporting
-    must never crash on unreadable companion files.
+    must never crash on unreadable companion files. Read through the already
+    validated descriptor so a pathname swap cannot redirect even this
+    diagnostic read through a symlink.
     """
     try:
-        with open(lock_path, encoding="utf-8") as handle:
-            parsed = json.load(handle)
-    except (OSError, ValueError):
+        if hasattr(os, "pread"):
+            payload = os.pread(fd, 64 * 1024, 0)
+        else:  # pragma: no cover - supported POSIX platforms expose pread
+            position = os.lseek(fd, 0, os.SEEK_CUR)
+            os.lseek(fd, 0, os.SEEK_SET)
+            payload = os.read(fd, 64 * 1024)
+            os.lseek(fd, position, os.SEEK_SET)
+        parsed = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
         return {}
     if not isinstance(parsed, dict):
         return {}
@@ -189,21 +206,31 @@ def _lock(
     lock_path = lock_path_for(resolved, suffix)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    base_flags = os.O_RDWR
+    base_flags |= getattr(os, "O_CLOEXEC", 0)
+    base_flags |= getattr(os, "O_NOFOLLOW", 0)
+
+    created = False
     try:
-        if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
-            # Never silently chmod user-owned existing files.
-            pass
-    except OSError:
-        pass
+        fd = os.open(lock_path, base_flags | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+    except FileExistsError:
+        try:
+            fd = os.open(lock_path, base_flags)
+        except OSError as error:
+            raise UnsafeLockPathError(lock_path, _unsafe_open_reason(error)) from error
+
     try:
+        if created:
+            # ``mode`` is filtered through the caller's umask. Tightening a file
+            # created by this call is safe; pre-existing files are never repaired.
+            os.fchmod(fd, 0o600)
+        _validate_lock_descriptor(fd, lock_path)
         try:
             _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
         except OSError as error:
             if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
-                raise conflict_cls(
-                    resolved, lock_path, _read_metadata(lock_path)
-                ) from error
+                raise conflict_cls(resolved, lock_path, _read_metadata(fd)) from error
             raise
         _write_metadata(fd, command=command, database_path=resolved)
         try:
@@ -212,3 +239,29 @@ def _lock(
             _fcntl.flock(fd, _fcntl.LOCK_UN)
     finally:
         os.close(fd)
+
+
+def _unsafe_open_reason(error: OSError) -> str:
+    """Return a stable explanation for a fail-closed companion open."""
+    if error.errno == errno.ELOOP:
+        return "symbolic links are not allowed"
+    if error.errno in (errno.EISDIR, errno.ENXIO):
+        return "path is not a regular file"
+    return f"cannot open safely ({error.strerror or type(error).__name__})"
+
+
+def _validate_lock_descriptor(fd: int, lock_path: Path) -> None:
+    """Validate the opened object itself before locking or writing metadata."""
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        raise UnsafeLockPathError(lock_path, "path is not a regular file")
+    if info.st_nlink != 1:
+        raise UnsafeLockPathError(lock_path, "hardlinked files are not allowed")
+    if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+        raise UnsafeLockPathError(lock_path, "file is not owned by the current user")
+    mode = stat.S_IMODE(info.st_mode)
+    if mode != 0o600:
+        raise UnsafeLockPathError(
+            lock_path,
+            f"mode must be 0600 (found {mode:04o})",
+        )

@@ -263,7 +263,11 @@ def test_no_non_cli_module_imports_careeros_cli() -> None:
     cli_root = _PACKAGE_ROOT / "cli"
     violations: list[str] = []
     for path in _module_paths(_PACKAGE_ROOT):
-        if cli_root in path.parents or path == cli_root / "__init__.py":
+        if (
+            cli_root in path.parents
+            or path == cli_root / "__init__.py"
+            or path == _PACKAGE_ROOT / "__main__.py"
+        ):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):

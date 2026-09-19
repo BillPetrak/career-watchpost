@@ -63,7 +63,9 @@ class GroupingSummary:
     grouped_jobs: int
 
 
-def ensure_grouped(connection: sqlite3.Connection) -> RegroupStats:
+def ensure_grouped(
+    connection: sqlite3.Connection, *, commit: bool = True
+) -> RegroupStats:
     """Recompute canonical groups and persist them.
 
     Deterministic and idempotent: the same stored jobs always produce the same
@@ -97,7 +99,8 @@ def ensure_grouped(connection: sqlite3.Connection) -> RegroupStats:
                     ident.location_sig,
                 ),
             )
-    connection.commit()
+    if commit:
+        connection.commit()
     return RegroupStats(
         groups=len(groups),
         members=sum(len(group.members) for group in groups),

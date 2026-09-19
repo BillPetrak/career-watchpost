@@ -15,13 +15,14 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from careeros import settings
 from careeros.locking import LockConflict
 from careeros.ranking.profile import load_profile
 from careeros.ranking.scorer import CandidateProfile
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "database" / "careeros.sqlite3"
-DEFAULT_PROFILE_PATH = PROJECT_ROOT / "config" / "candidate_profile.yaml"
+DEFAULT_DATABASE_PATH = settings.DEFAULT_DATABASE_PATH
+DEFAULT_PROFILE_PATH = settings.DEFAULT_PROFILE_PATH
+
 
 # EX_TEMPFAIL from sysexits.h: a conventional "temporary failure, retry later"
 # code, distinct from 1 (collection/setup failure) and 2 (argparse errors).

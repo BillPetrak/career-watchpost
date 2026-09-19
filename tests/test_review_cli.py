@@ -85,7 +85,7 @@ def test_review_set_first_output(tmp_path: Path, capsys) -> None:
         == 0
     )
     captured = capsys.readouterr()
-    assert f"Set decision shortlist for job {job_id}." in captured.out
+    assert f"Set decision Shortlist for job {job_id}." in captured.out
 
 
 def test_review_set_with_note(tmp_path: Path, capsys) -> None:
@@ -110,7 +110,7 @@ def test_review_set_with_note(tmp_path: Path, capsys) -> None:
         == 0
     )
     captured = capsys.readouterr()
-    assert f"Set decision dismiss for job {job_id}." in captured.out
+    assert f"Set decision Dismiss for job {job_id}." in captured.out
     with connect(db_path) as connection:
         note = connection.execute("SELECT note FROM review_events").fetchone()["note"]
     assert note == "not a fit"
@@ -139,7 +139,7 @@ def test_review_set_same_decision_is_noop(tmp_path: Path, capsys) -> None:
         == 0
     )
     captured = capsys.readouterr()
-    assert f"Job {job_id} is already shortlist; no change." in captured.out
+    assert f"Job {job_id} is already Shortlist; no change." in captured.out
 
 
 def test_review_set_transition_output(tmp_path: Path, capsys) -> None:
@@ -165,7 +165,7 @@ def test_review_set_transition_output(tmp_path: Path, capsys) -> None:
         == 0
     )
     captured = capsys.readouterr()
-    assert f"Updated job {job_id} to dismiss." in captured.out
+    assert f"Updated job {job_id} to Dismiss." in captured.out
 
 
 def test_review_set_unknown_job(tmp_path: Path, capsys) -> None:
@@ -221,7 +221,7 @@ def test_review_show_reviewed_output(tmp_path: Path, capsys) -> None:
     assert "Python Engineer" in captured.out
     assert "Tech Corp" in captured.out
     assert "arbeitnow" in captured.out
-    assert "shortlist" in captured.out
+    assert "Shortlist" in captured.out
     assert "First reviewed:" in captured.out
     assert "Last updated:" in captured.out
     assert "top pick" in captured.out
@@ -314,8 +314,8 @@ def test_review_history_output(tmp_path: Path, capsys) -> None:
     captured = capsys.readouterr()
     assert exit_code == 0
     assert f"Review history for job {job_id}" in captured.out
-    assert "- -> shortlist" in captured.out
-    assert "shortlist -> dismiss" in captured.out
+    assert "- -> Shortlist" in captured.out
+    assert "Shortlist -> Dismiss" in captured.out
     assert "changed my mind" in captured.out
 
 
@@ -381,8 +381,8 @@ def test_review_list_output(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert "Review decisions" in captured.out
     assert "Python Engineer" in captured.out
-    assert "shortlist" in captured.out
-    assert "dismiss" in captured.out
+    assert "Shortlist" in captured.out
+    assert "Dismiss" in captured.out
 
 
 def test_review_list_decision_filter(tmp_path: Path, capsys) -> None:
@@ -438,8 +438,8 @@ def test_review_list_decision_filter(tmp_path: Path, capsys) -> None:
     )
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert "Filter: decision=shortlist" in captured.out
-    assert "shortlist" in captured.out
+    assert "Filter: decision=Shortlist" in captured.out
+    assert "Decision: Shortlist" in captured.out
     assert "dismiss" not in captured.out
 
 
@@ -597,7 +597,7 @@ def test_review_next_output(tmp_path: Path, capsys) -> None:
     assert exit_code == 0
     assert "Review queue" in captured.out
     assert "Mode:    grouped" in captured.out
-    assert "State:   unreviewed" in captured.out
+    assert "State:   Unreviewed" in captured.out
     assert "[Score" in captured.out
 
 
@@ -628,7 +628,7 @@ def test_review_next_state_filter(tmp_path: Path, capsys) -> None:
     )
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert "Decision: shortlist" in captured.out
+    assert "Decision: Shortlist" in captured.out
     assert "Python Engineer" in captured.out
 
 

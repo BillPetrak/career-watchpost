@@ -18,9 +18,9 @@ from careeros.collectors.normalization import employment_type, optional_string
 API_URL = "https://jobicy.com/api/v2/remote-jobs"
 SOURCE_NAME = "jobicy"
 
-# The API returns the latest listings only, capped at 100 with no pagination.
-# The server silently clamps the count parameter to the 1..100 range.
-MAX_API_LIMIT = 100
+# Jobicy documents ``count`` values through 200. The API exposes the latest
+# listings without pagination, so one request is deliberately capped there.
+MAX_API_LIMIT = 200
 
 
 def _source_job_id(value: object) -> str | None:

@@ -24,7 +24,12 @@ from careeros.collectors import COLLECTORS, Collector, CollectorName
 from careeros.database.connection import connect
 from careeros.database.groups import ensure_grouped
 from careeros.database.jobs import save_jobs
-from careeros.database.runs import complete_run, insert_run, last_completed_attempt
+from careeros.database.runs import (
+    complete_run,
+    insert_run,
+    last_completed_attempt,
+    latest_attempt_is_incomplete,
+)
 from careeros.database.schema import initialize_schema
 from careeros.scheduling import due_sources
 
@@ -67,6 +72,15 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _repair_grouping_after_interruption(
+    connection: sqlite3.Connection,
+    sources: Sequence[CollectorName],
+) -> None:
+    """Repair derived grouping when the newest attempt was interrupted."""
+    if any(latest_attempt_is_incomplete(connection, source) for source in sources):
+        ensure_grouped(connection)
+
+
 def _run_collection(
     connection: sqlite3.Connection,
     *,
@@ -87,7 +101,9 @@ def _run_collection(
         run_id = insert_run(connection, source=source, started_at=clock())
         try:
             jobs = collectors[source](limit=limit)
-            saved = save_jobs(connection, jobs)
+            connection.execute("BEGIN IMMEDIATE")
+            saved = save_jobs(connection, jobs, commit=False)
+            ensure_grouped(connection, commit=False)
             complete_run(
                 connection,
                 run_id=run_id,
@@ -97,7 +113,9 @@ def _run_collection(
                 inserted=saved.inserted,
                 updated=saved.updated,
                 error=None,
+                commit=False,
             )
+            connection.commit()
             yield CollectionResult(
                 source=source,
                 fetched=len(jobs),
@@ -152,6 +170,7 @@ def collect_all(
 
     with connect(database_path) as connection:
         initialize_schema(connection)
+        _repair_grouping_after_interruption(connection, order)
         yield from _run_collection(
             connection,
             sources=order,
@@ -159,7 +178,6 @@ def collect_all(
             limit=limit,
             clock=clock,
         )
-        ensure_grouped(connection)
 
 
 def collect_due(
@@ -188,8 +206,14 @@ def collect_due(
 
     with connect(database_path) as connection:
         initialize_schema(connection)
+        _repair_grouping_after_interruption(connection, order)
         last_attempts = {
-            source: last_completed_attempt(connection, source) for source in order
+            source: (
+                None
+                if latest_attempt_is_incomplete(connection, source)
+                else last_completed_attempt(connection, source)
+            )
+            for source in order
         }
         due = due_sources(
             now=clock(),
@@ -204,7 +228,6 @@ def collect_due(
             limit=limit,
             clock=clock,
         )
-        ensure_grouped(connection)
 
 
 def collect_one(
@@ -218,6 +241,9 @@ def collect_one(
     """Run a single-source collection attempt on an open connection."""
     if clock is None:
         clock = _utc_now
+    # Grouping is a global derived view. A manual run for one source must also
+    # repair a pre-hardening partial commit left by another registered source.
+    _repair_grouping_after_interruption(connection, tuple(collectors))
     result = next(
         iter(
             _run_collection(
@@ -229,6 +255,4 @@ def collect_one(
             )
         )
     )
-    if result.succeeded:
-        ensure_grouped(connection)
     return result

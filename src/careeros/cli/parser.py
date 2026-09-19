@@ -11,11 +11,18 @@ import argparse
 from pathlib import Path
 
 from careeros.applications.models import APPLICATION_STATUSES
-from careeros.cli.common import _SOURCE_LABELS, DEFAULT_DATABASE_PATH
+from careeros.cli.common import _SOURCE_LABELS
 from careeros.collectors import COLLECTORS
 from careeros.reminders.models import REMINDER_KINDS
 from careeros.review.models import DECISION_VALUES, QUEUE_STATES
 from careeros.saved_searches.models import SEARCH_MODES
+from careeros.settings import database_path
+from careeros.systemd import add_parser as add_systemd_parser
+
+_PRIVATE_PROFILE_DEFAULT_HELP = (
+    "private XDG configuration path "
+    "(${XDG_CONFIG_HOME:-~/.config}/careeros/candidate_profile.yaml)"
+)
 
 
 def _positive(value: str) -> int:
@@ -27,12 +34,17 @@ def _positive(value: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the CareerOS command-line parser."""
+    default_database = database_path()
+    # Keep the established parser declarations compact while resolving the
+    # environment-sensitive default once for this parser instance.
+    DEFAULT_DATABASE_PATH = default_database
     parser = argparse.ArgumentParser(
         prog="careeros",
         description="Local-first career intelligence tools.",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
+    add_systemd_parser(subparsers)
 
     database_parser = subparsers.add_parser(
         "database", help="Safely administer a CareerOS database."
@@ -45,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Back up the SQLite database only; managed material files are not included.",
     )
     backup_parser.add_argument("destination", type=Path)
-    backup_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    backup_parser.add_argument("--database", type=Path, default=default_database)
     migrate_parser = database_commands.add_parser(
         "migrate",
         help="Migrate the SQLite database only; managed material files are not migrated.",
@@ -472,8 +484,8 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         help=(
-            "Destination path (.json/.yaml/.yml); defaults to the private "
-            "config/candidate_profile.yaml."
+            "Destination path (.json/.yaml/.yml); defaults to the "
+            f"{_PRIVATE_PROFILE_DEFAULT_HELP}."
         ),
     )
     init_parser.add_argument(
@@ -493,7 +505,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Path to a candidate profile JSON or YAML file; defaults to the "
-            "private config/candidate_profile.yaml."
+            f"{_PRIVATE_PROFILE_DEFAULT_HELP}."
         ),
     )
 
@@ -508,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Path to a candidate profile JSON or YAML file; defaults to the "
-            "private config/candidate_profile.yaml."
+            f"{_PRIVATE_PROFILE_DEFAULT_HELP}."
         ),
     )
 
@@ -1148,7 +1160,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Workflow mode (search or rank).",
     )
-    _add_saved_search_filter_flags(create_parser)
+    _add_saved_search_filter_flags(create_parser, default_database)
 
     list_parser = saved_search_commands.add_parser(
         "list",
@@ -1204,7 +1216,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=SEARCH_MODES,
         help="Workflow mode (immutable after creation; changing is rejected).",
     )
-    _add_saved_search_filter_flags(update_parser)
+    _add_saved_search_filter_flags(update_parser, default_database)
     update_parser.add_argument(
         "--clear-source",
         action="store_true",
@@ -1285,7 +1297,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Collapse cross-source duplicates into one record per group.",
     )
-    _add_export_common_flags(jobs_parser)
+    _add_export_common_flags(jobs_parser, default_database)
 
     ranked_parser = export_commands.add_parser(
         "ranked",
@@ -1324,7 +1336,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable persistent learned-preference adjustments.",
     )
-    _add_export_common_flags(ranked_parser)
+    _add_export_common_flags(ranked_parser, default_database)
 
     review_parser = export_commands.add_parser(
         "review",
@@ -1378,7 +1390,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Export every job individually without collapsing duplicates.",
     )
-    _add_export_common_flags(review_parser)
+    _add_export_common_flags(review_parser, default_database)
 
     source_stats_parser = export_commands.add_parser(
         "source-stats",
@@ -1389,7 +1401,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[*COLLECTORS],
         help="Only export statistics for this source.",
     )
-    _add_export_common_flags(source_stats_parser)
+    _add_export_common_flags(source_stats_parser, default_database)
 
     history_parser = export_commands.add_parser(
         "collection-history",
@@ -1405,7 +1417,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only export completed failed runs.",
     )
-    _add_export_common_flags(history_parser)
+    _add_export_common_flags(history_parser, default_database)
 
     return parser
 
@@ -1437,7 +1449,9 @@ def _add_export_filter_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_export_common_flags(parser: argparse.ArgumentParser) -> None:
+def _add_export_common_flags(
+    parser: argparse.ArgumentParser, default_database: Path
+) -> None:
     """Add the flags shared by every export subcommand."""
     parser.add_argument(
         "--limit",
@@ -1465,12 +1479,14 @@ def _add_export_common_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--database",
         type=Path,
-        default=DEFAULT_DATABASE_PATH,
+        default=default_database,
         help="SQLite database path.",
     )
 
 
-def _add_saved_search_filter_flags(parser: argparse.ArgumentParser) -> None:
+def _add_saved_search_filter_flags(
+    parser: argparse.ArgumentParser, default_database: Path
+) -> None:
     """Add the shared filter flags used by saved-search create and update."""
     parser.add_argument(
         "--grouped",
@@ -1540,6 +1556,6 @@ def _add_saved_search_filter_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--database",
         type=Path,
-        default=DEFAULT_DATABASE_PATH,
+        default=default_database,
         help="SQLite database path.",
     )

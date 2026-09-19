@@ -19,6 +19,7 @@ from careeros.database.jobs import get_job_by_id
 from careeros.database.review import latest_event_note as review_latest_event_note
 from careeros.database.schema import initialize_schema
 from careeros.locking import CollectionLockConflict, collection_lock
+from careeros.presentation import enum_label
 from careeros.review.feedback import build_feedback_set
 from careeros.review.models import (
     UnknownJobError as ReviewUnknownJobError,
@@ -67,12 +68,13 @@ def run_review_set(
         print(f"Review failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
+    label = enum_label(decision)
     if result.created:
-        print(f"Set decision {decision} for job {job_id}.")
+        print(f"Set decision {label} for job {job_id}.")
     elif result.changed:
-        print(f"Updated job {job_id} to {decision}.")
+        print(f"Updated job {job_id} to {label}.")
     else:
-        print(f"Job {job_id} is already {decision}; no change.")
+        print(f"Job {job_id} is already {label}; no change.")
     return 0
 
 
@@ -127,7 +129,7 @@ def run_review_show(job_id: int, database_path: Path) -> int:
     print(f"{'Company:':<16}{job.company or 'N/A'}")
     print(f"{'Source:':<16}{job.source}")
     print(f"{'URL:':<16}{job.url or 'N/A'}")
-    print(f"{'Decision:':<16}{decision.decision}")
+    print(f"{'Decision:':<16}{enum_label(decision.decision)}")
     print(f"{'First reviewed:':<16}{decision.created_at}")
     print(f"{'Last updated:':<16}{decision.updated_at}")
     if note is not None:
@@ -156,7 +158,7 @@ def run_review_list(
     print("----------------")
 
     if decisions:
-        print(f"Filter: decision={', '.join(decisions)}")
+        print(f"Filter: decision={', '.join(enum_label(item) for item in decisions)}")
 
     if not items:
         print()
@@ -171,7 +173,7 @@ def run_review_list(
         print(f"   Job ID:   {job.id}")
         print(f"   Company:  {job.company or 'N/A'}")
         print(f"   Source:   {job.source}")
-        print(f"   Decision: {decision.decision}")
+        print(f"   Decision: {enum_label(decision.decision)}")
         print(f"   First:    {decision.created_at}")
         print(f"   Updated:  {decision.updated_at}")
         if item.latest_note is not None:
@@ -210,8 +212,8 @@ def run_review_history(
         return 0
 
     for event in events:
-        old_decision = event.old_decision or "-"
-        new_decision = event.new_decision or "none"
+        old_decision = enum_label(event.old_decision, empty="-")
+        new_decision = enum_label(event.new_decision, empty="None")
         print()
         print(f"Event {event.id} | {event.created_at}")
         print(f"  Decision: {old_decision} -> {new_decision}")

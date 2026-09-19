@@ -10,6 +10,7 @@ from pathlib import Path
 from careeros.cli.common import no_job_found_message
 from careeros.database.connection import connect_read_only
 from careeros.database.jobs import get_job_by_id
+from careeros.presentation import enum_label
 from careeros.text import clean_description
 
 
@@ -33,8 +34,8 @@ def run_show(job_id: int, database_path: Path) -> int:
     print(f"Title:            {job.title}")
     print(f"Company:          {job.company or 'N/A'}")
     print(f"Location:         {job.location or 'N/A'}")
-    print(f"Remote status:    {job.remote_status or 'N/A'}")
-    print(f"Employment type:  {job.employment_type or 'N/A'}")
+    print(f"Remote status:    {enum_label(job.remote_status)}")
+    print(f"Employment type:  {enum_label(job.employment_type)}")
     print(f"Source:           {job.source}")
     print(f"Source job ID:    {job.source_job_id or 'N/A'}")
     print(f"Published:        {job.published_at or 'N/A'}")

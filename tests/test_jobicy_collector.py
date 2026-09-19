@@ -233,7 +233,7 @@ def test_fetch_clamps_limit_above_api_max(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(collectors_http, "urlopen", fake_urlopen)
 
-    result = jobicy.fetch_jobs(limit=150)
+    result = jobicy.fetch_jobs(limit=250)
 
     assert len(result) == MAX_API_LIMIT
-    assert requested_urls == ["https://jobicy.com/api/v2/remote-jobs?count=100"]
+    assert requested_urls == ["https://jobicy.com/api/v2/remote-jobs?count=200"]

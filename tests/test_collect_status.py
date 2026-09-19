@@ -114,6 +114,8 @@ def test_incomplete_attempt_does_not_replace_last_completed(tmp_path: Path) -> N
     assert statuses["jobicy"].last_attempt == _EPOCH - timedelta(hours=1)
     assert statuses["jobicy"].last_succeeded is True
     assert statuses["jobicy"].incomplete_runs == 1
+    assert statuses["jobicy"].due is True
+    assert statuses["jobicy"].next_due is None
 
 
 def test_malformed_timestamp_handled_safely_and_source_is_due(tmp_path: Path) -> None:
@@ -222,7 +224,12 @@ def test_cli_status_surfaces_incomplete_runs(
     monkeypatch.setattr("careeros.cli.common._utc_now", lambda: _EPOCH)
     assert cli.main(["collect", "status", "--database", str(database_path)]) == 0
     captured = capsys.readouterr()
-    assert "Incomplete runs: 1" in captured.out
+    jobicy_block = next(
+        block for block in captured.out.split("\n\n") if block.startswith("Jobicy\n")
+    )
+    assert "Next due:       now" in jobicy_block
+    assert "State:          due" in jobicy_block
+    assert "Incomplete runs: 1" in jobicy_block
 
 
 def test_cli_status_does_not_mutate_database(tmp_path: Path, capsys) -> None:

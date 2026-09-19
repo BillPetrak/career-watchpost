@@ -2,6 +2,11 @@
 
 CareerOS is a privacy-first career intelligence platform.
 
+**Product 1 Core is complete. Product 1 is in the v1.0 hardening and release
+phase.** H1 is limited to production correctness and operational hardening;
+bounded visual polish follows in H2, then integrated release qualification.
+Additional job-source expansion is deferred to v1.1.
+
 ## Adaptive matching preferences (R4)
 
 CareerOS schema v12 adds persistent **Matching Preferences** to the local
@@ -48,7 +53,7 @@ become personalized feeds. Today uses preferences only for its bounded Review
 next section, with **Use learned preferences** controlling the learned layer for
 that invocation.
 
-### Schema v12 upgrade and recovery
+### Schema v12 upgrade
 
 Upgrade an existing v11 database explicitly while CareerOS processes using it
 are stopped:
@@ -61,8 +66,7 @@ Before the normal v11-to-v12 migration, the administration flow creates the
 SQLite backup
 `/path/to/careeros.sqlite3.pre-v12.backup.sqlite3` (unless an operator explicitly
 selects the acknowledged no-backup path; `--backup` chooses another destination).
-There is no down migration. To recover, stop CareerOS processes and restore the
-pre-v12 backup:
+There is no down migration. The database-only rollback is:
 
 ```bash
 uv run careeros database restore \
@@ -71,11 +75,9 @@ uv run careeros database restore \
   --confirm-replace
 ```
 
-This returns the SQLite database to its pre-upgrade v11 state and intentionally
-discards preference changes made after the backup. Private candidate-profile
-files remain separate from SQLite recovery. Managed Material bytes also remain
-outside SQLite and must be preserved/restored with their matching materials
-root.
+This returns SQLite to its pre-upgrade v11 state and intentionally discards
+database changes made after the backup. It does not restore Materials or the
+private candidate profile; see the complete recovery runbook below.
 
 ## Private reusable Materials (R3 M2)
 
@@ -108,10 +110,6 @@ Unsafe operations require `X-CareerOS-Write: 1`; semantic draft mutations use
 independent package and Preparation revision headers. Pipeline responses expose
 only answer-free lifecycle facts. There is no package CLI or generic export.
 
-Its first working module will be an AI-assisted job discovery and
-recommendation system that collects job advertisements, normalizes them,
-stores them locally, ranks them, and produces explainable recommendations.
-
 ## Design principles
 
 - Local-first storage
@@ -122,17 +120,6 @@ stores them locally, ranks them, and produces explainable recommendations.
 - Automated testing
 - Clear documentation
 
-## Planned modules
-
-- Job Hunter
-- Candidate Profile
-- Job Ranking
-- Feedback and Preference Learning
-- Skill Intelligence
-- CV Analysis
-- Career Analytics
-- Reporting and Notifications
-
 ## Architecture
 
 CareerOS owns its data, business logic, and provider interfaces.
@@ -140,9 +127,7 @@ CareerOS owns its data, business logic, and provider interfaces.
 External systems such as Hermes and LLM providers will be treated as
 replaceable integrations rather than permanent dependencies.
 
-## Current status
-
-Milestone 1: repository and development foundation.
+## Product 1 capabilities
 
 Current CLI capabilities include multi-source job collection (`collect
 <source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
@@ -155,6 +140,28 @@ Snapshot), and `diagnose` (including notification readiness).
 Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
+
+### Installation and private runtime state
+
+The wheel and source checkout use the same stable XDG-compatible defaults:
+
+- database: `${XDG_DATA_HOME:-~/.local/share}/careeros/careeros.sqlite3`
+- managed Materials: `${XDG_DATA_HOME:-~/.local/share}/careeros/materials`
+- private profile: `${XDG_CONFIG_HOME:-~/.config}/careeros/candidate_profile.yaml`
+
+`--database` is authoritative when supplied; otherwise
+`CAREEROS_DATABASE` overrides the database default. An explicit
+`--materials-root` is authoritative where supported; otherwise
+`CAREEROS_MATERIALS_ROOT` overrides the Materials default. Explicit profile
+paths always win. `~`, `XDG_DATA_HOME`, and `XDG_CONFIG_HOME` are expanded,
+and read-only operations do not create absent state. Recreating a wheel or
+virtual environment therefore does not move private state.
+
+CareerOS does not silently migrate the former checkout-local defaults. An
+existing user should stop writers, make a supported SQLite backup, copy the
+old database, matching Materials root, and private profile deliberately to the
+paths above (or keep using explicit environment/CLI overrides), then run
+`careeros material audit` against the selected database and Materials root.
 
 A local web dashboard (Home, Today, Jobs, Review, Reviewed, Applications,
 Reminders, Matching Preferences, and a per-job detail view) is served by the
@@ -204,8 +211,8 @@ the job-scoped list endpoints so the normal absent state ("Not tracked." /
 "Not reviewed.") is an empty 200 list rather than a canonical 404; the
 singular `GET /applications/{id}` and `GET /review-decisions/{id}` endpoints
 keep their authoritative 404 absent-state behavior for API clients. These
-mutations are local workflow state only and never touch Job rows,
-saved-searches, or the database itself.
+mutations are local database writes, but they never rewrite Job rows or
+saved-search definitions and never contact employers or external services.
 
 Reminder notifications are the third, **independent** piece: a background
 systemd user timer (`careeros-reminder-notify.timer`) runs
@@ -214,7 +221,7 @@ local desktop pop-ups (via `notify-send`) even when no browser tab and no
 server is open. Installing it is opt-in and separate from the web UI/server:
 
 ```bash
-uv run python systemd/install.py --units notify --enable   # install + enable the notify timer
+careeros systemd install --units notify --enable   # install + enable the notify timer
 ```
 
 `careeros diagnose` reports notification readiness (notify-send availability,
@@ -240,11 +247,24 @@ only, no API keys, no browser automation):
 | Working Nomads | `POST https://www.workingnomads.com/jobsapi/_search` (JSON) | 6 hours (provisional) |
 | Himalayas | `https://himalayas.app/jobs/api` (JSON) | 24 hours (documented) |
 
+Every shared GET/POST helper enforces a 16 MiB response-body ceiling using
+both declared `Content-Length` and a bounded actual read; an oversized response
+is a collection failure, never an empty feed. Jobicy requests at most the
+provider's documented 200-result maximum. These seven sources are the frozen
+v1.0 set; additional source expansion belongs to v1.1.
+
 Remotive's terms require attributing listings with a link back to the original
 URL and allow polling at most four times a day; its listings are published with
 a 24-hour delay. Jobicy requires similar credit. CareerOS always stores each
 job's original URL and labels its source, and `collect due` enforces the
 polling floors above.
+
+Each source keeps its committed start marker for crash observability, then
+commits job upserts, derived grouping, and successful run bookkeeping in one
+transaction. A pre-commit interruption leaves only an `incomplete` attempt;
+the newest incomplete attempt is due immediately on restart, and startup of a
+collection command deterministically repairs grouping before the retry. A
+failed attempt remains distinct and follows the normal polling interval.
 
 Working Nomads is a remote-only board and does not publish a documented public
 API: its collector targets the same internal Elasticsearch search endpoint that
@@ -370,7 +390,7 @@ so a transient or unnoticed pop-up is presentation behavior after a successful
 delivery, not a delivery failure.
 
 The independent systemd user timer runs the notifier periodically; see
-"Current status" above for installation. `careeros diagnose` verifies
+"Scheduled collection" below for installation. `careeros diagnose` verifies
 notification readiness end to end.
 
 ## Daily review queue
@@ -447,16 +467,17 @@ Supported fields:
 
 ### Private profile
 
-The default profile path is `config/candidate_profile.yaml`. This file is
-**private**: it is listed in `.gitignore` and must never be committed. It holds
-your real job-search preferences, unlike the committed fictional examples
+The default profile path is
+`${XDG_CONFIG_HOME:-~/.config}/careeros/candidate_profile.yaml`. This file is
+**private** and must never be committed. It holds your real job-search
+preferences, unlike the committed fictional examples
 `config/candidate_profile.example.json` and
 `config/candidate_profile.example.yaml`.
 
 Initialize your private profile safely (refuses to overwrite an existing file):
 
 ```bash
-uv run careeros profile init                    # create config/candidate_profile.yaml
+uv run careeros profile init                    # create the XDG private profile
 uv run careeros profile init --force            # overwrite an existing profile
 uv run careeros profile init ~/profile.yaml     # create anywhere else (.json also works)
 ```
@@ -626,14 +647,16 @@ Exit codes: `0` success, `1` output/profile/database failure, `2` usage errors.
 
 ## Scheduled collection
 
-A periodic run can be installed as a systemd user service and timer from the
-repository-owned templates in `systemd/`:
+A periodic run can be installed from either a wheel or source environment.
+Templates ship inside the `careeros` package, and generated services execute
+the exact Python interpreter that owns the installed CareerOS artifact:
 
 ```bash
-uv run python systemd/install.py --dry-run   # preview (writes nothing)
-uv run python systemd/install.py             # install units (not enabled)
-uv run python systemd/install.py --enable    # install, enable, and start
-uv run python systemd/uninstall.py           # remove the units
+careeros systemd install --dry-run                 # preview (writes nothing)
+careeros systemd install                           # install collection units
+careeros systemd install --units notify --enable   # independent notify timer
+careeros systemd install --units all --enable      # both timers
+careeros systemd uninstall --units all             # remove exact owned units
 ```
 
 The timer runs `careeros collect due` every 15 minutes (first check 5 minutes
@@ -641,8 +664,48 @@ after login) so CareerOS stays authoritative for per-source eligibility. The
 installer and uninstaller never touch the database. If the timer must run
 without a login session, enable lingering manually with
 `loginctl enable-linger "$USER"`; it is never enabled automatically. Re-run the
-installer after moving the repository, since the units embed the absolute
-project path.
+installer with `--force` after deliberately moving/replacing the Python
+environment, since units embed that interpreter path. Installation is always
+user-level (`${XDG_CONFIG_HOME:-~/.config}/systemd/user`), never uses `sudo`,
+and never writes system-wide unit directories. Differing existing units abort
+unless `--force` is supplied; uninstall removes only exact generated content.
+
+## Complete private-state backup and recovery
+
+A recoverable CareerOS snapshot is a coordinated set, not only SQLite. It may
+contain the database, the matching managed Materials root (including
+`.careeros-store`), and the private candidate profile/config.
+
+1. Stop every writer first: stop the CareerOS web process, collection and
+   notification workers, and the two user timers if enabled. Do not copy a
+   Materials tree while imports, version creation, or package finalization can
+   run.
+2. Create the SQLite backup with the supported online operation:
+   `careeros database backup /backup/careeros.sqlite3 --database /active/careeros.sqlite3`.
+   This backup contains SQLite only.
+3. Copy the entire matching Materials root to the same backup set while it is
+   quiescent, preserving private permissions and the `.careeros-store` marker.
+   Also copy the private profile/config if it is needed to reproduce ranking.
+4. Record the database path, Materials-root path/override, CareerOS schema
+   version, and backup time together. The database's `material_store.store_id`
+   and the root marker form one binding; mixing a database and root from
+   different snapshots is rejected.
+5. To restore, stop writers again and restore SQLite only with
+   `careeros database restore BACKUP --database TARGET --confirm-replace`;
+   `database restore` has no Materials-root option. Separately restore the
+   matching Materials tree to the configured XDG location. Select that tree
+   for subsequent operation with `CAREEROS_MATERIALS_ROOT`, or pass
+   `--materials-root` only to a command that supports it, such as `material
+   audit` or `serve`. Restore the profile separately to its XDG path or keep
+   using its explicit path.
+6. Before resuming writers, run
+   `careeros material audit --database TARGET --materials-root RESTORED_ROOT`.
+   Only a successful audit certifies the database/root pair.
+
+Recovery intentionally loses database, Material, and profile changes newer
+than their respective backup copies. A missing/mismatched marker, missing or
+corrupt object, unsafe path/permissions, or inconsistent database metadata
+fails closed; do not edit the marker or database by hand to bypass the audit.
 
 ## Today / Workflow and Attention Center
 

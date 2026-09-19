@@ -27,6 +27,7 @@ from careeros.database.connection import connect, connect_read_only
 from careeros.database.jobs import get_job_by_id
 from careeros.database.schema import initialize_schema
 from careeros.locking import CollectionLockConflict, collection_lock
+from careeros.presentation import enum_label
 from careeros.reminders.service import reminders_for_job
 
 
@@ -91,12 +92,13 @@ def run_application_set(
         print(f"Application failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
+    label = enum_label(status)
     if result.created:
-        print(f"Tracked job {job_id} as {status}.")
+        print(f"Tracked job {job_id} as {label}.")
     elif result.changed:
-        print(f"Updated job {job_id} to {status}.")
+        print(f"Updated job {job_id} to {label}.")
     else:
-        print(f"Job {job_id} is already {status}; no change.")
+        print(f"Job {job_id} is already {label}; no change.")
     return 0
 
 
@@ -142,7 +144,7 @@ def run_application_show(job_id: int, database_path: Path) -> int:
             if reminder.message is not None:
                 suffix = f"; {reminder.message}"
             print(
-                f"  - [{reminder.id}] {reminder.kind}, "
+                f"  - [{reminder.id}] {enum_label(reminder.kind)}, "
                 f"due {reminder.due_at}, {_reminder_state_text(reminder.completed_at)}"
                 f"{suffix}"
             )
@@ -167,7 +169,7 @@ def run_application_list(
     print("--------------------")
 
     if statuses:
-        print(f"Filter: status={', '.join(statuses)}")
+        print(f"Filter: status={', '.join(enum_label(item) for item in statuses)}")
 
     if not items:
         print()
@@ -226,10 +228,10 @@ def run_application_history(
         return 0
 
     for event in events:
-        old_status = event.old_status or "-"
+        old_status = enum_label(event.old_status, empty="-")
         print()
         print(f"Event {event.id} | {event.created_at}")
-        print(f"  Status: {old_status} -> {event.new_status}")
+        print(f"  Status: {old_status} -> {enum_label(event.new_status)}")
         if event.note_redacted_at is not None:
             print("  Note:   [redacted]")
         elif event.note is not None:

@@ -38,6 +38,7 @@ from careeros.notifications.service import (
     list_attempts,
     list_due_occurrences,
 )
+from careeros.presentation import enum_label
 from careeros.reminders.models import (
     UnknownJobError as ReminderUnknownJobError,
 )
@@ -132,7 +133,7 @@ def run_reminder_list(
     if job_id is not None:
         filters.append(f"job={job_id}")
     if kind is not None:
-        filters.append(f"kind={kind}")
+        filters.append(f"kind={enum_label(kind)}")
     if after is not None:
         filters.append(f"after={after}")
     if before is not None:
@@ -153,7 +154,8 @@ def run_reminder_list(
         reminder = entry.reminder
         print()
         print(
-            f"  {i}. Reminder {reminder.id} | {reminder.kind} | job {reminder.job_id}"
+            f"  {i}. Reminder {reminder.id} | {enum_label(reminder.kind)} | "
+            f"job {reminder.job_id}"
         )
         print(f"     Title:   {entry.job.title}")
         print(f"     Company: {entry.job.company or 'N/A'}")
@@ -188,7 +190,7 @@ def run_reminder_show(reminder_id: int, database_path: Path) -> int:
         f"{'Job:':<9}{reminder.job_id} "
         f"({job.title}, {job.company or 'N/A'}, {job.source})"
     )
-    print(f"{'Kind:':<9}{reminder.kind}")
+    print(f"{'Kind:':<9}{enum_label(reminder.kind)}")
     print(f"{'Due:':<9}{reminder.due_at}")
     print(f"{'Status:':<9}{_reminder_state_text(reminder.completed_at)}")
     if reminder.message is not None:
@@ -201,7 +203,7 @@ def run_reminder_show(reminder_id: int, database_path: Path) -> int:
         for attempt in attempts:
             error_part = f", error: {attempt.error}" if attempt.error else ""
             print(
-                f"  - #{attempt.id} {attempt.status}, "
+                f"  - #{attempt.id} {enum_label(attempt.status)}, "
                 f"attempted {attempt.attempted_at}, "
                 f"backend {attempt.backend}{error_part}"
             )
@@ -508,7 +510,8 @@ def run_reminder_notify_history(
     for attempt in attempts:
         print()
         print(
-            f"Attempt {attempt.id} | reminder {attempt.reminder_id} | {attempt.status}"
+            f"Attempt {attempt.id} | reminder {attempt.reminder_id} | "
+            f"{enum_label(attempt.status)}"
         )
         print(f"  Attempted: {attempt.attempted_at}")
         print(f"  Due:       {attempt.scheduled_due_at}")

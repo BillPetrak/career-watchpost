@@ -1,0 +1,8 @@
+[Unit]
+Description=CareerOS reminder notifications
+
+[Service]
+Type=oneshot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@PYTHON_BIN@ -m careeros reminder notify-due --backend auto
+SuccessExitStatus=75

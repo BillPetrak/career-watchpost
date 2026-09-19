@@ -14,6 +14,7 @@ import json
 from typing import Any
 
 from careeros.applications.service import GroupTrackingInfo
+from careeros.presentation import enum_label
 from careeros.presenters import group_dict, job_dict, location_display
 from careeros.ranking.feedback import FeedbackAdjustment
 from careeros.ranking.scorer import component_to_dict, feedback_summary
@@ -26,7 +27,7 @@ def render_queue_text(outcome: QueueOutcome) -> str:
         "Review queue",
         "------------",
         f"Mode:    {'grouped' if outcome.grouped else 'flat'}",
-        f"State:   {outcome.state}",
+        f"State:   {enum_label(outcome.state)}",
     ]
     if outcome.min_score > 0:
         lines.append(f"Min score: {outcome.min_score}")
@@ -66,8 +67,8 @@ def render_queue_json(outcome: QueueOutcome) -> str:
 def _decision_label(group_decision: GroupDecision) -> str:
     """Render a resolved group decision for display."""
     if group_decision.decision is None:
-        return "unreviewed"
-    return group_decision.decision
+        return "Unreviewed"
+    return enum_label(group_decision.decision)
 
 
 def _application_label(info: GroupTrackingInfo) -> str:
@@ -78,7 +79,7 @@ def _application_label(info: GroupTrackingInfo) -> str:
     """
     if info.status is None:
         return "Untracked"
-    label = info.status.capitalize()
+    label = enum_label(info.status)
     if info.on_representative or info.owner is None:
         return label
     return f"{label} (via job {info.owner.id}, {info.owner.source})"

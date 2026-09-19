@@ -19,6 +19,7 @@ from careeros.database.runs import (
     CollectionRun,
     incomplete_run_count,
     last_completed_run,
+    latest_attempt_is_incomplete,
     parse_utc,
 )
 from careeros.scheduling import due_sources
@@ -78,12 +79,19 @@ def build_statuses(
         )
         for source, run in last_runs.items()
     }
+    latest_incomplete = {
+        source: latest_attempt_is_incomplete(connection, source) for source in order
+    }
+    scheduling_attempts = {
+        source: None if latest_incomplete[source] else last_attempt
+        for source, last_attempt in last_attempts.items()
+    }
 
     due_set = set(
         due_sources(
             now=now,
             policies=policies,
-            last_attempts=last_attempts,
+            last_attempts=scheduling_attempts,
             order=order,
         )
     )
@@ -94,7 +102,11 @@ def build_statuses(
         run = last_runs[source]
         last_attempt = last_attempts[source]
         next_due = (
-            last_attempt + policy.min_interval if last_attempt is not None else None
+            None
+            if latest_incomplete[source]
+            else (
+                last_attempt + policy.min_interval if last_attempt is not None else None
+            )
         )
         statuses.append(
             SourceStatus(

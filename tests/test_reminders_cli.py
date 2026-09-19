@@ -262,7 +262,7 @@ def test_reminder_list_default_shows_open_soonest_first(tmp_path: Path, capsys) 
     captured = capsys.readouterr()
     assert "Showing open reminders (soonest first)" in captured.out
     out = captured.out
-    assert out.index("interview") < out.index("offer") < out.index("review")
+    assert out.index("Interview") < out.index("Offer") < out.index("Review")
 
 
 def test_reminder_list_state_filter(tmp_path: Path, capsys) -> None:
@@ -314,7 +314,7 @@ def test_reminder_show_output(tmp_path: Path, capsys) -> None:
     assert cli.main(["reminder", "show", "1", "--database", str(db_path)]) == 0
     captured = capsys.readouterr()
     assert "Reminder 1" in captured.out
-    assert "follow_up" in captured.out
+    assert "Follow up" in captured.out
     assert f"job {job_id}" in captured.out
     assert "2026-08-10T14:00:00+00:00" in captured.out
     assert "call recruiter" in captured.out
@@ -386,7 +386,7 @@ def test_reminder_update_output(tmp_path: Path, capsys) -> None:
     assert "Updated reminder 1." in captured.out
     assert cli.main(["reminder", "show", "1", "--database", str(db_path)]) == 0
     captured = capsys.readouterr()
-    assert "interview" in captured.out
+    assert "Interview" in captured.out
     assert "2026-08-11T07:00:00+00:00" in captured.out
     assert "second round" in captured.out
 
@@ -504,7 +504,7 @@ def test_application_show_includes_reminders(tmp_path: Path, capsys) -> None:
     captured = capsys.readouterr()
     assert "Reminders:" in captured.out
     assert (
-        "- [1] follow_up, due 2026-08-10T14:00:00+00:00, open; call recruiter"
+        "- [1] Follow up, due 2026-08-10T14:00:00+00:00, open; call recruiter"
         in captured.out
     )
 
