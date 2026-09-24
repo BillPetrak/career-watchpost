@@ -286,7 +286,7 @@ def test_notify_history_lists_attempts(tmp_path: Path, capsys) -> None:
 
     assert exit_code == 0
     assert "Notification history" in captured.out
-    assert f"Attempt 1 | reminder {reminder_id} | delivered" in captured.out
+    assert f"Attempt 1 | reminder {reminder_id} | Delivered" in captured.out
     assert "Backend:   stdout" in captured.out
 
 
@@ -315,7 +315,7 @@ def test_notify_history_filters_by_reminder_and_failure(
     )
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert f"Attempt 2 | reminder {second_reminder} | failed" in captured.out
+    assert f"Attempt 2 | reminder {second_reminder} | Failed" in captured.out
     assert "Error:     boom" in captured.out
     assert f"reminder {first_reminder}" not in captured.out
 
@@ -331,5 +331,5 @@ def test_notify_history_filters_by_reminder_and_failure(
     )
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert f"reminder {first_reminder} | delivered" in captured.out
+    assert f"reminder {first_reminder} | Delivered" in captured.out
     assert f"reminder {second_reminder}" not in captured.out

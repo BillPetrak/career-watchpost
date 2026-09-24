@@ -99,8 +99,8 @@ def test_show_successful_output(tmp_path: Path, capsys: pytest.CaptureFixture) -
     assert "Python Developer" in captured.out
     assert "Tech Corp" in captured.out
     assert "Athens" in captured.out
-    assert "remote" in captured.out
-    assert "Full-time" in captured.out
+    assert "Remote status:    Remote" in captured.out
+    assert "Employment type:  Full time" in captured.out
     assert "arbeitnow" in captured.out
     assert "python-dev-1" in captured.out
     assert "Build Python backends." in captured.out

@@ -213,7 +213,7 @@ def test_review_section_builds_decision_controls() -> None:
     assert "function renderReviewDecisionSection(body, job, review)" in js
     assert "function buildReviewDecisionActions(body, job, review)" in js
     assert 'textContent: "Not reviewed."' in js
-    assert 'addField(fields, "Decision", review.decision);' in js
+    assert 'addField(fields, "Decision", publicEnumLabel(review.decision));' in js
     assert 'addField(fields, "Decided", displayDate(review.created_at));' in js
     assert 'addField(fields, "Last updated", displayDate(review.updated_at));' in js
     # Decision buttons carry a friendly label plus the hidden canonical value.

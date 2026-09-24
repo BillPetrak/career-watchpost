@@ -2,12 +2,13 @@
 
 CareerOS is a privacy-first career intelligence platform.
 
-**Product 1 Core is complete. Product 1 is in the v1.0 hardening and release
-phase.** H1 is limited to production correctness and operational hardening;
-bounded visual polish follows in H2, then integrated release qualification.
-Additional job-source expansion is deferred to v1.1.
-
-## Adaptive matching preferences (R4)
+**Product 1 v1.0 is released and release-complete.** Core, H1 production
+hardening, H2 visual polish, and integrated RC qualification are complete. The
+seven existing job sources are the frozen v1.0 source set. Resume/CV
+sanitization, structured extraction, and Candidate Profile/Candidate Identity
+intelligence are planned for Product 1 v1.05; resume Materials remain opaque
+stored bytes in v1.0 and are not parsed. Additional source expansion remains
+planned for Product 1 v1.1.## Adaptive matching preferences (R4)
 
 CareerOS schema v12 adds persistent **Matching Preferences** to the local
 SQLite database. Explicit preferences are the profile values you deliberately
@@ -141,9 +142,28 @@ Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
 
-### Installation and private runtime state
+### Installed release and private runtime state
 
-The wheel and source checkout use the same stable XDG-compatible defaults:
+CareerOS requires Python 3.11 or newer. An installed user can run a downloaded
+or locally supplied release wheel without a Git checkout. Create an isolated
+environment and install the wheel with the API dependencies:
+
+```bash
+python3.11 -m venv ~/.venvs/careeros
+source ~/.venvs/careeros/bin/activate
+python -m pip install '/path/to/careeros-1.0.0-py3-none-any.whl[api]'
+
+careeros --help
+python -m careeros --help
+careeros collect arbeitnow --limit 10  # new state only: create schema v12 + collect
+careeros serve                         # then open http://127.0.0.1:8000/ui
+```
+
+This route installs an existing release artifact; it does not imply publication
+to PyPI. The server deliberately refuses a missing, uninitialized, or old-schema
+database. The collection command above is the supported first-run bootstrap for
+new private state; users who already have a current schema-v12 database should
+skip it. The wheel and source checkout use the same stable XDG-compatible defaults:
 
 - database: `${XDG_DATA_HOME:-~/.local/share}/careeros/careeros.sqlite3`
 - managed Materials: `${XDG_DATA_HOME:-~/.local/share}/careeros/materials`
@@ -165,7 +185,8 @@ paths above (or keep using explicit environment/CLI overrides), then run
 
 A local web dashboard (Home, Today, Jobs, Review, Reviewed, Applications,
 Reminders, Matching Preferences, and a per-job detail view) is served by the
-optional FastAPI slice at <http://127.0.0.1:8000/ui>:
+optional FastAPI slice at <http://127.0.0.1:8000/ui>. For contributors working
+from a source checkout, install development and API dependencies separately:
 
 ```bash
 uv sync --extra development --extra api   # install the API extra

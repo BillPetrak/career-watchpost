@@ -1,8 +1,13 @@
 # CareerOS — Agent instructions
 
-Product 1 Core is complete. Product 1 is in the v1.0 hardening/release phase;
-H2 is bounded visual polish, RC is integrated qualification, and additional
-job-source expansion is deferred to v1.1.
+Product 1 v1.0 is RELEASED. Core, H1 hardening, H2 visual polish, and integrated
+RC qualification are complete; the existing seven job sources are the frozen
+v1.0 set. The next planned substantive milestone is Product 1 v1.05: Resume/CV
+sanitization, structured extraction, and the Candidate Profile/Candidate
+Identity foundation. Product 1 v1.1 then adds job-source expansion.
+
+R3, R4, and R5 remain closed absent a concrete regression. There is no R6. MCP
+and Superpowers remain deferred, no new sources belong in v1.0.
 
 Stable private defaults are XDG-based and independent of the checkout or
 installed environment: database

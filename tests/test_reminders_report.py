@@ -191,7 +191,7 @@ def test_report_text_and_json_equivalent(tmp_path: Path) -> None:
 
     for snapshot in reminders["upcoming"]:
         reminder = snapshot["reminder"]
-        expected = f"{reminder['kind']}, due {reminder['due_at']}"
+        expected = f"Interview, due {reminder['due_at']}"
         assert expected in text
 
 

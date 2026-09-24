@@ -277,10 +277,10 @@ def test_five_canonical_kinds_in_exact_order() -> None:
     assert "option.value = entry.value;" in js
 
 
-def test_reminder_kind_label_falls_back_to_value() -> None:
+def test_reminder_kind_label_falls_back_to_public_enum_label() -> None:
     js = _js()
     assert "function reminderKindLabel(value)" in js
-    assert "return value;" in js
+    assert "return publicEnumLabel(value);" in js
 
 
 # --------------------------------------------------------------------------- #
