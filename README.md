@@ -8,14 +8,21 @@ seven existing job sources are the frozen v1.0 source set. Resume/CV
 sanitization, structured extraction, and Candidate Profile/Candidate Identity
 intelligence are planned for Product 1 v1.05; resume Materials remain opaque
 stored bytes in v1.0 and are not parsed. Additional source expansion remains
-planned for Product 1 v1.1.## Product 1 v1.05 M2A persistence foundation
+planned for Product 1 v1.1.## Product 1 v1.05 M2 persistence and authority foundation
 
 Schema v13 adds the local persistence and pure domain foundation for immutable
 resume extraction/sanitization artifacts and human-authoritative Career
-Profiles. It does not parse Material bytes, run sanitization, extract facts,
-call models, or add API/CLI/UI workflows; those operations remain later
-milestones. Existing matching profiles and Matching Preferences keep their
-v1.0 meaning.
+Profiles. Internal repository operations atomically persist immutable
+extraction, sanitization, and career-fact aggregates; retain append-only human
+review histories; and save complete immutable Career Profile snapshots through
+an optimistic revision compare-and-swap. Exact UTF-8 artifact coordinates,
+hashes, input identity, and fact provenance are validated before authority is
+advanced.
+
+This remains a persistence/authority foundation only. It does not read or
+parse Material bytes, execute sanitization or fact extraction, call models, or
+add API/CLI/UI workflows; those operations remain later milestones. Existing
+matching profiles and Matching Preferences keep their v1.0 meaning.
 
 Upgrade an existing supported database explicitly while CareerOS processes
 using it are stopped:
