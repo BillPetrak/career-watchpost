@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from careeros.database.connection import connect
-from careeros.database.migrations.core import inspect_schema, migrate
+from careeros.database.migrations.core import V13_TABLES, inspect_schema, migrate
 from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 
 PREFERENCE_TABLES = {
@@ -21,6 +21,8 @@ def _columns(connection: sqlite3.Connection, table: str) -> list[str]:
 
 
 def _downgrade_to_v11(connection: sqlite3.Connection) -> None:
+    for table in reversed(V13_TABLES):
+        connection.execute(f"DROP TABLE {table}")
     for table in (
         "learned_preference_suppressions",
         "preference_evidence",
@@ -38,7 +40,7 @@ def test_fresh_v12_schema_is_exact_and_current(tmp_path) -> None:
     connection = connect(tmp_path / "fresh.sqlite3")
     initialize_schema(connection)
 
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 13
     assert inspect_schema(connection) == "current"
     tables = {
         str(row[0])

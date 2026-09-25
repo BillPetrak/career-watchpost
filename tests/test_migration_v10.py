@@ -1,5 +1,5 @@
 from careeros.database.connection import connect
-from careeros.database.migrations.core import inspect_schema, migrate
+from careeros.database.migrations.core import V13_TABLES, inspect_schema, migrate
 from careeros.database.schema import initialize_schema
 
 PREFERENCE_TABLES = (
@@ -13,6 +13,8 @@ PREFERENCE_TABLES = (
 def test_v9_to_v10(tmp_path):
     c = connect(tmp_path / "db")
     initialize_schema(c)
+    for table in reversed(V13_TABLES):
+        c.execute("DROP TABLE " + table)
     for table in PREFERENCE_TABLES:
         c.execute("DROP TABLE " + table)
     for table in (
@@ -35,6 +37,8 @@ def test_v9_to_v10(tmp_path):
 def test_v10_with_missing_material_table_is_malformed(tmp_path):
     c = connect(tmp_path / "db")
     initialize_schema(c)
+    for table in reversed(V13_TABLES):
+        c.execute("DROP TABLE " + table)
     c.execute("DROP TABLE material_versions")
     c.execute("UPDATE schema_metadata SET value='10'")
     c.commit()

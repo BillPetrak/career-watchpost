@@ -731,4 +731,4 @@ def test_http_projection_is_strictly_public(
 
 
 def test_schema_version_remains_twelve() -> None:
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 13

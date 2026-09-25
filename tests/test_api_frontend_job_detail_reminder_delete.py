@@ -648,7 +648,7 @@ def test_missing_database_is_500_and_nothing_is_created(
     path = tmp_path / "nested" / "careeros.sqlite3"
     _set_database(monkeypatch, path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
     assert not path.exists()
@@ -692,7 +692,7 @@ def test_lock_contention_maps_to_503(
 
 
 def test_schema_version_stays_current() -> None:
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 13
 
 
 def test_no_careeros_cli_import() -> None:

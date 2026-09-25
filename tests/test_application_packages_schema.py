@@ -8,7 +8,7 @@ import pytest
 
 from careeros.database.connection import connect
 from careeros.database.migrations import core
-from careeros.database.migrations.core import inspect_schema, migrate
+from careeros.database.migrations.core import V13_TABLES, inspect_schema, migrate
 from careeros.database.schema import initialize_schema
 
 M3_TABLES = (
@@ -28,6 +28,8 @@ PREFERENCE_TABLES = (
 
 
 def downgrade_to_v10(connection: sqlite3.Connection) -> None:
+    for table in reversed(V13_TABLES):
+        connection.execute(f"DROP TABLE {table}")
     for table in PREFERENCE_TABLES:
         connection.execute(f"DROP TABLE {table}")
     for table in M3_TABLES:
@@ -65,7 +67,7 @@ def test_fresh_current_schema_rejects_additional_m3_domain_objects(tmp_path, sta
     assert inspect_schema(connection) == "malformed"
 
 
-def test_fresh_current_schema_allows_unrelated_preexisting_careeros_objects(tmp_path):
+def test_fresh_current_schema_rejects_unapproved_career_objects(tmp_path):
     connection = connect(tmp_path / "unrelated.sqlite3")
     initialize_schema(connection)
     connection.execute("CREATE TABLE career_notes(id INTEGER PRIMARY KEY)")
@@ -74,7 +76,7 @@ def test_fresh_current_schema_allows_unrelated_preexisting_careeros_objects(tmp_
         "CREATE TRIGGER trg_career_notes AFTER INSERT ON career_notes BEGIN SELECT 1; END"
     )
     connection.commit()
-    assert inspect_schema(connection) == "current"
+    assert inspect_schema(connection) == "malformed"
 
 
 def test_v10_to_v11_is_additive_and_exact(tmp_path):
@@ -122,6 +124,8 @@ def test_v10_with_preexisting_package_object_rolls_back(tmp_path):
 def test_v8_to_v11_failure_rolls_back_every_boundary(tmp_path, monkeypatch):
     connection = connect(tmp_path / "v8.sqlite3")
     initialize_schema(connection)
+    for table in reversed(V13_TABLES):
+        connection.execute(f"DROP TABLE {table}")
     for table in PREFERENCE_TABLES:
         connection.execute(f"DROP TABLE {table}")
     for table in M3_TABLES:
@@ -169,7 +173,7 @@ def test_v8_to_v11_failure_rolls_back_every_boundary(tmp_path, monkeypatch):
 
 
 def test_dispatcher_has_every_frozen_boundary():
-    assert set(core.MIGRATIONS) == {8, 9, 10, 11}
+    assert set(core.MIGRATIONS) == {8, 9, 10, 11, 12}
 
 
 def test_target_validation_precedes_metadata_and_failure_rolls_back(

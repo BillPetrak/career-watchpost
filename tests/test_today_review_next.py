@@ -741,4 +741,4 @@ def test_api_exact_public_projection_and_adaptive_flag(
         "negative_examples",
     ):
         assert private_key not in serialized
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 13

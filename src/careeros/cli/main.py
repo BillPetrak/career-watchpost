@@ -67,7 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     acknowledge=arguments.acknowledge_data_loss_risk,
                 )
                 print(
-                    "Database migrated to schema v12. Any generated pre-migration backup contains SQLite only; preserve the matching materials root separately."
+                    "Database migrated to schema v13. Any generated pre-migration backup contains SQLite only; preserve the matching materials root separately."
                 )
             elif arguments.database_command == "restore":
                 if not arguments.confirm_replace:

@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from careeros.database.schema import SCHEMA_VERSION
+from careeros.database.schema import SCHEMA_VERSION, V13_DDL
 
 MigrationStep = Callable[[sqlite3.Connection], None]
 MIGRATIONS: dict[int, MigrationStep] = {}
@@ -43,7 +43,7 @@ def inspect_schema(connection: sqlite3.Connection) -> str:
         return "unsupported"
     if version > SCHEMA_VERSION:
         return "future"
-    if version in (8, 9, 10, 11):
+    if version in (8, 9, 10, 11, 12):
         if not _valid_structure(connection, version):
             return "malformed"
     return "upgrade_required"
@@ -93,7 +93,7 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
             "created_at",
         },
     }
-    if version in (9, 10, 11, 12):
+    if version in (9, 10, 11, 12, 13):
         required["application_events"].add("note_redacted_at")
         required["application_preparations"] = {
             "application_id",
@@ -121,7 +121,7 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
             "created_at",
             "updated_at",
         }
-    if version in (10, 11, 12):
+    if version in (10, 11, 12, 13):
         required.update(
             {
                 "material_store": {"singleton", "store_id", "created_at"},
@@ -166,9 +166,9 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
             return False
         if not _valid_v10_indexes(connection):
             return False
-    if version in (11, 12) and not _valid_v11_structure(connection):
+    if version in (11, 12, 13) and not _valid_v11_structure(connection):
         return False
-    if version in (11, 12) and (
+    if version in (11, 12, 13) and (
         not _valid_v9_columns(connection)
         or not _valid_v9_sql(connection)
         or not _valid_v9_foreign_keys(connection)
@@ -181,7 +181,103 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
         return False
     if version == 12 and not _valid_v12_structure(connection):
         return False
+    if version == 12 and any(
+        str(row[1]).startswith(("resume_", "career_"))
+        for row in connection.execute(
+            "SELECT type,name FROM sqlite_master WHERE type IN ('table','index','trigger')"
+        )
+    ):
+        return False
+    if version == 12 and any(
+        str(row[0]) in V13_TABLES
+        for row in connection.execute(
+            "SELECT DISTINCT tbl_name FROM sqlite_master WHERE type='index'"
+        )
+    ):
+        return False
+    if version == 13 and not _valid_v12_structure(connection):
+        return False
+    if version == 13 and not _valid_v13_structure(connection):
+        return False
     return True
+
+
+V13_TABLES = (
+    "resume_extraction_runs",
+    "resume_text_segments",
+    "resume_sanitization_runs",
+    "resume_sanitization_spans",
+    "resume_pii_findings",
+    "resume_sanitization_review_events",
+    "career_fact_runs",
+    "career_fact_candidates",
+    "career_fact_evidence",
+    "career_fact_review_events",
+    "career_profile_versions",
+    "career_profile_facts",
+    "career_profile_fact_sources",
+    "career_profile_state",
+)
+
+
+def _valid_v13_structure(connection: sqlite3.Connection) -> bool:
+    """Require the complete additive v13 object layout, exactly as bootstrapped."""
+    from careeros.database.schema import initialize_schema
+
+    reference = sqlite3.connect(":memory:")
+    reference.row_factory = sqlite3.Row
+    try:
+        initialize_schema(reference)
+        for table in V13_TABLES:
+            if not _table_exists(connection, table):
+                return False
+            if (
+                _canonical_master_sql(connection, "table", table)
+                != _canonical_master_sql(reference, "table", table)
+                or _pragma_rows(connection, "table_info", table)
+                != _pragma_rows(reference, "table_info", table)
+                or _pragma_rows(connection, "foreign_key_list", table)
+                != _pragma_rows(reference, "foreign_key_list", table)
+            ):
+                return False
+            actual = {
+                str(r[1]) for r in connection.execute(f"PRAGMA index_list({table})")
+            }
+            expected = {
+                str(r[1]) for r in reference.execute(f"PRAGMA index_list({table})")
+            }
+            if actual != expected:
+                return False
+            for index in actual:
+                if _canonical_master_sql(
+                    connection, "index", index
+                ) != _canonical_master_sql(reference, "index", index) or _pragma_rows(
+                    connection, "index_xinfo", index
+                ) != _pragma_rows(reference, "index_xinfo", index):
+                    return False
+        # No partially-added or unrecognized v13 objects are tolerated.
+        expected_objects = set(V13_TABLES)
+        expected_objects.update(
+            str(r[1])
+            for table in V13_TABLES
+            for r in reference.execute(f"PRAGMA index_list({table})")
+            if not str(r[1]).startswith("sqlite_autoindex_")
+        )
+        actual_objects = {
+            str(row[1])
+            for row in connection.execute(
+                "SELECT type,name,tbl_name FROM sqlite_master "
+                "WHERE type IN ('table','index','trigger')"
+            )
+            if (
+                str(row[1]).startswith(("resume_", "career_"))
+                or str(row[2]) in V13_TABLES
+            )
+            and not str(row[1]).startswith("sqlite_autoindex_")
+        }
+        return actual_objects == expected_objects
+    finally:
+        reference.close()
 
 
 def _preference_objects(connection: sqlite3.Connection) -> list[tuple[str, str, str]]:
@@ -1220,6 +1316,42 @@ def migrate_11_to_12(connection: sqlite3.Connection) -> None:
             raise ValueError("migration produced invalid v12 schema")
         connection.execute(
             "UPDATE schema_metadata SET value='12' WHERE key='schema_version'"
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def _apply_12_to_13(connection: sqlite3.Connection) -> None:
+    """Add the v1.05 persistence foundation without reinterpretation."""
+    if any(
+        str(row[1]).startswith(("resume_", "career_"))
+        for row in connection.execute(
+            "SELECT type,name FROM sqlite_master WHERE type IN ('table','index','trigger')"
+        )
+    ):
+        raise ValueError("database contains pre-existing v13 objects")
+    for statement in V13_DDL.split(";"):
+        statement = statement.strip()
+        if statement:
+            connection.execute(statement)
+
+
+MIGRATIONS[12] = _apply_12_to_13
+
+
+def migrate_12_to_13(connection: sqlite3.Connection) -> None:
+    """Apply the v12 boundary as one independently usable transaction."""
+    if inspect_schema(connection) != "upgrade_required":
+        raise ValueError("database is not a structurally valid v12 database")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        _apply_12_to_13(connection)
+        if not _valid_structure(connection, 13):
+            raise ValueError("migration produced invalid v13 schema")
+        connection.execute(
+            "UPDATE schema_metadata SET value='13' WHERE key='schema_version'"
         )
         connection.commit()
     except Exception:

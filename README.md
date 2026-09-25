@@ -8,7 +8,29 @@ seven existing job sources are the frozen v1.0 source set. Resume/CV
 sanitization, structured extraction, and Candidate Profile/Candidate Identity
 intelligence are planned for Product 1 v1.05; resume Materials remain opaque
 stored bytes in v1.0 and are not parsed. Additional source expansion remains
-planned for Product 1 v1.1.## Adaptive matching preferences (R4)
+planned for Product 1 v1.1.## Product 1 v1.05 M2A persistence foundation
+
+Schema v13 adds the local persistence and pure domain foundation for immutable
+resume extraction/sanitization artifacts and human-authoritative Career
+Profiles. It does not parse Material bytes, run sanitization, extract facts,
+call models, or add API/CLI/UI workflows; those operations remain later
+milestones. Existing matching profiles and Matching Preferences keep their
+v1.0 meaning.
+
+Upgrade an existing supported database explicitly while CareerOS processes
+using it are stopped:
+
+```bash
+uv run careeros database migrate --database /path/to/careeros.sqlite3
+```
+
+The normal migration creates
+`/path/to/careeros.sqlite3.pre-v13.backup.sqlite3` unless `--backup` selects
+another destination or the acknowledged no-backup path is used. There is no
+in-place downgrade. Restore that database-only backup with `database restore`;
+Materials and private configuration must still be preserved separately.
+
+## Adaptive matching preferences (R4)
 
 CareerOS schema v12 adds persistent **Matching Preferences** to the local
 SQLite database. Explicit preferences are the profile values you deliberately
@@ -53,32 +75,6 @@ search, administrative/audit views, and the profile-less Home report do not
 become personalized feeds. Today uses preferences only for its bounded Review
 next section, with **Use learned preferences** controlling the learned layer for
 that invocation.
-
-### Schema v12 upgrade
-
-Upgrade an existing v11 database explicitly while CareerOS processes using it
-are stopped:
-
-```bash
-uv run careeros database migrate --database /path/to/careeros.sqlite3
-```
-
-Before the normal v11-to-v12 migration, the administration flow creates the
-SQLite backup
-`/path/to/careeros.sqlite3.pre-v12.backup.sqlite3` (unless an operator explicitly
-selects the acknowledged no-backup path; `--backup` chooses another destination).
-There is no down migration. The database-only rollback is:
-
-```bash
-uv run careeros database restore \
-  /path/to/careeros.sqlite3.pre-v12.backup.sqlite3 \
-  --database /path/to/careeros.sqlite3 \
-  --confirm-replace
-```
-
-This returns SQLite to its pre-upgrade v11 state and intentionally discards
-database changes made after the backup. It does not restore Materials or the
-private candidate profile; see the complete recovery runbook below.
 
 ## Private reusable Materials (R3 M2)
 
@@ -155,7 +151,7 @@ python -m pip install '/path/to/careeros-1.0.0-py3-none-any.whl[api]'
 
 careeros --help
 python -m careeros --help
-careeros collect arbeitnow --limit 10  # new state only: create schema v12 + collect
+careeros collect arbeitnow --limit 10  # new state only: create schema v13 + collect
 careeros serve                         # then open http://127.0.0.1:8000/ui
 ```
 

@@ -70,7 +70,7 @@ def test_fresh_schema_has_notifications_table(tmp_path: Path) -> None:
 
 
 def test_schema_version_is_ten(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 13
 
 
 def test_notification_indexes_exist(tmp_path: Path) -> None:

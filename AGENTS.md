@@ -39,7 +39,7 @@ uv run careeros diagnose      # verify environment
 | `uv run uvicorn careeros.api:app` | Serve the local FastAPI application |
 | `uv run careeros serve --database PATH` | Serve the protected local web application against an explicit database |
 | `uv run careeros database backup DESTINATION --database PATH` | Create a supported SQLite-only backup; Materials/profile remain separate |
-| `uv run careeros database migrate --database PATH` | Explicitly migrate a supported old schema; default backup suffix is `.pre-v12.backup.sqlite3` |
+| `uv run careeros database migrate --database PATH` | Explicitly migrate a supported old schema; default backup suffix is `.pre-v13.backup.sqlite3` |
 | `uv run careeros database restore BACKUP --database PATH --confirm-replace` | Replace a SQLite database from a validated backup (managed Material files are separate) |
 | `uv run careeros collect arbeitnow --limit 10` | Collect jobs |
 | `uv run careeros collect arbeitnow --database /tmp/test.db` | Override DB path |
@@ -544,7 +544,8 @@ carry the same `score_components` data.
 
 ## R4 adaptive matching preferences
 
-`SCHEMA_VERSION` is 12. R4 adds four preference tables:
+R4 introduced schema 12 with four preference tables; the current
+`SCHEMA_VERSION` is 13:
 `preference_state`, `explicit_preferences`, `preference_evidence`, and
 `learned_preference_suppressions`. Learned aggregates are derived on read and
 must not be materialized. Fresh v12 databases and v11-to-v12 migration create
@@ -603,16 +604,17 @@ suppress/restore, or reset. Request generations prevent stale responses from
 clobbering newer edits. Learning, aggregation, ranking, and explanations are
 local deterministic code with no model call or recurring model cost.
 
-The normal v11-to-v12 administration flow creates a SQLite backup before
-migration at `<database>.pre-v12.backup.sqlite3` unless the operator supplies
+The current administration flow creates a SQLite backup before migration at
+`<database>.pre-v13.backup.sqlite3` unless the operator supplies
 `--backup` or explicitly acknowledges `--no-backup`. The migration validates
 the target structure before advancing metadata and rolls back DDL/data/metadata
-together on failure. Current valid v12 migration is idempotent. There is no
+together on failure. Re-running administration against a current valid v13
+database is idempotent. There is no
 down migration; recovery is:
 
 ```bash
 uv run careeros database restore \
-  /path/to/careeros.sqlite3.pre-v12.backup.sqlite3 \
+  /path/to/careeros.sqlite3.pre-v13.backup.sqlite3 \
   --database /path/to/careeros.sqlite3 \
   --confirm-replace
 ```
@@ -2254,7 +2256,7 @@ there is no explanation endpoint or persistence. Grouped explanations belong
 to the union-scored opportunity and retain the exact response member count.
 ## R3 M2 private Materials library
 
-Materials were introduced in schema v11; the current `SCHEMA_VERSION` is 12.
+Materials were introduced in schema v11; the current `SCHEMA_VERSION` is 13.
 They are global reusable private records with
 immutable versions; they are not owned by jobs or applications. Managed bytes
 live outside the checkout under an XDG-configured root, with a DB/root marker

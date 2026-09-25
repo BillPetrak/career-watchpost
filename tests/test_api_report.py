@@ -322,7 +322,7 @@ def test_report_missing_database_empty_report(
     database_path = tmp_path / _SENTINEL_DIRECTORY / "careeros.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -336,7 +336,7 @@ def test_report_missing_database_never_creates_file_or_schema(
     database_path = tmp_path / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -745,7 +745,7 @@ def test_report_missing_database_does_not_leak_paths(
     database_path = tmp_path / _SENTINEL_DIRECTORY / "careeros.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -844,7 +844,7 @@ def test_report_does_not_initialize_schema(
     _set_database(monkeypatch, empty)
 
     before = empty.read_bytes()
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
     assert empty.read_bytes() == before
@@ -863,7 +863,7 @@ def test_report_malformed_database_500(
     _set_database(monkeypatch, malformed)
 
     before = malformed.read_bytes()
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
     assert malformed.read_bytes() == before
@@ -877,7 +877,7 @@ def test_report_uninitialized_database_500(
     _set_database(monkeypatch, path)
 
     before = path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
     assert path.read_bytes() == before
@@ -893,7 +893,7 @@ def test_report_schema_version_unchanged(
     with TestClient(app) as client:
         health = client.get("/health")
 
-    assert health.json()["schema_version"] == SCHEMA_VERSION == 12
+    assert health.json()["schema_version"] == SCHEMA_VERSION == 13
 
 
 # --------------------------------------------------------------------------- #

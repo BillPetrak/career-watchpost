@@ -7,7 +7,12 @@ import pytest
 from careeros.database.admin import migrate_database
 from careeros.database.connection import connect
 from careeros.database.migrations import core
-from careeros.database.migrations.core import inspect_database, inspect_schema, migrate
+from careeros.database.migrations.core import (
+    V13_TABLES,
+    inspect_database,
+    inspect_schema,
+    migrate,
+)
 from careeros.database.schema import initialize_schema
 
 PREFERENCE_TABLES = (
@@ -55,6 +60,8 @@ def _insert_pre_r4_history(connection: sqlite3.Connection) -> tuple[int, int]:
 
 
 def _downgrade_to_v11(connection: sqlite3.Connection) -> None:
+    for table in reversed(V13_TABLES):
+        connection.execute(f"DROP TABLE {table}")
     for table in reversed(PREFERENCE_TABLES):
         connection.execute(f"DROP TABLE {table}")
     connection.execute(
@@ -139,7 +146,7 @@ def test_partial_preference_objects_are_not_accepted_as_v11(tmp_path) -> None:
 
 
 def test_migration_dispatcher_includes_v12_boundary() -> None:
-    assert set(core.MIGRATIONS) == {8, 9, 10, 11}
+    assert set(core.MIGRATIONS) == {8, 9, 10, 11, 12}
 
 
 def test_default_migration_backup_is_pre_v12_and_recoverable(tmp_path) -> None:
@@ -150,7 +157,7 @@ def test_default_migration_backup_is_pre_v12_and_recoverable(tmp_path) -> None:
         _downgrade_to_v11(connection)
 
     assert migrate_database(database) == "current"
-    backup = tmp_path / "admin.sqlite3.pre-v12.backup.sqlite3"
+    backup = tmp_path / "admin.sqlite3.pre-v13.backup.sqlite3"
     assert backup.exists()
     assert backup.stat().st_mode & 0o777 == 0o600
     assert inspect_database(backup) == "upgrade_required"

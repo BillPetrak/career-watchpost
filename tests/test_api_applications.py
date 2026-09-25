@@ -969,7 +969,7 @@ def test_list_absent_database_is_empty_without_creating_file(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -982,7 +982,7 @@ def test_show_absent_database_returns_404_without_creating_file(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -995,7 +995,7 @@ def test_history_absent_database_returns_404_without_creating_file(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -1009,7 +1009,7 @@ def test_history_uninitialized_database_is_500(
     database_path.write_bytes(b"")
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
 
@@ -1021,7 +1021,7 @@ def test_history_malformed_database_is_500(
     database_path.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
 
@@ -1033,7 +1033,7 @@ def test_list_uninitialized_database_is_500(
     database_path.write_bytes(b"")
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
 
@@ -1045,7 +1045,7 @@ def test_list_malformed_database_is_500(
     database_path.write_bytes(b"this is not a sqlite database")
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v12"):
+    with pytest.raises(ValueError, match="current schema v13"):
         with TestClient(app):
             pass
 

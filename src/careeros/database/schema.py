@@ -9,7 +9,170 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
+
+
+V13_DDL = """
+CREATE TABLE resume_extraction_runs (
+    id TEXT PRIMARY KEY CHECK (length(id)=32 AND id=lower(id) AND id NOT GLOB '*[^0-9a-f]*'),
+    material_version_id TEXT NOT NULL REFERENCES material_versions(id) ON DELETE RESTRICT,
+    source_name TEXT NOT NULL CHECK (length(source_name) BETWEEN 1 AND 160),
+    source_media_type TEXT NOT NULL CHECK (length(source_media_type) BETWEEN 1 AND 127),
+    source_byte_size INTEGER NOT NULL CHECK (source_byte_size BETWEEN 1 AND 26214400),
+    source_sha256 TEXT NOT NULL CHECK (length(source_sha256)=64 AND source_sha256=lower(source_sha256) AND source_sha256 NOT GLOB '*[^0-9a-f]*'),
+    source_format TEXT NOT NULL CHECK (source_format IN ('pdf','docx','text','unknown')),
+    detected_format TEXT NOT NULL CHECK (detected_format IN ('pdf','docx','text','unknown')),
+    outcome TEXT NOT NULL CHECK (outcome IN ('succeeded','failed')),
+    raw_text TEXT,
+    raw_text_sha256 TEXT CHECK (raw_text_sha256 IS NULL OR (length(raw_text_sha256)=64 AND raw_text_sha256=lower(raw_text_sha256) AND raw_text_sha256 NOT GLOB '*[^0-9a-f]*')),
+    segment_count INTEGER NOT NULL DEFAULT 0 CHECK (segment_count BETWEEN 0 AND 100000),
+    extractor_fingerprint TEXT NOT NULL CHECK (length(extractor_fingerprint) BETWEEN 1 AND 256),
+    cache_fingerprint TEXT NOT NULL CHECK (length(cache_fingerprint) BETWEEN 1 AND 256),
+    created_at TEXT NOT NULL CHECK (length(created_at)>0),
+    CHECK ((outcome='succeeded' AND raw_text IS NOT NULL AND raw_text_sha256 IS NOT NULL) OR (outcome='failed' AND raw_text IS NULL AND raw_text_sha256 IS NULL))
+);
+CREATE UNIQUE INDEX idx_resume_extraction_cache_success ON resume_extraction_runs(cache_fingerprint) WHERE outcome='succeeded';
+CREATE INDEX idx_resume_extraction_material_history ON resume_extraction_runs(material_version_id, created_at DESC, id DESC);
+
+CREATE TABLE resume_text_segments (
+    extraction_run_id TEXT NOT NULL REFERENCES resume_extraction_runs(id) ON DELETE RESTRICT,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    raw_start_byte INTEGER NOT NULL CHECK (raw_start_byte >= 0),
+    raw_end_byte INTEGER NOT NULL CHECK (raw_end_byte >= raw_start_byte),
+    source_locator TEXT NOT NULL CHECK (length(source_locator) BETWEEN 1 AND 1024),
+    slice_sha256 TEXT NOT NULL CHECK (length(slice_sha256)=64 AND slice_sha256=lower(slice_sha256) AND slice_sha256 NOT GLOB '*[^0-9a-f]*'),
+    PRIMARY KEY (extraction_run_id, ordinal),
+    CHECK (raw_end_byte - raw_start_byte <= 26214400)
+);
+CREATE INDEX idx_resume_text_segments_range ON resume_text_segments(extraction_run_id, raw_start_byte, raw_end_byte, ordinal);
+
+CREATE TABLE resume_sanitization_runs (
+    id TEXT PRIMARY KEY CHECK (length(id)=32 AND id=lower(id) AND id NOT GLOB '*[^0-9a-f]*'),
+    extraction_run_id TEXT NOT NULL REFERENCES resume_extraction_runs(id) ON DELETE RESTRICT,
+    parent_sanitization_run_id TEXT,
+    sanitized_text TEXT,
+    sanitized_text_sha256 TEXT CHECK (sanitized_text_sha256 IS NULL OR (length(sanitized_text_sha256)=64 AND sanitized_text_sha256=lower(sanitized_text_sha256) AND sanitized_text_sha256 NOT GLOB '*[^0-9a-f]*')),
+    sanitizer_fingerprint TEXT NOT NULL CHECK (length(sanitizer_fingerprint) BETWEEN 1 AND 256),
+    policy_fingerprint TEXT NOT NULL CHECK (length(policy_fingerprint) BETWEEN 1 AND 256),
+    override_manifest_json TEXT NOT NULL DEFAULT '{}' CHECK (length(override_manifest_json) BETWEEN 2 AND 100000),
+    cache_fingerprint TEXT NOT NULL CHECK (length(cache_fingerprint) BETWEEN 1 AND 256),
+    outcome TEXT NOT NULL CHECK (outcome IN ('succeeded','failed')),
+    created_at TEXT NOT NULL CHECK (length(created_at)>0),
+    CHECK ((outcome='succeeded' AND sanitized_text IS NOT NULL AND sanitized_text_sha256 IS NOT NULL) OR (outcome='failed' AND sanitized_text IS NULL AND sanitized_text_sha256 IS NULL)),
+    UNIQUE(id, extraction_run_id),
+    FOREIGN KEY (parent_sanitization_run_id, extraction_run_id) REFERENCES resume_sanitization_runs(id, extraction_run_id) ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX idx_resume_sanitization_cache_success ON resume_sanitization_runs(cache_fingerprint) WHERE outcome='succeeded';
+CREATE INDEX idx_resume_sanitization_extraction ON resume_sanitization_runs(extraction_run_id, created_at DESC, id DESC);
+
+CREATE TABLE resume_sanitization_spans (
+    sanitization_run_id TEXT NOT NULL REFERENCES resume_sanitization_runs(id) ON DELETE RESTRICT,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    kind TEXT NOT NULL CHECK (kind IN ('copy','replace','delete')),
+    raw_start_byte INTEGER NOT NULL CHECK (raw_start_byte >= 0),
+    raw_end_byte INTEGER NOT NULL CHECK (raw_end_byte >= raw_start_byte),
+    sanitized_start_byte INTEGER NOT NULL CHECK (sanitized_start_byte >= 0),
+    sanitized_end_byte INTEGER NOT NULL CHECK (sanitized_end_byte >= sanitized_start_byte),
+    raw_slice_sha256 TEXT NOT NULL CHECK (length(raw_slice_sha256)=64 AND raw_slice_sha256=lower(raw_slice_sha256) AND raw_slice_sha256 NOT GLOB '*[^0-9a-f]*'),
+    sanitized_slice_sha256 TEXT NOT NULL CHECK (length(sanitized_slice_sha256)=64 AND sanitized_slice_sha256=lower(sanitized_slice_sha256) AND sanitized_slice_sha256 NOT GLOB '*[^0-9a-f]*'),
+    placeholder_key TEXT,
+    PRIMARY KEY (sanitization_run_id, ordinal),
+    CHECK ((kind='delete' AND raw_end_byte>raw_start_byte AND sanitized_end_byte=sanitized_start_byte) OR (kind='copy' AND raw_end_byte>raw_start_byte AND sanitized_end_byte>sanitized_start_byte AND raw_end_byte-raw_start_byte = sanitized_end_byte-sanitized_start_byte) OR (kind='replace' AND raw_end_byte>raw_start_byte AND sanitized_end_byte>sanitized_start_byte)),
+    CHECK (placeholder_key IS NULL OR length(placeholder_key) BETWEEN 1 AND 160),
+    CHECK (kind='replace' OR placeholder_key IS NULL),
+    CHECK (kind!='copy' OR raw_slice_sha256=sanitized_slice_sha256)
+);
+CREATE INDEX idx_resume_sanitization_spans_raw ON resume_sanitization_spans(sanitization_run_id, raw_start_byte, raw_end_byte, ordinal);
+CREATE INDEX idx_resume_sanitization_spans_sanitized ON resume_sanitization_spans(sanitization_run_id, sanitized_start_byte, sanitized_end_byte, ordinal);
+
+CREATE TABLE resume_pii_findings (
+    sanitization_run_id TEXT NOT NULL REFERENCES resume_sanitization_runs(id) ON DELETE RESTRICT,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    category TEXT NOT NULL CHECK (length(category) BETWEEN 1 AND 80),
+    rule_identity TEXT NOT NULL CHECK (length(rule_identity) BETWEEN 1 AND 256),
+    confidence REAL CHECK (confidence IS NULL OR confidence BETWEEN 0.0 AND 1.0),
+    disposition TEXT NOT NULL CHECK (disposition IN ('pending','replace','keep','review')), origin TEXT NOT NULL CHECK (length(origin) BETWEEN 1 AND 256), raw_start_byte INTEGER NOT NULL CHECK (raw_start_byte >= 0), raw_end_byte INTEGER NOT NULL CHECK (raw_end_byte > raw_start_byte),
+    sanitization_span_ordinal INTEGER,
+    PRIMARY KEY (sanitization_run_id, ordinal),
+    CHECK (sanitization_span_ordinal IS NULL OR sanitization_span_ordinal >= 0),
+    FOREIGN KEY (sanitization_run_id, sanitization_span_ordinal) REFERENCES resume_sanitization_spans(sanitization_run_id, ordinal) ON DELETE RESTRICT
+);
+CREATE INDEX idx_resume_pii_findings_range ON resume_pii_findings(sanitization_run_id, raw_start_byte, raw_end_byte, ordinal);
+
+CREATE TABLE resume_sanitization_review_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sanitization_run_id TEXT NOT NULL REFERENCES resume_sanitization_runs(id) ON DELETE RESTRICT,
+    event_kind TEXT NOT NULL CHECK (event_kind IN ('approved','revoked')),
+    note TEXT,
+    created_at TEXT NOT NULL CHECK (length(created_at)>0)
+);
+CREATE INDEX idx_resume_sanitization_review_history ON resume_sanitization_review_events(sanitization_run_id, created_at DESC, id DESC);
+
+CREATE TABLE career_fact_runs (
+    id TEXT PRIMARY KEY CHECK (length(id)=32 AND id=lower(id) AND id NOT GLOB '*[^0-9a-f]*'),
+    extraction_run_id TEXT NOT NULL REFERENCES resume_extraction_runs(id) ON DELETE RESTRICT,
+    sanitization_run_id TEXT,
+    input_kind TEXT NOT NULL CHECK (input_kind IN ('extracted','sanitized')),
+    mode TEXT NOT NULL CHECK (mode IN ('deterministic','model')),
+    extractor_fingerprint TEXT CHECK (extractor_fingerprint IS NULL OR length(extractor_fingerprint) BETWEEN 1 AND 256), schema_fingerprint TEXT CHECK (schema_fingerprint IS NULL OR length(schema_fingerprint) BETWEEN 1 AND 256), provider_fingerprint TEXT CHECK (provider_fingerprint IS NULL OR length(provider_fingerprint) BETWEEN 1 AND 256), model_fingerprint TEXT CHECK (model_fingerprint IS NULL OR length(model_fingerprint) BETWEEN 1 AND 256), prompt_fingerprint TEXT CHECK (prompt_fingerprint IS NULL OR length(prompt_fingerprint) BETWEEN 1 AND 256),
+    outcome TEXT NOT NULL CHECK (outcome IN ('succeeded','failed')),
+    cache_fingerprint TEXT NOT NULL CHECK (length(cache_fingerprint) BETWEEN 1 AND 256),
+    input_sha256 TEXT NOT NULL CHECK (length(input_sha256)=64 AND input_sha256=lower(input_sha256) AND input_sha256 NOT GLOB '*[^0-9a-f]*'),
+    input_byte_size INTEGER NOT NULL CHECK (input_byte_size >= 0),
+    token_count INTEGER CHECK (token_count IS NULL OR token_count BETWEEN 0 AND 100000000),
+    created_at TEXT NOT NULL CHECK (length(created_at)>0),
+    CHECK ((mode='deterministic' AND input_kind='extracted' AND sanitization_run_id IS NULL) OR (mode='model' AND input_kind='sanitized' AND sanitization_run_id IS NOT NULL)),
+    UNIQUE(id, extraction_run_id),
+    FOREIGN KEY (sanitization_run_id, extraction_run_id) REFERENCES resume_sanitization_runs(id, extraction_run_id) ON DELETE RESTRICT
+);
+CREATE INDEX idx_career_fact_runs_extraction ON career_fact_runs(extraction_run_id, created_at DESC, id DESC);
+
+CREATE TABLE career_fact_candidates (
+    id TEXT PRIMARY KEY CHECK (length(id)=32 AND id=lower(id) AND id NOT GLOB '*[^0-9a-f]*'),
+    fact_run_id TEXT NOT NULL REFERENCES career_fact_runs(id) ON DELETE RESTRICT,
+    fact_type TEXT NOT NULL CHECK (length(fact_type) BETWEEN 1 AND 160), normalized_key TEXT NOT NULL CHECK (length(normalized_key) BETWEEN 1 AND 512),
+    canonical_value_json TEXT NOT NULL CHECK (length(canonical_value_json) BETWEEN 1 AND 100000), value_sha256 TEXT NOT NULL CHECK (length(value_sha256)=64 AND value_sha256=lower(value_sha256) AND value_sha256 NOT GLOB '*[^0-9a-f]*'), confidence REAL CHECK (confidence IS NULL OR confidence BETWEEN 0.0 AND 1.0), origin TEXT NOT NULL CHECK (origin IN ('deterministic','model'))
+);
+CREATE INDEX idx_career_fact_candidates_run ON career_fact_candidates(fact_run_id, id);
+
+CREATE TABLE career_fact_evidence (
+    candidate_id TEXT NOT NULL REFERENCES career_fact_candidates(id) ON DELETE RESTRICT,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0), coordinate_space TEXT NOT NULL CHECK (coordinate_space IN ('extracted','sanitized')),
+    start_byte INTEGER NOT NULL CHECK (start_byte >= 0), end_byte INTEGER NOT NULL CHECK (end_byte >= start_byte), slice_sha256 TEXT NOT NULL CHECK (length(slice_sha256)=64 AND slice_sha256=lower(slice_sha256) AND slice_sha256 NOT GLOB '*[^0-9a-f]*'),
+    PRIMARY KEY (candidate_id, ordinal)
+);
+CREATE INDEX idx_career_fact_evidence_range ON career_fact_evidence(candidate_id, coordinate_space, start_byte, end_byte, ordinal);
+
+CREATE TABLE career_fact_review_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, candidate_id TEXT NOT NULL REFERENCES career_fact_candidates(id) ON DELETE RESTRICT,
+    event_kind TEXT NOT NULL CHECK (event_kind IN ('approved','rejected','approved_edit')), edited_value_json TEXT CHECK (edited_value_json IS NULL OR length(edited_value_json) BETWEEN 1 AND 100000), edited_value_sha256 TEXT, note TEXT, created_at TEXT NOT NULL CHECK (length(created_at)>0),
+    CHECK ((event_kind='approved_edit' AND edited_value_json IS NOT NULL AND edited_value_sha256 IS NOT NULL) OR (event_kind!='approved_edit' AND edited_value_json IS NULL AND edited_value_sha256 IS NULL)),
+    CHECK (edited_value_sha256 IS NULL OR (length(edited_value_sha256)=64 AND edited_value_sha256=lower(edited_value_sha256) AND edited_value_sha256 NOT GLOB '*[^0-9a-f]*'))
+);
+CREATE INDEX idx_career_fact_review_history ON career_fact_review_events(candidate_id, created_at DESC, id DESC);
+
+CREATE TABLE career_profile_versions (
+    id TEXT PRIMARY KEY CHECK (length(id)=32 AND id=lower(id) AND id NOT GLOB '*[^0-9a-f]*'), version_number INTEGER NOT NULL UNIQUE CHECK (version_number >= 1), parent_version_id TEXT REFERENCES career_profile_versions(id) ON DELETE RESTRICT,
+    content_fingerprint TEXT NOT NULL CHECK (length(content_fingerprint)=64 AND content_fingerprint=lower(content_fingerprint) AND content_fingerprint NOT GLOB '*[^0-9a-f]*'), origin TEXT NOT NULL CHECK (origin IN ('manual','approved_facts','imported')), created_at TEXT NOT NULL CHECK (length(created_at)>0)
+);
+CREATE INDEX idx_career_profile_versions_history ON career_profile_versions(version_number DESC);
+
+CREATE TABLE career_profile_facts (
+    id TEXT PRIMARY KEY CHECK (length(id)=32 AND id=lower(id) AND id NOT GLOB '*[^0-9a-f]*'), profile_version_id TEXT NOT NULL REFERENCES career_profile_versions(id) ON DELETE RESTRICT,
+    logical_fact_id TEXT NOT NULL CHECK (length(logical_fact_id) BETWEEN 1 AND 128), fact_type TEXT NOT NULL CHECK (length(fact_type) BETWEEN 1 AND 160), normalized_key TEXT NOT NULL CHECK (length(normalized_key) BETWEEN 1 AND 512), canonical_value_json TEXT NOT NULL CHECK (length(canonical_value_json) BETWEEN 1 AND 100000), value_sha256 TEXT NOT NULL CHECK (length(value_sha256)=64 AND value_sha256=lower(value_sha256) AND value_sha256 NOT GLOB '*[^0-9a-f]*'), origin TEXT NOT NULL CHECK (origin IN ('manual','approved_candidate','imported')), privacy_classification TEXT NOT NULL CHECK (privacy_classification IN ('public','private','sensitive')), sort_order INTEGER NOT NULL CHECK (sort_order >= 0), UNIQUE(profile_version_id, logical_fact_id), UNIQUE(profile_version_id, sort_order)
+);
+CREATE INDEX idx_career_profile_facts_version ON career_profile_facts(profile_version_id, sort_order, id);
+
+CREATE TABLE career_profile_fact_sources (
+    profile_fact_id TEXT NOT NULL REFERENCES career_profile_facts(id) ON DELETE RESTRICT, candidate_id TEXT NOT NULL REFERENCES career_fact_candidates(id) ON DELETE RESTRICT, PRIMARY KEY (profile_fact_id, candidate_id)
+);
+CREATE INDEX idx_career_profile_fact_sources_candidate ON career_profile_fact_sources(candidate_id, profile_fact_id);
+
+CREATE TABLE career_profile_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton=1), current_profile_version_id TEXT REFERENCES career_profile_versions(id) ON DELETE RESTRICT, revision INTEGER NOT NULL CHECK (revision >= 0), next_version_number INTEGER NOT NULL CHECK (next_version_number >= 1)
+);
+INSERT INTO career_profile_state(singleton, current_profile_version_id, revision, next_version_number) VALUES (1, NULL, 0, 1);
+"""
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -497,6 +660,7 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    connection.executescript(V13_DDL)
 
     # Existing v8 databases need the additive event column; preparation tables
     # above are intentionally created with IF NOT EXISTS for safe retries.
