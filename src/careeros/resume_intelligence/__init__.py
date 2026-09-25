@@ -9,6 +9,14 @@ from .coordinates import (
     validate_sha256,
     validate_slice_hash,
 )
+from .extraction import (
+    ExtractionError,
+    ExtractionResult,
+    VerifiedMaterialSource,
+    extract_material,
+    extract_verified_source,
+    verify_material_source,
+)
 from .models import (
     CareerFactCandidate,
     CareerFactEvidence,
@@ -40,4 +48,10 @@ __all__ = [
     "sha256_slice",
     "validate_sha256",
     "validate_slice_hash",
+    "ExtractionError",
+    "ExtractionResult",
+    "VerifiedMaterialSource",
+    "extract_material",
+    "extract_verified_source",
+    "verify_material_source",
 ]
