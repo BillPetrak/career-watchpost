@@ -11,11 +11,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, NoReturn, cast
 
+from careeros.resume_intelligence.career_facts import (
+    DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+    FACT_SCHEMA_FINGERPRINT,
+    FACT_TYPES,
+    TYPE_LIMITS,
+    canonical_json,
+    extract_deterministic_facts,
+)
 from careeros.resume_intelligence.coordinates import (
     TransformationMap,
     TransformationSpan,
@@ -50,6 +61,98 @@ from careeros.resume_intelligence.sanitization_identity import (
 )
 
 MAX_SANITIZATION_LINEAGE_DEPTH = 64
+_CANONICAL_REVIEW_TIMESTAMP = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00$"
+)
+
+
+@dataclass(frozen=True)
+class FactReviewRecord:
+    """M6 review read including the database event identity."""
+
+    id: int
+    candidate_id: str
+    event_kind: str
+    created_at: str
+    edited_value_json: str | None = None
+    edited_value_sha256: str | None = None
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class FactAuthority:
+    """Complete, transient M5 authority materialization and its digest."""
+
+    run: CareerFactRun
+    candidates: tuple[CareerFactCandidate, ...]
+    evidence: tuple[CareerFactEvidence, ...]
+    extraction_run_id: str
+    extraction_raw_sha256: str
+    extraction_raw_byte_size: int
+    digest: str
+
+
+def validate_recognized_fact_authority(
+    c: sqlite3.Connection,
+    run_id: str,
+    *,
+    candidate_limit: int = 1000,
+    evidence_per_candidate_limit: int = 1000,
+    evidence_total_limit: int = 10000,
+) -> FactAuthority:
+    """Fully validate a persisted deterministic M5 aggregate before a lock.
+
+    This is deliberately separate from :func:`load_fact_authority`: the
+    latter is safe inside the short profile write transaction and only
+    re-materializes persisted authority, while this pre-lock operation may
+    rerun the frozen deterministic extractor against the verified raw text.
+    """
+    authority = load_fact_authority(
+        c,
+        run_id,
+        candidate_limit=candidate_limit,
+        evidence_per_candidate_limit=evidence_per_candidate_limit,
+        evidence_total_limit=evidence_total_limit,
+        require_recognized=True,
+    )
+    expected_run, expected_candidates, expected_evidence = extract_deterministic_facts(
+        c.execute(
+            "SELECT raw_text FROM resume_extraction_runs WHERE id=?",
+            (authority.extraction_run_id,),
+        ).fetchone()[0],
+        authority.extraction_run_id,
+        fact_run_id=authority.run.id,
+        created_at=authority.run.created_at,
+    )
+    expected_candidates = tuple(sorted(expected_candidates, key=lambda item: item.id))
+    expected_evidence = tuple(
+        sorted(expected_evidence, key=lambda item: (item.candidate_id, item.ordinal))
+    )
+    if (
+        expected_run != authority.run
+        or expected_candidates != authority.candidates
+        or expected_evidence != authority.evidence
+    ):
+        raise ResumeValidationError(
+            "persisted fact aggregate differs from M5 authority"
+        )
+    return authority
+
+
+def validate_review_timestamp(value: str) -> str:
+    """Require the exact UTC microsecond timestamp emitted by M6 services."""
+    if (
+        not isinstance(value, str)
+        or _CANONICAL_REVIEW_TIMESTAMP.fullmatch(value) is None
+    ):
+        raise ResumeValidationError("review timestamp is not canonical UTC")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ResumeValidationError("review timestamp is invalid") from exc
+    if parsed.tzinfo != UTC or parsed.isoformat(timespec="microseconds") != value:
+        raise ResumeValidationError("review timestamp is not canonical UTC")
+    return value
 
 
 class ResumeRepositoryError(Exception):
@@ -1335,6 +1438,119 @@ def load_fact_aggregate(
     return run, candidates, evidence
 
 
+def load_fact_authority(
+    c: sqlite3.Connection,
+    run_id: str,
+    *,
+    candidate_limit: int = 1000,
+    evidence_per_candidate_limit: int = 1000,
+    evidence_total_limit: int = 10000,
+    require_recognized: bool = True,
+) -> FactAuthority:
+    """Materialize complete recognized M5 authority and a transient digest.
+
+    The same function is intentionally usable before a profile lock and while
+    an existing ``BEGIN IMMEDIATE`` is held.  It performs no writes and does
+    not invoke extraction, parsing, or model code.
+    """
+    run, candidates, evidence = load_fact_aggregate(
+        c,
+        run_id,
+        candidate_limit=candidate_limit,
+        evidence_per_candidate_limit=evidence_per_candidate_limit,
+        evidence_total_limit=evidence_total_limit,
+    )
+    extraction = _require(
+        _row(
+            c,
+            "SELECT * FROM resume_extraction_runs WHERE id=?",
+            (run.extraction_run_id,),
+        ),
+        "extraction run",
+    )
+    if extraction["outcome"] != "succeeded":
+        raise ResumeValidationError("fact authority requires a successful extraction")
+    raw = _raw(extraction)
+    raw_sha = hashlib.sha256(raw).hexdigest()
+    if extraction["raw_text_sha256"] != raw_sha:
+        raise ResumeValidationError("extraction artifact integrity failure")
+    if require_recognized:
+        if (
+            run.mode != "deterministic"
+            or run.input_kind != "extracted"
+            or run.sanitization_run_id is not None
+            or run.extractor_fingerprint != DETERMINISTIC_EXTRACTOR_FINGERPRINT
+            or run.schema_fingerprint != FACT_SCHEMA_FINGERPRINT
+            or run.input_sha256 != raw_sha
+            or run.input_byte_size != len(raw)
+        ):
+            raise ResumeValidationError("fact run is not recognized M5 authority")
+        counts: dict[str, int] = {}
+        for candidate in candidates:
+            if candidate.fact_type not in FACT_TYPES:
+                raise ResumeValidationError("fact candidate has an unknown M5 type")
+            counts[candidate.fact_type] = counts.get(candidate.fact_type, 0) + 1
+            if counts[candidate.fact_type] > TYPE_LIMITS[candidate.fact_type]:
+                raise ResumeValidationError("fact candidate type bound exceeded")
+    authority = {
+        "extraction_run_id": run.extraction_run_id,
+        "extraction_raw_sha256": raw_sha,
+        "extraction_raw_byte_size": len(raw),
+        "fact_run": {
+            "id": run.id,
+            "extraction_run_id": run.extraction_run_id,
+            "sanitization_run_id": run.sanitization_run_id,
+            "input_kind": run.input_kind,
+            "mode": run.mode,
+            "outcome": run.outcome,
+            "cache_fingerprint": run.cache_fingerprint,
+            "input_sha256": run.input_sha256,
+            "input_byte_size": run.input_byte_size,
+            "extractor_fingerprint": run.extractor_fingerprint,
+            "schema_fingerprint": run.schema_fingerprint,
+            "provider_fingerprint": run.provider_fingerprint,
+            "model_fingerprint": run.model_fingerprint,
+            "prompt_fingerprint": run.prompt_fingerprint,
+            "token_count": run.token_count,
+            "created_at": run.created_at,
+        },
+        "candidates": [
+            {
+                "id": item.id,
+                "fact_run_id": item.fact_run_id,
+                "fact_type": item.fact_type,
+                "normalized_key": item.normalized_key,
+                "canonical_value_json": item.canonical_value_json,
+                "value_sha256": item.value_sha256,
+                "confidence": item.confidence,
+                "origin": item.origin,
+            }
+            for item in candidates
+        ],
+        "evidence": [
+            {
+                "candidate_id": item.candidate_id,
+                "ordinal": item.ordinal,
+                "coordinate_space": item.coordinate_space,
+                "start_byte": item.start_byte,
+                "end_byte": item.end_byte,
+                "slice_sha256": item.slice_sha256,
+            }
+            for item in evidence
+        ],
+    }
+    digest = hashlib.sha256(canonical_json(authority).encode("utf-8")).hexdigest()
+    return FactAuthority(
+        run,
+        candidates,
+        evidence,
+        run.extraction_run_id,
+        raw_sha,
+        len(raw),
+        digest,
+    )
+
+
 def get_fact_run(c: sqlite3.Connection, run_id: str) -> CareerFactRun:
     return CareerFactRun(
         **dict(
@@ -1475,3 +1691,78 @@ def latest_fact_review(
 ) -> CareerFactReviewEvent | None:
     history = fact_review_history(c, candidate_id, limit=1)
     return history[0] if history else None
+
+
+def fact_review_history_records(
+    c: sqlite3.Connection, candidate_id: str, *, limit: int | None = None
+) -> list[FactReviewRecord]:
+    """Strict M6 review history, including event IDs."""
+    if limit is not None:
+        _limit(limit)
+    _require(
+        _row(c, "SELECT id FROM career_fact_candidates WHERE id=?", (candidate_id,)),
+        "fact candidate",
+    )
+    query = (
+        "SELECT id,candidate_id,event_kind,created_at,edited_value_json,edited_value_sha256,note "
+        "FROM career_fact_review_events WHERE candidate_id=? ORDER BY created_at DESC,id DESC"
+    )
+    args: tuple[Any, ...] = (candidate_id,)
+    if limit is not None:
+        query += " LIMIT ?"
+        args += (limit,)
+    rows = c.execute(query, args).fetchall()
+    records = []
+    for row in rows:
+        validate_review_timestamp(row["created_at"])
+        records.append(FactReviewRecord(**dict(row)))
+    return records
+
+
+def latest_fact_review_record(
+    c: sqlite3.Connection, candidate_id: str
+) -> FactReviewRecord | None:
+    history = fact_review_history_records(c, candidate_id, limit=None)
+    return history[0] if history else None
+
+
+def append_fact_review_in_transaction(
+    c: sqlite3.Connection,
+    event: CareerFactReviewEvent,
+    *,
+    validate_timestamp: bool = False,
+) -> int:
+    """Append one review event without opening a nested transaction.
+
+    Callers must already own the write transaction.  The generic
+    ``append_fact_review`` remains unchanged for existing M2 callers.
+    """
+    if validate_timestamp:
+        validate_review_timestamp(event.created_at)
+    _require(
+        _row(
+            c, "SELECT * FROM career_fact_candidates WHERE id=?", (event.candidate_id,)
+        ),
+        "fact candidate",
+    )
+    if event.event_kind == "approved_edit":
+        assert (
+            event.edited_value_json is not None
+            and event.edited_value_sha256 is not None
+        )
+        canonical, digest = _canonical_json(event.edited_value_json)
+        if canonical != event.edited_value_json or digest != event.edited_value_sha256:
+            raise ResumeValidationError("edited candidate value hash is inconsistent")
+    cur = c.execute(
+        "INSERT INTO career_fact_review_events(candidate_id,event_kind,edited_value_json,edited_value_sha256,note,created_at) VALUES (?,?,?,?,?,?)",
+        (
+            event.candidate_id,
+            event.event_kind,
+            event.edited_value_json,
+            event.edited_value_sha256,
+            event.note,
+            event.created_at,
+        ),
+    )
+    assert cur.lastrowid is not None
+    return int(cur.lastrowid)

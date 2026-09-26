@@ -11,6 +11,7 @@ from .career_facts import (
     extract_career_facts,
     extract_deterministic_facts,
     run_deterministic_facts,
+    validate_candidate_value,
 )
 from .coordinates import (
     ByteRange,
@@ -96,4 +97,5 @@ __all__ = [
     "extract_career_facts",
     "extract_deterministic_facts",
     "run_deterministic_facts",
+    "validate_candidate_value",
 ]

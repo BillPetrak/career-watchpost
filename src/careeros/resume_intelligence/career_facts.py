@@ -15,7 +15,7 @@ from array import array
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import urlsplit, urlunsplit
 
 from .coordinates import sha256_slice
@@ -60,6 +60,30 @@ FACT_TYPE_ORDER = (
     "certification",
     "language",
 )
+_EDIT_FIELDS = {
+    "identity.name": {"name"},
+    "contact.email": {"email"},
+    "contact.phone": {"phone"},
+    "portfolio_reference": {"url"},
+    "skill": {"name"},
+    "employment": {"title", "company", "start_date", "end_date"},
+    "education": {"degree", "institution", "start_date", "end_date"},
+    "certification": {"name", "issuer", "date"},
+    "language": {"name"},
+}
+_EDIT_REQUIRED_FIELDS = {
+    "identity.name": {"name"},
+    "contact.email": {"email"},
+    "contact.phone": {"phone"},
+    "portfolio_reference": {"url"},
+    "skill": {"name"},
+    "employment": {"title", "company"},
+    "education": {"degree", "institution"},
+    "certification": {"name"},
+    "language": {"name"},
+}
+_NAME_PUNCTUATION = frozenset(".'’ʼ-‐‑‒–")
+_EMAIL_LOCAL_ASCII = frozenset(".!#$%&'*+/=?^_`{|}~-")
 _CANONICAL_SEPARATORS = (",", ":")
 _DATE = r"(?:\d{4}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?)"
 _HEADINGS = {
@@ -481,6 +505,106 @@ def _normalized_key(fact_type: str, semantic: dict[str, Any]) -> str:
     if not 1 <= len(key) <= MAX_NORMALIZED_KEY_LENGTH:
         raise CareerFactError("M5 normalized key bound exceeded")
     return key
+
+
+def validate_candidate_value(fact_type: str, value_json: str) -> tuple[str, str, str]:
+    """Validate an M5-shaped edited value without structural discovery.
+
+    This is the small public seam used by M6.  It applies the same field,
+    date, URL, and normalization rules as deterministic M5 extraction, but
+    never inspects résumé text or evidence.
+    """
+    if fact_type not in _EDIT_FIELDS:
+        raise CareerFactError("unknown M5 fact type")
+    if not isinstance(value_json, str):
+        raise CareerFactError("edited value must be JSON text")
+
+    def reject_constant(value: str) -> NoReturn:
+        raise ValueError(value)
+
+    try:
+        parsed = json.loads(value_json, parse_constant=reject_constant)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise CareerFactError("edited value is not valid JSON") from exc
+    if not isinstance(parsed, dict) or set(parsed) - _EDIT_FIELDS[fact_type]:
+        raise CareerFactError("edited value has the wrong M5 shape")
+    if set(parsed) != {key for key, value in parsed.items() if value is not None}:
+        raise CareerFactError("edited value contains null fields")
+    if not _EDIT_REQUIRED_FIELDS[fact_type].issubset(parsed):
+        raise CareerFactError("edited value has the wrong M5 shape")
+    for field, value in parsed.items():
+        if (
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or "\n" in value
+            or "\r" in value
+        ):
+            raise CareerFactError("edited value field is invalid")
+        if len(value.encode("utf-8")) > MAX_FIELD_BYTES:
+            raise CareerFactError("edited value field bound exceeded")
+        if field.endswith("date") or (fact_type == "certification" and field == "date"):
+            if _date(value) is None:
+                raise CareerFactError("edited value date is invalid")
+        elif field == "email":
+            local, separator, domain = value.rpartition("@")
+            labels = domain.split(".")
+            if (
+                not separator
+                or not local
+                or not domain
+                or local.startswith(".")
+                or local.endswith(".")
+                or ".." in local
+                or any(
+                    unicodedata.category(char)[0] not in {"L", "M", "N"}
+                    and char not in _EMAIL_LOCAL_ASCII
+                    for char in local
+                )
+                or len(labels) < 2
+                or any(
+                    not label
+                    or label.startswith("-")
+                    or label.endswith("-")
+                    or any(
+                        unicodedata.category(char)[0] not in {"L", "M", "N"}
+                        and char != "-"
+                        for char in label
+                    )
+                    for label in labels
+                )
+                or not any(unicodedata.category(char)[0] == "L" for char in labels[-1])
+            ):
+                raise CareerFactError("edited value email is invalid")
+        elif field == "phone":
+            digits = sum(char.isdigit() for char in value)
+            if not re.fullmatch(r"\+?\d[\d .()/-]*\d", value) or not 7 <= digits <= 15:
+                raise CareerFactError("edited value phone is invalid")
+        elif field == "name" and fact_type == "identity.name":
+            tokens = re.split(r"[ \t]+", value)
+            if not 1 <= len(tokens) <= 5 or any(
+                not token
+                or not any(unicodedata.category(char)[0] == "L" for char in token)
+                or any(
+                    unicodedata.category(char)[0] not in {"L", "M"}
+                    and char not in _NAME_PUNCTUATION
+                    for char in token
+                )
+                for token in tokens
+            ):
+                raise CareerFactError("edited value name is invalid")
+        elif field == "url" and _url(value) is None:
+            raise CareerFactError("edited value URL is invalid")
+    if "end_date" in parsed and "start_date" not in parsed:
+        raise CareerFactError("end_date requires start_date")
+    canonical = canonical_json(parsed)
+    if canonical != value_json:
+        raise CareerFactError("edited value is not canonical JSON")
+    if not 1 <= len(canonical) <= MAX_CANONICAL_VALUE_LENGTH:
+        raise CareerFactError("edited value canonical bound exceeded")
+    semantic = _canonical_semantic(fact_type, parsed)
+    key = _normalized_key(fact_type, semantic)
+    return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest(), key
 
 
 def _candidate_id(

@@ -5,13 +5,15 @@ not perform extraction, model work, or material access; it only validates and
 atomically persists the authority snapshot represented by schema v13.
 """
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import hashlib
 import json
 import secrets
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, NoReturn, cast
@@ -198,6 +200,155 @@ def list_fact_sources(
     ]
 
 
+def validate_profile_snapshot(
+    connection: sqlite3.Connection, version_id: str
+) -> tuple[
+    CareerProfileVersion, tuple[CareerProfileFact, ...], tuple[tuple[str, ...], ...]
+]:
+    """Validate one immutable profile snapshot without repairing persisted rows."""
+    version = get_profile_version(connection, version_id)
+    if version.version_number == 1:
+        if version.parent_version_id is not None:
+            raise CareerProfileValidationError("version one must not have a parent")
+    elif version.parent_version_id is None:
+        raise CareerProfileValidationError("profile version parent is missing")
+    elif (
+        connection.execute(
+            "SELECT 1 FROM career_profile_versions WHERE id=?",
+            (version.parent_version_id,),
+        ).fetchone()
+        is None
+    ):
+        raise CareerProfileValidationError("profile version parent does not exist")
+    rows = connection.execute(
+        "SELECT * FROM career_profile_facts WHERE profile_version_id=? ORDER BY sort_order, id",
+        (version_id,),
+    ).fetchall()
+    # Ordering in the database is only for inspection; reject any malformed persisted order.
+    if [int(row["sort_order"]) for row in rows] != list(range(len(rows))):
+        raise CareerProfileValidationError(
+            "profile fact sort orders are not contiguous"
+        )
+    inputs: list[ProfileFactInput] = []
+    source_sets: list[tuple[str, ...]] = []
+    for row in rows:
+        fact = _fact(row)
+        sources = tuple(
+            str(source["candidate_id"])
+            for source in connection.execute(
+                "SELECT candidate_id FROM career_profile_fact_sources WHERE profile_fact_id=? ORDER BY candidate_id",
+                (fact.id,),
+            )
+        )
+        persisted = tuple(
+            str(source["candidate_id"])
+            for source in connection.execute(
+                "SELECT candidate_id FROM career_profile_fact_sources WHERE profile_fact_id=?",
+                (fact.id,),
+            )
+        )
+        if persisted != sources or len(set(sources)) != len(sources):
+            raise CareerProfileValidationError(
+                "profile sources are not sorted and unique"
+            )
+        if fact.origin in ("manual", "imported") and sources:
+            raise CareerProfileValidationError(
+                "manual/imported facts cannot have sources"
+            )
+        if fact.origin == "approved_candidate" and not sources:
+            raise CareerProfileValidationError("approved candidate fact has no sources")
+        if sources:
+            from careeros.resume_intelligence.career_facts import (
+                validate_candidate_value,
+            )
+
+            for candidate_id in sources:
+                candidate = connection.execute(
+                    "SELECT fact_type,normalized_key,canonical_value_json,value_sha256 "
+                    "FROM career_fact_candidates WHERE id=?",
+                    (candidate_id,),
+                ).fetchone()
+                if candidate is None:
+                    raise CareerProfileValidationError(
+                        "profile source candidate does not exist"
+                    )
+                if str(candidate["fact_type"]) != fact.fact_type:
+                    raise CareerProfileValidationError(
+                        "profile source fact type is incompatible"
+                    )
+                try:
+                    _, digest, key = validate_candidate_value(
+                        fact.fact_type, fact.canonical_value_json
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise CareerProfileValidationError(
+                        "candidate-backed profile value is invalid"
+                    ) from exc
+                if digest != fact.value_sha256 or key != fact.normalized_key:
+                    raise CareerProfileValidationError(
+                        "candidate-backed profile value/key is invalid"
+                    )
+                # The immutable snapshot stores the effective review value.
+                # An approved_edit may intentionally have a different key
+                # from the immutable candidate row; historical validation
+                # must not reinterpret that snapshot through today's source
+                # candidate authority.
+        inputs.append(
+            ProfileFactInput(
+                fact.logical_fact_id,
+                fact.fact_type,
+                fact.normalized_key,
+                fact.canonical_value_json,
+                fact.origin,
+                cast(
+                    Literal["public", "private", "sensitive"],
+                    fact.privacy_classification,
+                ),
+                fact.sort_order,
+                sources,
+                fact.value_sha256,
+            )
+        )
+        source_sets.append(sources)
+    _normalise_inputs(inputs)
+    if _fingerprint(inputs) != version.content_fingerprint:
+        raise CareerProfileValidationError("profile content fingerprint mismatch")
+    return version, tuple(_fact(row) for row in rows), tuple(source_sets)
+
+
+def validate_profile_aggregate(connection: sqlite3.Connection) -> CareerProfileState:
+    """Validate singleton state, version chain, and all historical snapshots."""
+    state = get_profile_state(connection)
+    versions = [
+        _version(row)
+        for row in connection.execute(
+            "SELECT * FROM career_profile_versions ORDER BY version_number"
+        )
+    ]
+    if state.current_profile_version_id is None:
+        if state.revision != 0 or state.next_version_number != 1 or versions:
+            raise CareerProfileValidationError("invalid initial profile state")
+        return state
+    if state.revision != state.next_version_number - 1:
+        raise CareerProfileValidationError("profile revision/version invariant failed")
+    if not versions or versions[-1].version_number != state.revision:
+        raise CareerProfileValidationError("profile version chain is incomplete")
+    expected_parent: str | None = None
+    for expected_number, version in enumerate(versions, 1):
+        if (
+            version.version_number != expected_number
+            or version.parent_version_id != expected_parent
+        ):
+            raise CareerProfileValidationError(
+                "profile version parent chain is invalid"
+            )
+        validate_profile_snapshot(connection, version.id)
+        expected_parent = version.id
+    if state.current_profile_version_id != versions[-1].id:
+        raise CareerProfileValidationError("current profile version is not latest")
+    return state
+
+
 def _reject_json_constant(value: str) -> NoReturn:
     raise ValueError(f"non-standard JSON constant: {value}")
 
@@ -231,6 +382,7 @@ def _normalise_inputs(facts: Iterable[ProfileFactInput]) -> list[ProfileFactInpu
             "profile fact sort orders must be contiguous"
         )
     seen: set[str] = set()
+    seen_sources: set[str] = set()
     for fact in result:
         if fact.logical_fact_id in seen:
             raise CareerProfileValidationError("profile logical facts must be unique")
@@ -245,6 +397,10 @@ def _normalise_inputs(facts: Iterable[ProfileFactInput]) -> list[ProfileFactInpu
             raise CareerProfileValidationError(
                 "approved candidate facts require sources"
             )
+        if fact.origin in ("manual", "imported") and fact.source_candidate_ids:
+            raise CareerProfileValidationError(
+                "manual/imported facts cannot have sources"
+            )
         if fact.origin not in ("manual", "approved_candidate", "imported"):
             raise CareerProfileValidationError("invalid profile fact origin")
         if fact.privacy_classification not in ("public", "private", "sensitive"):
@@ -254,6 +410,12 @@ def _normalise_inputs(facts: Iterable[ProfileFactInput]) -> list[ProfileFactInpu
             raise CareerProfileValidationError(
                 "profile source candidates must be sorted and unique"
             )
+        overlap = seen_sources.intersection(source_ids)
+        if overlap:
+            raise CareerProfileValidationError(
+                "a candidate cannot source two profile facts"
+            )
+        seen_sources.update(source_ids)
     return result
 
 
@@ -284,6 +446,8 @@ def save_profile(
     *,
     origin: str = "manual",
     created_at: str | None = None,
+    before_write: Callable[[sqlite3.Connection], None] | None = None,
+    before_commit: Callable[[sqlite3.Connection], None] | None = None,
 ) -> ProfileSaveResult:
     """Atomically create one immutable snapshot and advance profile authority."""
     desired = _normalise_inputs(facts)
@@ -305,6 +469,8 @@ def save_profile(
             raise CareerProfileConflict(
                 "career profile revision is stale", current_revision=state.revision
             )
+        if before_write is not None:
+            before_write(connection)
         candidate_ids = sorted(
             {cid for fact in desired for cid in fact.source_candidate_ids}
         )
@@ -396,6 +562,8 @@ def save_profile(
                 "career profile revision is stale",
                 current_revision=None if current is None else int(current[0]),
             )
+        if before_commit is not None:
+            before_commit(connection)
         connection.commit()
     except sqlite3.IntegrityError as exc:
         connection.rollback()

@@ -11,23 +11,28 @@ from careeros.database.resume_intelligence import (
     ResumeNotFoundError,
     ResumeValidationError,
     append_fact_review,
+    append_fact_review_in_transaction,
     append_sanitization_review,
     fact_candidates,
     fact_evidence,
     fact_review_history,
     find_successful_fact_runs,
     latest_fact_review,
+    latest_fact_review_record,
     latest_sanitization_review,
     list_fact_runs,
     load_fact_aggregate,
+    load_fact_authority,
     persist_extraction,
     persist_fact_run,
     persist_sanitization,
     sanitization_findings,
     sanitization_review_history,
     sanitization_spans,
+    validate_recognized_fact_authority,
 )
 from careeros.database.schema import initialize_schema
+from careeros.resume_intelligence.career_facts import extract_deterministic_facts
 from careeros.resume_intelligence.models import (
     CareerFactCandidate,
     CareerFactEvidence,
@@ -698,6 +703,122 @@ def test_same_extraction_and_failed_child_contracts(db) -> None:
     with pytest.raises(ResumeValidationError, match="cannot contain artifacts"):
         persist_fact_run(db, failed_fact, [failed_candidate])
     assert db.execute("SELECT count(*) FROM career_fact_runs").fetchone()[0] == 0
+
+
+def _persist_valid_m5(db):
+    raw = "Skills: Python\n"
+    run = ResumeExtractionRun(
+        "9" * 32,
+        "3" * 32,
+        "resume.txt",
+        "text/plain",
+        3,
+        "4" * 64,
+        "text",
+        "text",
+        "succeeded",
+        raw,
+        digest(raw.encode()),
+        0,
+        "extractor",
+        "valid-cache",
+        "2026-01-01",
+    )
+    persist_extraction(db, run)
+    fact, candidates, evidence = extract_deterministic_facts(
+        raw, run.id, fact_run_id="8" * 32, created_at="2026-01-02"
+    )
+    persist_fact_run(db, fact, candidates, evidence)
+    return fact, candidates, evidence
+
+
+def test_m6_authority_digest_is_stable_and_prevalidation_is_strict(db) -> None:
+    fact, _candidates, _evidence = _persist_valid_m5(db)
+    first = load_fact_authority(db, fact.id)
+    second = load_fact_authority(db, fact.id)
+    assert first.digest == second.digest
+    assert validate_recognized_fact_authority(db, fact.id).digest == first.digest
+
+
+@pytest.mark.parametrize("mutation", ["candidate", "evidence", "run", "raw"])
+def test_m6_authority_detects_persisted_mutation(db, mutation: str) -> None:
+    fact, candidates, evidence = _persist_valid_m5(db)
+    before = load_fact_authority(db, fact.id).digest
+    if mutation == "candidate":
+        db.execute(
+            "UPDATE career_fact_candidates SET confidence=0.5 WHERE id=?",
+            (candidates[0].id,),
+        )
+    elif mutation == "evidence":
+        db.execute(
+            "UPDATE career_fact_evidence SET slice_sha256=? "
+            "WHERE candidate_id=? AND ordinal=?",
+            ("0" * 64, evidence[0].candidate_id, evidence[0].ordinal),
+        )
+    elif mutation == "run":
+        db.execute(
+            "UPDATE career_fact_runs SET created_at='changed' WHERE id=?", (fact.id,)
+        )
+    else:
+        db.execute(
+            "UPDATE resume_extraction_runs SET raw_text='changed' WHERE id=?",
+            (fact.extraction_run_id,),
+        )
+    db.commit()
+    if mutation == "run":
+        assert load_fact_authority(db, fact.id).digest != before
+    else:
+        with pytest.raises(ResumeValidationError):
+            validate_recognized_fact_authority(db, fact.id)
+
+
+def test_load_authority_does_not_rerun_extractor_or_pii(db, monkeypatch) -> None:
+    fact, _candidates, _evidence = _persist_valid_m5(db)
+    import careeros.database.resume_intelligence as repository
+
+    monkeypatch.setattr(
+        repository,
+        "extract_deterministic_facts",
+        lambda *_a, **_k: pytest.fail("extractor called"),
+    )
+    assert load_fact_authority(db, fact.id).digest
+
+
+def test_m6_review_history_validates_all_timestamps_and_equal_time_ids(db) -> None:
+    fact, candidates, _evidence = _persist_valid_m5(db)
+    candidate_id = candidates[0].id
+    stamp = "2026-09-26T15:42:13.123456+00:00"
+    db.executemany(
+        "INSERT INTO career_fact_review_events"
+        "(candidate_id,event_kind,created_at) VALUES (?,?,?)",
+        [(candidate_id, "approved", stamp), (candidate_id, "rejected", stamp)],
+    )
+    db.commit()
+    assert latest_fact_review_record(db, candidate_id).event_kind == "rejected"
+    db.execute(
+        "UPDATE career_fact_review_events SET created_at='2026-01-01' "
+        "WHERE candidate_id=?",
+        (candidate_id,),
+    )
+    db.commit()
+    with pytest.raises(ResumeValidationError):
+        latest_fact_review_record(db, candidate_id)
+
+
+def test_transaction_aware_review_append_and_generic_compatibility(db) -> None:
+    fact, candidates, _evidence = _persist_valid_m5(db)
+    event = CareerFactReviewEvent(
+        candidates[0].id, "approved", "2026-09-26T15:42:13.123456+00:00"
+    )
+    db.execute("BEGIN IMMEDIATE")
+    event_id = append_fact_review_in_transaction(db, event, validate_timestamp=True)
+    db.commit()
+    assert event_id > 0
+    assert latest_fact_review(db, candidates[0].id).event_kind == "approved"
+    append_fact_review(
+        db, CareerFactReviewEvent(candidates[0].id, "rejected", "legacy")
+    )
+    assert latest_fact_review(db, candidates[0].id).event_kind == "rejected"
 
 
 def test_invalid_edit_is_atomic_and_latest_fact_review(db) -> None:

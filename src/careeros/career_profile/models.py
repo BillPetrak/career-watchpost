@@ -8,6 +8,8 @@ from typing import Literal
 
 ProfileCreationOrigin = Literal["manual", "approved_facts", "imported"]
 ProfileFactOrigin = Literal["manual", "approved_candidate", "imported"]
+ReviewStatus = Literal["pending", "approved", "approved_edit", "rejected"]
+PrivacyClassification = Literal["public", "private", "sensitive"]
 
 
 @dataclass(frozen=True)
@@ -69,3 +71,36 @@ class CareerProfileState:
             raise ValueError("profile revision must be non-negative")
         if self.next_version_number < 1:
             raise ValueError("next profile version number must be positive")
+
+
+@dataclass(frozen=True)
+class EffectiveCandidateReview:
+    candidate_id: str
+    status: ReviewStatus
+    canonical_value_json: str | None = None
+    value_sha256: str | None = None
+    normalized_key: str | None = None
+    event_id: int | None = None
+    created_at: str | None = None
+
+
+@dataclass(frozen=True)
+class CandidateProfileFactRequest:
+    primary_candidate_id: str
+    supporting_candidate_ids: tuple[str, ...] = ()
+    logical_fact_id: str | None = None
+    distinct_identity: bool = False
+    privacy_override: PrivacyClassification | None = None
+
+
+@dataclass(frozen=True)
+class ManualProfileFactRequest:
+    logical_fact_id: str
+    privacy_override: PrivacyClassification | None = None
+
+
+@dataclass(frozen=True)
+class CareerProfileSnapshot:
+    version: CareerProfileVersion
+    facts: tuple[CareerProfileFact, ...]
+    source_candidate_ids: tuple[tuple[str, ...], ...]
