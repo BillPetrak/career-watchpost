@@ -34,6 +34,22 @@ from careeros.resume_intelligence.models import (
     SanitizationReviewEvent,
     SanitizationSpan,
 )
+from careeros.resume_intelligence.pii import (
+    Disposition,
+    PiiFinding,
+    SanitizationResult,
+    detect_pii,
+    resolve_sanitization,
+)
+from careeros.resume_intelligence.sanitization_identity import (
+    DEFAULT_POLICY_FINGERPRINT,
+    SANITIZER_FINGERPRINT,
+    override_policy_fingerprint,
+    parse_override_manifest,
+    sanitization_cache_fingerprint,
+)
+
+MAX_SANITIZATION_LINEAGE_DEPTH = 64
 
 
 class ResumeRepositoryError(Exception):
@@ -265,6 +281,9 @@ def persist_sanitization(
     findings: Iterable[ResumePiiFinding] = (),
 ) -> ResumeSanitizationRun:
     supplied_spans, supplied_findings = tuple(spans), tuple(findings)
+    canonical_manifest, _ = _canonical_json(run.override_manifest_json)
+    if canonical_manifest != run.override_manifest_json:
+        raise ResumeValidationError("override manifest is not canonical JSON")
     with _write(c):
         extraction = _require(
             _row(
@@ -277,21 +296,34 @@ def persist_sanitization(
         if extraction["outcome"] != "succeeded":
             raise ResumeValidationError("sanitization requires a successful extraction")
         if run.parent_sanitization_run_id is not None:
-            parent = _require(
-                _row(
-                    c,
-                    "SELECT * FROM resume_sanitization_runs WHERE id=?",
-                    (run.parent_sanitization_run_id,),
-                ),
-                "parent sanitization",
-            )
-            if parent["extraction_run_id"] != run.extraction_run_id:
+            if run.parent_sanitization_run_id == run.id:
+                raise ResumeValidationError("sanitization run cannot parent itself")
+            if run.sanitizer_fingerprint == SANITIZER_FINGERPRINT:
+                parent = validate_sanitization_authority(
+                    c, run.parent_sanitization_run_id
+                )
+            else:
+                parent = validate_sanitization(c, run.parent_sanitization_run_id)
+            if parent.extraction_run_id != run.extraction_run_id:
                 raise ResumeValidationError(
                     "parent sanitization belongs to another extraction"
                 )
-            if parent["outcome"] != "succeeded":
+            if parent.outcome != "succeeded":
                 raise ResumeValidationError("parent sanitization must have succeeded")
+            if (
+                _sanitization_lineage_length(c, run.parent_sanitization_run_id)
+                >= MAX_SANITIZATION_LINEAGE_DEPTH
+            ):
+                raise ResumeValidationError(
+                    "sanitization lineage exceeds bounded depth"
+                )
         raw = _raw(extraction)
+        # The extraction row is the sole coordinate authority.  Re-check its
+        # immutable artifact before accepting a sanitization aggregate; callers
+        # must never be able to bind spans to a later/current extraction.
+        if extraction["raw_text_sha256"] != hashlib.sha256(raw).hexdigest():
+            raise ResumeValidationError("extraction artifact integrity failure")
+        _validate_m4_sanitization_identity(run, raw)
         clean = (
             run.sanitized_text.encode("utf-8")
             if run.sanitized_text is not None
@@ -343,14 +375,6 @@ def persist_sanitization(
                     raise ResumeValidationError(
                         "finding belongs to another sanitization"
                     )
-                validate_slice_hash(
-                    raw,
-                    finding.raw_start_byte,
-                    finding.raw_end_byte,
-                    hashlib.sha256(
-                        raw[finding.raw_start_byte : finding.raw_end_byte]
-                    ).hexdigest(),
-                )
                 validate_range(
                     raw, finding.raw_start_byte, finding.raw_end_byte, allow_empty=False
                 )
@@ -363,6 +387,14 @@ def persist_sanitization(
                     )
                 if finding.sanitization_span_ordinal is not None:
                     span = supplied_spans[finding.sanitization_span_ordinal]
+                    if finding.disposition == "keep":
+                        raise ResumeValidationError(
+                            "retained finding cannot reference a sanitization span"
+                        )
+                    if span.kind not in ("replace", "delete"):
+                        raise ResumeValidationError(
+                            "finding reference must target a replacement span"
+                        )
                     if not (
                         finding.raw_start_byte < span.raw_end_byte
                         and span.raw_start_byte < finding.raw_end_byte
@@ -370,6 +402,17 @@ def persist_sanitization(
                         raise ResumeValidationError(
                             "finding does not overlap its resolved sanitization span"
                         )
+                elif finding.disposition == "replace":
+                    raise ResumeValidationError(
+                        "replacement finding must reference a span"
+                    )
+            if run.sanitizer_fingerprint == SANITIZER_FINGERPRINT:
+                expected = _reconstruct_current_sanitization(
+                    c, run, str(extraction["raw_text"])
+                )
+                _require_exact_sanitization_aggregate(
+                    run, supplied_spans, supplied_findings, expected
+                )
         elif supplied_spans or supplied_findings:
             raise ResumeValidationError("failed sanitization cannot contain artifacts")
         if (
@@ -421,6 +464,403 @@ def persist_sanitization(
         except sqlite3.IntegrityError as exc:
             raise ResumeValidationError("sanitization aggregate is invalid") from exc
     return run
+
+
+def _sanitization_lineage_length(c: sqlite3.Connection, run_id: str) -> int:
+    length = 0
+    current_id: str | None = run_id
+    while current_id is not None:
+        length += 1
+        row = _require(
+            _row(
+                c,
+                "SELECT parent_sanitization_run_id FROM resume_sanitization_runs "
+                "WHERE id=?",
+                (current_id,),
+            ),
+            "sanitization run",
+        )
+        current_id = cast(str | None, row["parent_sanitization_run_id"])
+    return length
+
+
+def _validate_m4_sanitization_identity(run: ResumeSanitizationRun, raw: bytes) -> None:
+    if run.sanitizer_fingerprint != SANITIZER_FINGERPRINT:
+        return
+    if run.parent_sanitization_run_id is None:
+        if run.override_manifest_json != "{}":
+            raise ResumeValidationError(
+                "root sanitization cannot contain override provenance"
+            )
+        expected_policy = DEFAULT_POLICY_FINGERPRINT
+    else:
+        try:
+            parse_override_manifest(run.override_manifest_json)
+        except ValueError as exc:
+            raise ResumeValidationError(
+                "override manifest provenance is invalid"
+            ) from exc
+        expected_policy = override_policy_fingerprint(run.override_manifest_json)
+    if run.policy_fingerprint != expected_policy:
+        raise ResumeValidationError("sanitization policy identity is invalid")
+    expected_cache = sanitization_cache_fingerprint(
+        extraction_run_id=run.extraction_run_id,
+        raw_text_sha256=hashlib.sha256(raw).hexdigest(),
+        raw_text_byte_size=len(raw),
+        policy_fingerprint=run.policy_fingerprint,
+        parent_sanitization_run_id=run.parent_sanitization_run_id,
+        override_manifest_json=run.override_manifest_json,
+    )
+    if run.cache_fingerprint != expected_cache:
+        raise ResumeValidationError("sanitization cache identity is invalid")
+
+
+def _reconstruct_current_sanitization(
+    c: sqlite3.Connection, run: ResumeSanitizationRun, raw_text: str
+) -> SanitizationResult:
+    """Reconstruct the complete v2 authority from immutable inputs."""
+
+    if run.sanitizer_fingerprint != SANITIZER_FINGERPRINT:
+        raise ResumeValidationError("unsupported sanitization integrity authority")
+    if run.parent_sanitization_run_id is None:
+        findings = detect_pii(raw_text)
+        dispositions: dict[int, Disposition] = {}
+        replacements: dict[int, str] = {}
+    else:
+        parent_run = get_sanitization(c, run.parent_sanitization_run_id)
+        if parent_run.sanitizer_fingerprint != SANITIZER_FINGERPRINT:
+            raise ResumeValidationError(
+                "unsupported parent sanitization integrity authority"
+            )
+        parent_findings = sanitization_findings(
+            c, run.parent_sanitization_run_id, limit=1000
+        )
+        findings = tuple(
+            PiiFinding(
+                finding.category,
+                finding.raw_start_byte,
+                finding.raw_end_byte,
+                finding.rule_identity,
+                finding.confidence,
+                finding.disposition,
+            )
+            for finding in parent_findings
+        )
+        try:
+            actions = parse_override_manifest(run.override_manifest_json)
+        except ValueError as exc:
+            raise ResumeValidationError(
+                "override manifest provenance is invalid"
+            ) from exc
+        dispositions = {}
+        replacements = {}
+        for entry in actions:
+            ordinal = entry["finding_ordinal"]
+            if ordinal >= len(findings):
+                raise ResumeValidationError(
+                    "override action references an unknown finding"
+                )
+            action = entry["action"]
+            if action == "delete":
+                dispositions[ordinal] = "replace"
+                replacements[ordinal] = ""
+            else:
+                dispositions[ordinal] = action
+                replacement = entry.get("replacement")
+                if replacement is not None:
+                    replacements[ordinal] = replacement
+    try:
+        return resolve_sanitization(
+            raw_text,
+            findings,
+            sanitization_run_id=run.id,
+            dispositions=dispositions,
+            replacements=replacements,
+        )
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ResumeValidationError(
+            "sanitization authority reconstruction failed"
+        ) from exc
+
+
+def _require_exact_sanitization_aggregate(
+    run: ResumeSanitizationRun,
+    spans: tuple[SanitizationSpan, ...],
+    findings: tuple[ResumePiiFinding, ...],
+    expected: SanitizationResult,
+) -> None:
+    if (
+        run.sanitized_text != expected.sanitized_text
+        or spans != expected.spans
+        or findings != expected.findings
+    ):
+        raise ResumeValidationError(
+            "sanitization aggregate does not match reconstructed authority"
+        )
+
+
+def _validate_one_sanitization(
+    c: sqlite3.Connection, run_id: str
+) -> ResumeSanitizationRun:
+    try:
+        run = get_sanitization(c, run_id)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ResumeValidationError("sanitization artifact integrity failure") from exc
+    canonical_manifest, _ = _canonical_json(run.override_manifest_json)
+    if canonical_manifest != run.override_manifest_json:
+        raise ResumeValidationError("override manifest is not canonical JSON")
+    extraction = _require(
+        _row(
+            c,
+            "SELECT * FROM resume_extraction_runs WHERE id=?",
+            (run.extraction_run_id,),
+        ),
+        "extraction run",
+    )
+    if extraction["outcome"] != "succeeded":
+        raise ResumeValidationError("sanitization requires a successful extraction")
+    raw = _raw(extraction)
+    if extraction["raw_text_sha256"] != hashlib.sha256(raw).hexdigest():
+        raise ResumeValidationError("extraction artifact integrity failure")
+    _validate_m4_sanitization_identity(run, raw)
+    span_count = int(
+        c.execute(
+            "SELECT count(*) FROM resume_sanitization_spans WHERE sanitization_run_id=?",
+            (run_id,),
+        ).fetchone()[0]
+    )
+    finding_count = int(
+        c.execute(
+            "SELECT count(*) FROM resume_pii_findings WHERE sanitization_run_id=?",
+            (run_id,),
+        ).fetchone()[0]
+    )
+    if span_count > 1000 or finding_count > 1000:
+        raise ResumeValidationError("sanitization aggregate exceeds bounded size")
+    if run.outcome != "succeeded":
+        if span_count or finding_count:
+            raise ResumeValidationError("failed sanitization contains artifacts")
+        return run
+    clean = _sanitized(
+        _require(
+            _row(c, "SELECT * FROM resume_sanitization_runs WHERE id=?", (run_id,)),
+            "sanitization run",
+        )
+    )
+    try:
+        spans = sanitization_spans(c, run_id, limit=1000)
+        TransformationMap.from_spans(
+            tuple(
+                TransformationSpan(
+                    s.ordinal,
+                    s.kind,
+                    s.raw_start_byte,
+                    s.raw_end_byte,
+                    s.sanitized_start_byte,
+                    s.sanitized_end_byte,
+                    s.raw_slice_sha256,
+                    s.sanitized_slice_sha256,
+                    s.placeholder_key,
+                )
+                for s in spans
+            ),
+            raw_size=len(raw),
+            sanitized_size=len(clean),
+            raw_artifact=raw,
+            sanitized_artifact=clean,
+        )
+        findings = sanitization_findings(c, run_id, limit=1000)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ResumeValidationError("sanitization artifact integrity failure") from exc
+    if tuple(f.ordinal for f in findings) != tuple(range(len(findings))):
+        raise ResumeValidationError("PII findings must be contiguous")
+    for finding in findings:
+        validate_range(
+            raw, finding.raw_start_byte, finding.raw_end_byte, allow_empty=False
+        )
+        if finding.sanitization_span_ordinal is not None:
+            if finding.sanitization_span_ordinal >= len(spans):
+                raise ResumeValidationError(
+                    "finding references an unknown sanitization span"
+                )
+            span = spans[finding.sanitization_span_ordinal]
+            if not (
+                finding.raw_start_byte < span.raw_end_byte
+                and span.raw_start_byte < finding.raw_end_byte
+            ):
+                raise ResumeValidationError(
+                    "finding does not overlap its resolved sanitization span"
+                )
+            if finding.disposition == "keep":
+                raise ResumeValidationError("retained finding references a span")
+            if spans[finding.sanitization_span_ordinal].kind not in (
+                "replace",
+                "delete",
+            ):
+                raise ResumeValidationError(
+                    "replacement finding must reference a replacement span"
+                )
+        elif finding.disposition == "replace":
+            raise ResumeValidationError("replacement finding must reference a span")
+    return run
+
+
+def validate_sanitization(c: sqlite3.Connection, run_id: str) -> ResumeSanitizationRun:
+    """Validate one persisted aggregate and its bounded immutable ancestry.
+
+    Stored artifacts and maps, never current sanitizer code, are historical
+    authority.  Every parent is validated independently and lineage cycles or
+    cross-extraction edges fail closed.
+    """
+
+    lineage_ids: list[str] = []
+    current_id: str | None = run_id
+    seen: set[str] = set()
+    for depth in range(MAX_SANITIZATION_LINEAGE_DEPTH + 1):
+        if current_id is None:
+            break
+        if depth == MAX_SANITIZATION_LINEAGE_DEPTH:
+            raise ResumeValidationError("sanitization lineage exceeds bounded depth")
+        if current_id in seen:
+            raise ResumeValidationError("sanitization lineage contains a cycle")
+        seen.add(current_id)
+        lineage_ids.append(current_id)
+        row = _require(
+            _row(
+                c,
+                "SELECT parent_sanitization_run_id FROM resume_sanitization_runs "
+                "WHERE id=?",
+                (current_id,),
+            ),
+            "sanitization run",
+        )
+        current_id = cast(str | None, row["parent_sanitization_run_id"])
+    else:
+        raise AssertionError("unreachable")
+
+    requested: ResumeSanitizationRun | None = None
+    expected_extraction_id: str | None = None
+    lineage: list[ResumeSanitizationRun] = []
+    for current_id in lineage_ids:
+        current = _validate_one_sanitization(c, current_id)
+        lineage.append(current)
+        if requested is None:
+            requested = current
+            expected_extraction_id = current.extraction_run_id
+        else:
+            if current.outcome != "succeeded":
+                raise ResumeValidationError("parent sanitization must have succeeded")
+            if current.extraction_run_id != expected_extraction_id:
+                raise ResumeValidationError(
+                    "parent sanitization belongs to another extraction"
+                )
+    assert requested is not None
+    _validate_sanitization_lineage(c, lineage)
+    for current in reversed(lineage):
+        if (
+            current.sanitizer_fingerprint != SANITIZER_FINGERPRINT
+            or current.outcome != "succeeded"
+        ):
+            continue
+        extraction = _require(
+            _row(
+                c,
+                "SELECT raw_text FROM resume_extraction_runs WHERE id=?",
+                (current.extraction_run_id,),
+            ),
+            "extraction run",
+        )
+        raw_text = extraction["raw_text"]
+        if raw_text is None:
+            raise ResumeValidationError("successful extraction artifact is unavailable")
+        expected = _reconstruct_current_sanitization(c, current, str(raw_text))
+        _require_exact_sanitization_aggregate(
+            current,
+            tuple(sanitization_spans(c, current.id, limit=1000)),
+            tuple(sanitization_findings(c, current.id, limit=1000)),
+            expected,
+        )
+    return requested
+
+
+def validate_sanitization_authority(
+    c: sqlite3.Connection, run_id: str
+) -> ResumeSanitizationRun:
+    """Validate an artifact under a recognized deterministic M4 authority."""
+
+    run = validate_sanitization(c, run_id)
+    if run.sanitizer_fingerprint != SANITIZER_FINGERPRINT:
+        raise ResumeValidationError("unsupported sanitization integrity authority")
+    return run
+
+
+def _validate_sanitization_lineage(
+    c: sqlite3.Connection, lineage: list[ResumeSanitizationRun]
+) -> None:
+    """Validate persisted child findings against canonical parent actions."""
+
+    for child, parent in zip(lineage, lineage[1:], strict=False):
+        if child.sanitizer_fingerprint != SANITIZER_FINGERPRINT:
+            continue
+        try:
+            actions = parse_override_manifest(child.override_manifest_json)
+        except ValueError as exc:
+            raise ResumeValidationError(
+                "override manifest provenance is invalid"
+            ) from exc
+        child_findings = sanitization_findings(c, child.id, limit=1000)
+        parent_findings = sanitization_findings(c, parent.id, limit=1000)
+        if len(child_findings) != len(parent_findings):
+            raise ResumeValidationError("override finding lineage is incomplete")
+        by_ordinal = {entry["finding_ordinal"]: entry for entry in actions}
+        if any(ordinal >= len(parent_findings) for ordinal in by_ordinal):
+            raise ResumeValidationError("override action references an unknown finding")
+        child_spans = sanitization_spans(c, child.id, limit=1000)
+        child_text = child.sanitized_text
+        if child_text is None:
+            raise ResumeValidationError(
+                "successful sanitization artifact is unavailable"
+            )
+        child_bytes = child_text.encode("utf-8")
+        for ordinal, (child_finding, parent_finding) in enumerate(
+            zip(child_findings, parent_findings, strict=True)
+        ):
+            if (
+                child_finding.ordinal != parent_finding.ordinal
+                or child_finding.category != parent_finding.category
+                or child_finding.origin != parent_finding.origin
+                or child_finding.rule_identity != parent_finding.rule_identity
+                or child_finding.confidence != parent_finding.confidence
+                or child_finding.raw_start_byte != parent_finding.raw_start_byte
+                or child_finding.raw_end_byte != parent_finding.raw_end_byte
+            ):
+                raise ResumeValidationError("override finding lineage is invalid")
+            entry = by_ordinal.get(ordinal)
+            action = (
+                entry["action"] if entry is not None else parent_finding.disposition
+            )
+            expected_disposition = "replace" if action == "delete" else action
+            if child_finding.disposition != expected_disposition:
+                raise ResumeValidationError("override action lineage is invalid")
+            if entry is None:
+                continue
+            span_ordinal = child_finding.sanitization_span_ordinal
+            if action == "delete":
+                if span_ordinal is None or child_spans[span_ordinal].kind != "delete":
+                    raise ResumeValidationError("delete override lineage is invalid")
+            replacement = entry.get("replacement")
+            if replacement is not None:
+                if span_ordinal is None or child_spans[span_ordinal].kind != "replace":
+                    raise ResumeValidationError(
+                        "replacement override lineage is invalid"
+                    )
+                span = child_spans[span_ordinal]
+                if child_bytes[
+                    span.sanitized_start_byte : span.sanitized_end_byte
+                ] != replacement.encode("utf-8"):
+                    raise ResumeValidationError(
+                        "replacement override lineage is invalid"
+                    )
 
 
 def get_sanitization(c: sqlite3.Connection, run_id: str) -> ResumeSanitizationRun:
@@ -493,7 +933,10 @@ def find_successful_sanitization(
 
 
 def append_sanitization_review(
-    c: sqlite3.Connection, event: SanitizationReviewEvent
+    c: sqlite3.Connection,
+    event: SanitizationReviewEvent,
+    *,
+    require_recognized_authority: bool = False,
 ) -> int:
     with _write(c):
         _require(
@@ -504,12 +947,70 @@ def append_sanitization_review(
             ),
             "sanitization run",
         )
+        # Review events are append-only, but repeating the same effective
+        # decision is an idempotent retry rather than a second audit event.
+        previous = c.execute(
+            "SELECT id,event_kind FROM resume_sanitization_review_events "
+            "WHERE sanitization_run_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
+            (event.sanitization_run_id,),
+        ).fetchone()
+        if event.event_kind == "approved":
+            # Approval is meaningful only for an intact exact artifact.  A
+            # tampered aggregate is fail-closed and cannot be approved.
+            validated = (
+                validate_sanitization_authority(c, event.sanitization_run_id)
+                if require_recognized_authority
+                else validate_sanitization(c, event.sanitization_run_id)
+            )
+            if validated.outcome != "succeeded":
+                raise ResumeValidationError("failed sanitization cannot be approved")
+            unresolved = c.execute(
+                "SELECT 1 FROM resume_pii_findings WHERE sanitization_run_id=? "
+                "AND disposition IN ('pending','review') LIMIT 1",
+                (event.sanitization_run_id,),
+            ).fetchone()
+            if unresolved is not None:
+                raise ResumeValidationError(
+                    "unresolved PII findings cannot be approved"
+                )
+        if (
+            previous is not None
+            and previous["event_kind"] == event.event_kind
+            and event.note is None
+        ):
+            return int(previous["id"])
         cur = c.execute(
             "INSERT INTO resume_sanitization_review_events(sanitization_run_id,event_kind,note,created_at) VALUES (?,?,?,?)",
             (event.sanitization_run_id, event.event_kind, event.note, event.created_at),
         )
         assert cur.lastrowid is not None
         return int(cur.lastrowid)
+
+
+def sanitization_external_use_approved(c: sqlite3.Connection, run_id: str) -> bool:
+    """Return whether this exact immutable artifact is currently approved."""
+    try:
+        run = validate_sanitization_authority(c, run_id)
+        if run.outcome != "succeeded":
+            return False
+        unresolved = c.execute(
+            "SELECT 1 FROM resume_pii_findings WHERE sanitization_run_id=? "
+            "AND disposition IN ('pending','review') LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if unresolved is not None:
+            return False
+        latest = latest_sanitization_review(c, run_id)
+        return latest is not None and latest.event_kind == "approved"
+    except (ResumeRepositoryError, sqlite3.Error, ValueError, TypeError):
+        return False
+
+
+def sanitization_approval_state(c: sqlite3.Connection, run_id: str) -> str:
+    """Return ``approved``, ``revoked`` or fail-closed ``not_approved``."""
+    if not sanitization_external_use_approved(c, run_id):
+        return "not_approved"
+    return "approved"
 
 
 def sanitization_review_history(

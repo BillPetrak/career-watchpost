@@ -29,6 +29,18 @@ from .models import (
     SanitizationReviewEvent,
     SanitizationSpan,
 )
+from .sanitization import (
+    approve_external_use,
+    create_override,
+    is_approved_for_external_use,
+    revoke_external_use,
+    sanitize_extraction,
+)
+from .sanitization_identity import (
+    DEFAULT_POLICY_FINGERPRINT,
+    SANITIZER_FINGERPRINT,
+    OverrideAction,
+)
 
 __all__ = [
     "ByteRange",
@@ -54,4 +66,12 @@ __all__ = [
     "extract_material",
     "extract_verified_source",
     "verify_material_source",
+    "DEFAULT_POLICY_FINGERPRINT",
+    "SANITIZER_FINGERPRINT",
+    "OverrideAction",
+    "sanitize_extraction",
+    "create_override",
+    "approve_external_use",
+    "revoke_external_use",
+    "is_approved_for_external_use",
 ]

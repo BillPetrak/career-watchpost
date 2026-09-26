@@ -6,7 +6,9 @@ CareerOS is a privacy-first career intelligence platform.
 hardening, H2 visual polish, and integrated RC qualification are complete. The
 seven existing job sources are the frozen v1.0 source set. Resume/CV
 sanitization, structured extraction, and Candidate Profile/Candidate Identity
-intelligence are planned for Product 1 v1.05; resume Materials remain opaque
+resume intelligence is implemented incrementally in Product 1 v1.05; M3
+extraction artifacts remain the authority for M4 local PII sanitization, while
+resume Materials remain opaque
 stored bytes in v1.0 and are not parsed. Additional source expansion remains
 planned for Product 1 v1.1.## Product 1 v1.05 M2 persistence and authority foundation
 
