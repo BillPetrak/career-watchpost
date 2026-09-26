@@ -1,5 +1,17 @@
 """Pure domain contracts for resume extraction and sanitization."""
 
+from .career_facts import (
+    DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+    DETERMINISTIC_EXTRACTOR_VERSION,
+    FACT_SCHEMA_FINGERPRINT,
+    FACT_SCHEMA_VERSION,
+    CareerFactError,
+    canonical_json,
+    deterministic_extract,
+    extract_career_facts,
+    extract_deterministic_facts,
+    run_deterministic_facts,
+)
 from .coordinates import (
     ByteRange,
     CoordinateError,
@@ -74,4 +86,14 @@ __all__ = [
     "approve_external_use",
     "revoke_external_use",
     "is_approved_for_external_use",
+    "FACT_SCHEMA_VERSION",
+    "FACT_SCHEMA_FINGERPRINT",
+    "DETERMINISTIC_EXTRACTOR_VERSION",
+    "DETERMINISTIC_EXTRACTOR_FINGERPRINT",
+    "CareerFactError",
+    "canonical_json",
+    "deterministic_extract",
+    "extract_career_facts",
+    "extract_deterministic_facts",
+    "run_deterministic_facts",
 ]

@@ -1042,6 +1042,8 @@ def persist_fact_run(
     run: CareerFactRun,
     candidates: Iterable[CareerFactCandidate] = (),
     evidence: Iterable[CareerFactEvidence] = (),
+    *,
+    reject_existing_successful_cache: bool = False,
 ) -> CareerFactRun:
     supplied_candidates, supplied_evidence = tuple(candidates), tuple(evidence)
     with _write(c):
@@ -1080,6 +1082,19 @@ def persist_fact_run(
             or run.input_sha256 != hashlib.sha256(artifact).hexdigest()
         ):
             raise ResumeValidationError("fact input hash does not match artifact")
+        if reject_existing_successful_cache and run.outcome == "succeeded":
+            if (
+                _row(
+                    c,
+                    "SELECT id FROM career_fact_runs "
+                    "WHERE cache_fingerprint=? AND outcome='succeeded'",
+                    (run.cache_fingerprint,),
+                )
+                is not None
+            ):
+                raise ResumeConflictError(
+                    "successful fact cache identity already exists"
+                )
         by_id = {candidate.id: candidate for candidate in supplied_candidates}
         if len(by_id) != len(supplied_candidates):
             raise ResumeValidationError("fact candidates must have unique identifiers")
@@ -1152,6 +1167,172 @@ def persist_fact_run(
         except sqlite3.IntegrityError as exc:
             raise ResumeValidationError("fact aggregate is invalid") from exc
     return run
+
+
+def _aggregate_limit(value: int, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ResumeValidationError(f"{label} must be a positive integer")
+    return value
+
+
+def _fact_artifact(c: sqlite3.Connection, run: CareerFactRun) -> bytes:
+    extraction = _require(
+        _row(
+            c,
+            "SELECT * FROM resume_extraction_runs WHERE id=?",
+            (run.extraction_run_id,),
+        ),
+        "extraction run",
+    )
+    if extraction["outcome"] != "succeeded":
+        raise ResumeValidationError("fact run requires a successful extraction")
+    artifact = _raw(extraction)
+    if run.input_kind == "sanitized":
+        sanitization = _require(
+            _row(
+                c,
+                "SELECT * FROM resume_sanitization_runs WHERE id=?",
+                (run.sanitization_run_id,),
+            ),
+            "sanitization run",
+        )
+        if (
+            sanitization["extraction_run_id"] != run.extraction_run_id
+            or sanitization["outcome"] != "succeeded"
+        ):
+            raise ResumeValidationError(
+                "sanitized fact input must match the extraction"
+            )
+        artifact = _sanitized(sanitization)
+    if (
+        run.input_byte_size != len(artifact)
+        or run.input_sha256 != hashlib.sha256(artifact).hexdigest()
+    ):
+        raise ResumeValidationError("fact input hash does not match artifact")
+    return artifact
+
+
+def load_fact_aggregate(
+    c: sqlite3.Connection,
+    run_id: str,
+    *,
+    candidate_limit: int = 1000,
+    evidence_per_candidate_limit: int = 1000,
+    evidence_total_limit: int = 10000,
+) -> tuple[
+    CareerFactRun,
+    tuple[CareerFactCandidate, ...],
+    tuple[CareerFactEvidence, ...],
+]:
+    """Load and validate one complete immutable fact aggregate.
+
+    Unlike the presentation-oriented list helpers, this function never uses a
+    silent SQL LIMIT.  It first checks aggregate cardinalities against the
+    caller's bounds, then validates every stored row and exact evidence slice.
+    """
+    _aggregate_limit(candidate_limit, "candidate_limit")
+    _aggregate_limit(evidence_per_candidate_limit, "evidence_per_candidate_limit")
+    _aggregate_limit(evidence_total_limit, "evidence_total_limit")
+    run_row = _require(
+        _row(c, "SELECT * FROM career_fact_runs WHERE id=?", (run_id,)),
+        "fact run",
+    )
+    try:
+        run = CareerFactRun(**dict(run_row))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ResumeValidationError("fact run aggregate is invalid") from exc
+
+    candidate_count = int(
+        c.execute(
+            "SELECT count(*) FROM career_fact_candidates WHERE fact_run_id=?",
+            (run_id,),
+        ).fetchone()[0]
+    )
+    if candidate_count > candidate_limit:
+        raise ResumeValidationError("fact aggregate exceeds candidate limit")
+    evidence_total = int(
+        c.execute(
+            "SELECT count(*) FROM career_fact_evidence e "
+            "JOIN career_fact_candidates c ON c.id=e.candidate_id "
+            "WHERE c.fact_run_id=?",
+            (run_id,),
+        ).fetchone()[0]
+    )
+    if evidence_total > evidence_total_limit:
+        raise ResumeValidationError("fact aggregate exceeds evidence limit")
+    if (
+        c.execute(
+            "SELECT 1 FROM career_fact_evidence e "
+            "LEFT JOIN career_fact_candidates c ON c.id=e.candidate_id "
+            "WHERE c.id IS NULL LIMIT 1"
+        ).fetchone()
+        is not None
+    ):
+        raise ResumeValidationError("fact aggregate contains orphan evidence")
+    per_candidate = c.execute(
+        "SELECT c.id, count(e.candidate_id) FROM career_fact_candidates c "
+        "LEFT JOIN career_fact_evidence e ON e.candidate_id=c.id "
+        "WHERE c.fact_run_id=? GROUP BY c.id HAVING count(e.candidate_id)>?",
+        (run_id, evidence_per_candidate_limit),
+    ).fetchone()
+    if per_candidate is not None:
+        raise ResumeValidationError("fact candidate exceeds evidence limit")
+
+    try:
+        candidates = tuple(
+            CareerFactCandidate(**dict(row))
+            for row in c.execute(
+                "SELECT * FROM career_fact_candidates WHERE fact_run_id=? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+        )
+        evidence = tuple(
+            CareerFactEvidence(**dict(row))
+            for row in c.execute(
+                "SELECT e.* FROM career_fact_evidence e "
+                "JOIN career_fact_candidates c ON c.id=e.candidate_id "
+                "WHERE c.fact_run_id=? ORDER BY e.candidate_id,e.ordinal",
+                (run_id,),
+            ).fetchall()
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ResumeValidationError("fact aggregate is invalid") from exc
+
+    candidate_ids = {candidate.id for candidate in candidates}
+    if any(candidate.fact_run_id != run.id for candidate in candidates):
+        raise ResumeValidationError("candidate belongs to another fact run")
+    try:
+        artifact = _fact_artifact(c, run)
+    except (ResumeRepositoryError, KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, ResumeRepositoryError):
+            raise
+        raise ResumeValidationError("fact artifact integrity failure") from exc
+    for candidate in candidates:
+        canonical, digest = _canonical_json(candidate.canonical_value_json)
+        if (
+            canonical != candidate.canonical_value_json
+            or digest != candidate.value_sha256
+        ):
+            raise ResumeValidationError("candidate value hash is inconsistent")
+    expected_ordinals: dict[str, int] = {}
+    for item in evidence:
+        if item.candidate_id not in candidate_ids:
+            raise ResumeValidationError("evidence references an unknown candidate")
+        if item.coordinate_space != run.input_kind:
+            raise ResumeValidationError(
+                "evidence coordinate space does not match fact input"
+            )
+        expected = expected_ordinals.setdefault(item.candidate_id, 0)
+        if item.ordinal != expected:
+            raise ResumeValidationError("evidence ordinals must be contiguous")
+        expected_ordinals[item.candidate_id] = expected + 1
+        try:
+            validate_slice_hash(
+                artifact, item.start_byte, item.end_byte, item.slice_sha256
+            )
+        except (TypeError, ValueError) as exc:
+            raise ResumeValidationError("fact evidence integrity failure") from exc
+    return run, candidates, evidence
 
 
 def get_fact_run(c: sqlite3.Connection, run_id: str) -> CareerFactRun:

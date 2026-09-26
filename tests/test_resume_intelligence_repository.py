@@ -19,6 +19,7 @@ from careeros.database.resume_intelligence import (
     latest_fact_review,
     latest_sanitization_review,
     list_fact_runs,
+    load_fact_aggregate,
     persist_extraction,
     persist_fact_run,
     persist_sanitization,
@@ -247,6 +248,114 @@ def test_fact_input_space_hash_and_append_only_review(db) -> None:
             [candidate],
             [],
         )
+
+
+def test_load_fact_aggregate_is_complete_bounded_and_ordered(db) -> None:
+    run = extraction()
+    persist_extraction(db, run, [segment(run.id)])
+    fact = CareerFactRun(
+        "f" * 32,
+        run.id,
+        None,
+        "extracted",
+        "deterministic",
+        "succeeded",
+        "aggregate-cache",
+        digest(b"abc"),
+        3,
+        None,
+        "extractor",
+        "schema",
+        None,
+        None,
+        None,
+        "now",
+    )
+    first = CareerFactCandidate(
+        "1" * 32,
+        fact.id,
+        "skill",
+        "a",
+        '"A"',
+        digest(b'"A"'),
+        1.0,
+        "deterministic",
+    )
+    second = CareerFactCandidate(
+        "2" * 32,
+        fact.id,
+        "skill",
+        "b",
+        '"B"',
+        digest(b'"B"'),
+        1.0,
+        "deterministic",
+    )
+    persist_fact_run(
+        db,
+        fact,
+        [second, first],
+        [
+            CareerFactEvidence(second.id, 0, "extracted", 0, 1, digest(b"a")),
+            CareerFactEvidence(first.id, 0, "extracted", 1, 3, digest(b"bc")),
+        ],
+    )
+    loaded_run, candidates, evidence = load_fact_aggregate(db, fact.id)
+    assert loaded_run == fact
+    assert [candidate.id for candidate in candidates] == [first.id, second.id]
+    assert [(item.candidate_id, item.ordinal) for item in evidence] == [
+        (first.id, 0),
+        (second.id, 0),
+    ]
+    with pytest.raises(ResumeValidationError, match="candidate limit"):
+        load_fact_aggregate(db, fact.id, candidate_limit=1)
+    with pytest.raises(ResumeValidationError, match="evidence limit"):
+        load_fact_aggregate(db, fact.id, evidence_total_limit=1)
+
+
+def test_successful_fact_cache_rejection_is_transactional(db) -> None:
+    run = extraction()
+    persist_extraction(db, run, [segment(run.id)])
+    fact = CareerFactRun(
+        "f" * 32,
+        run.id,
+        None,
+        "extracted",
+        "deterministic",
+        "succeeded",
+        "serialized-cache",
+        digest(b"abc"),
+        3,
+        None,
+        "extractor",
+        "schema",
+        None,
+        None,
+        None,
+        "now",
+    )
+    persist_fact_run(db, fact, reject_existing_successful_cache=True)
+    duplicate = CareerFactRun(
+        "e" * 32,
+        run.id,
+        None,
+        "extracted",
+        "deterministic",
+        "succeeded",
+        fact.cache_fingerprint,
+        digest(b"abc"),
+        3,
+        None,
+        "extractor",
+        "schema",
+        None,
+        None,
+        None,
+        "later",
+    )
+    with pytest.raises(ResumeConflictError):
+        persist_fact_run(db, duplicate, reject_existing_successful_cache=True)
+    assert db.execute("SELECT count(*) FROM career_fact_runs").fetchone()[0] == 1
 
 
 def test_latest_tie_order_and_overlapping_findings(db) -> None:
