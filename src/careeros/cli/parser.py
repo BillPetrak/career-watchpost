@@ -32,6 +32,13 @@ def _positive(value: str) -> int:
     return parsed
 
 
+def _nonnegative(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CareerOS command-line parser."""
     default_database = database_path()
@@ -523,6 +530,79 @@ def build_parser() -> argparse.ArgumentParser:
             f"{_PRIVATE_PROFILE_DEFAULT_HELP}."
         ),
     )
+
+    career_profile_parser = subparsers.add_parser(
+        "career-profile",
+        help="Review and assemble the immutable private Career Profile.",
+    )
+    career_profile_commands = career_profile_parser.add_subparsers(
+        dest="career_profile_command", required=True
+    )
+    cps = career_profile_commands.add_parser("sources", help="List résumé lineage.")
+    cps.add_argument("--include-retired", action="store_true")
+    cps.add_argument("--offset", type=_nonnegative, default=0)
+    cps.add_argument("--limit", type=_positive, default=20)
+    cps.add_argument("--format", choices=("text", "json"), default="text")
+    cps.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    cpa = career_profile_commands.add_parser(
+        "analyze", help="Analyze one exact résumé version."
+    )
+    cpa.add_argument("material_id")
+    cpa.add_argument("version_id")
+    cpa.add_argument("--materials-root", type=Path)
+    cpa.add_argument("--format", choices=("text", "json"), default="text")
+    cpa.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    cpc = career_profile_commands.add_parser(
+        "candidates", help="List deterministic Career Fact candidates."
+    )
+    cpc.add_argument("fact_run_id")
+    cpc.add_argument(
+        "--state",
+        action="append",
+        choices=("pending", "approved", "approved_edit", "rejected"),
+    )
+    cpc.add_argument("--offset", type=_nonnegative, default=0)
+    cpc.add_argument("--limit", type=_positive, default=20)
+    cpc.add_argument("--format", choices=("text", "json"), default="text")
+    cpc.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    cpd = career_profile_commands.add_parser(
+        "candidate", help="Show one candidate and bounded evidence/history."
+    )
+    cpd.add_argument("candidate_id")
+    cpd.add_argument("--evidence-offset", type=_nonnegative, default=0)
+    cpd.add_argument("--evidence-limit", type=_positive, default=20)
+    cpd.add_argument("--history-offset", type=_nonnegative, default=0)
+    cpd.add_argument("--history-limit", type=_positive, default=20)
+    cpd.add_argument("--format", choices=("text", "json"), default="text")
+    cpd.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    cpr = career_profile_commands.add_parser(
+        "review", help="Review one Career Fact candidate."
+    )
+    cpr.add_argument("candidate_id")
+    cpr.add_argument("decision", choices=("approved", "approved_edit", "rejected"))
+    cpr.add_argument("--value-file", type=Path)
+    cpr.add_argument("--format", choices=("text", "json"), default="text")
+    cpr.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    cpshow = career_profile_commands.add_parser(
+        "show", help="Show the current or historical Career Profile."
+    )
+    cpshow.add_argument("--version")
+    cpshow.add_argument("--format", choices=("text", "json"), default="text")
+    cpshow.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    cph = career_profile_commands.add_parser(
+        "history", help="Show Career Profile version history."
+    )
+    cph.add_argument("--offset", type=_nonnegative, default=0)
+    cph.add_argument("--limit", type=_positive, default=20)
+    cph.add_argument("--format", choices=("text", "json"), default="text")
+    cph.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
+    cpsave = career_profile_commands.add_parser(
+        "save", help="Save one complete Career Profile snapshot."
+    )
+    cpsave.add_argument("manifest", type=Path)
+    cpsave.add_argument("--expected-revision", type=_nonnegative, required=True)
+    cpsave.add_argument("--format", choices=("text", "json"), default="text")
+    cpsave.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
 
     preference_parser = subparsers.add_parser(
         "preference",

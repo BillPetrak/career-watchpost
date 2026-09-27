@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """FastAPI application for the CareerOS API slice.
 
 The slice exposes twenty-four read-only GET endpoints backed by the shared database
@@ -186,6 +187,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.resources
+import json
 import os
 import sqlite3
 import stat
@@ -222,6 +224,16 @@ from careeros.api.schemas import (
     ApplicationPipelineResponse,
     ApplicationStatusRequest,
     CandidateProfileRequest,
+    CareerProfileAnalyzeResponse,
+    CareerProfileCandidateResponse,
+    CareerProfileCandidatesResponse,
+    CareerProfileCurrentResponse,
+    CareerProfileHistoryResponse,
+    CareerProfileReviewRequest,
+    CareerProfileSaveRequest,
+    CareerProfileSaveResponse,
+    CareerProfileSourcesResponse,
+    CareerProfileVersionResponse,
     ClearReviewDecisionResponse,
     CollectionRun,
     CollectionRunListResponse,
@@ -351,12 +363,43 @@ from careeros.applications.service import (
 from careeros.applications.service import (
     UnknownJobError as ApplicationUnknownJobError,
 )
+from careeros.career_profile.service import (
+    assemble_profile,
+    profile_snapshot,
+    review_candidate,
+)
+from careeros.career_profile.workspace import (
+    WorkspaceAuthorityError,
+    WorkspaceError,
+    WorkspaceNotFoundError,
+    WorkspaceRequestError,
+    candidate_detail,
+    current_projection,
+    history_projection,
+    parse_manifest,
+    profile_projection,
+    validate_review_candidate_authority,
+)
+from careeros.career_profile.workspace import (
+    analyze as analyze_career_profile,
+)
+from careeros.career_profile.workspace import (
+    candidates as career_profile_candidates,
+)
+from careeros.career_profile.workspace import (
+    sources as career_profile_sources,
+)
 from careeros.database.applications import (
     ApplicationListItem,
     get_application,
     list_application_events,
     list_applications,
     preparation_summary_for_applications,
+)
+from careeros.database.career_profile import (
+    CareerProfileConflict,
+    CareerProfileNotFound,
+    CareerProfileValidationError,
 )
 from careeros.database.connection import connect_current_rw, connect_read_only
 from careeros.database.groups import (
@@ -369,6 +412,7 @@ from careeros.database.groups import (
 )
 from careeros.database.jobs import get_job_by_id, list_jobs, search_jobs
 from careeros.database.reminders import ReminderListEntry, get_reminder
+from careeros.database.resume_intelligence import ResumeNotFoundError
 from careeros.database.review import DecisionListItem
 from careeros.database.runs import list_runs
 from careeros.locking import CollectionLockConflict, collection_lock
@@ -466,6 +510,7 @@ from careeros.reminders.service import (
 )
 from careeros.reporting.models import Report
 from careeros.reporting.service import build_report
+from careeros.resume_intelligence.career_facts import CareerFactError
 from careeros.review.models import (
     UnknownJobError,
     validate_decision,
@@ -1079,6 +1124,11 @@ def create_app(
     async def _request_validation_handler(
         request: Request, exc: RequestValidationError
     ) -> Response:
+        if request.url.path.startswith("/career-profile"):
+            return JSONResponse(
+                status_code=422,
+                content={"detail": {"code": "invalid_career_profile_request"}},
+            )
         if "package" in request.url.path:
             code = (
                 "invalid_package_pagination"
@@ -1101,6 +1151,259 @@ def create_app(
             database="present",
             schema_version=_read_schema_version(connection),
         )
+
+    def _career_profile_error(
+        error: Exception, *, user_input: bool = False
+    ) -> HTTPException:
+        if isinstance(error, WorkspaceError):
+            if isinstance(error, WorkspaceRequestError):
+                return HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_career_profile_request"},
+                )
+            if isinstance(error, WorkspaceNotFoundError):
+                return HTTPException(
+                    status_code=404, detail="Career Profile resource not found"
+                )
+            if isinstance(error, WorkspaceAuthorityError):
+                return HTTPException(
+                    status_code=500,
+                    detail="Career Profile authority is unavailable",
+                )
+            return HTTPException(
+                status_code=500, detail="Career Profile authority is unavailable"
+            )
+        if isinstance(error, CareerProfileConflict):
+            detail: dict[str, Any] = {"code": "career_profile_revision_conflict"}
+            if error.current_revision is not None:
+                detail["current_revision"] = error.current_revision
+            else:
+                detail = {"code": "career_profile_authority_changed"}
+            return HTTPException(status_code=409, detail=detail)
+        if isinstance(error, (CareerProfileNotFound, ResumeNotFoundError)):
+            return HTTPException(
+                status_code=404,
+                detail={"code": "career_profile_resource_not_found"},
+            )
+        if (
+            isinstance(error, CareerProfileValidationError)
+            and str(error) == "fact candidate not found"
+        ):
+            return HTTPException(
+                status_code=404,
+                detail={"code": "career_profile_resource_not_found"},
+            )
+        domain_messages = {
+            "distinct identity cannot target an existing logical fact",
+            "explicit logical identity does not exist for fact type",
+            "candidate has conflicting historical identity",
+            "candidate has ambiguous historical logical identity",
+            "distinct identity cannot reuse a historical candidate association",
+            "equal-key historical identity requires explicit target or distinct identity",
+            "manual/imported facts must be carried from current profile",
+            "invalid privacy override",
+            "candidate cannot source two profile facts",
+            "duplicate profile source candidate",
+            "all profile sources must be approved",
+            "profile sources are not merge-compatible",
+        }
+        if (
+            isinstance(error, CareerProfileValidationError)
+            and user_input
+            and str(error) in domain_messages
+        ):
+            return HTTPException(
+                status_code=422,
+                detail={"code": "invalid_career_profile_request"},
+            )
+        if isinstance(error, CareerProfileValidationError):
+            return HTTPException(
+                status_code=500,
+                detail="Career Profile authority is unavailable",
+            )
+        return HTTPException(
+            status_code=500, detail="Career Profile authority is unavailable"
+        )
+
+    @app.get("/career-profile/sources", response_model=CareerProfileSourcesResponse)
+    def career_profile_sources_route(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: int = Query(default=0),
+        limit: int = Query(default=20),
+        include_retired: bool = Query(default=True),
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        try:
+            return career_profile_sources(
+                connection, include_retired=include_retired, offset=offset, limit=limit
+            )
+        except Exception as error:
+            raise _career_profile_error(error, user_input=True) from None
+
+    @app.post(
+        "/career-profile/sources/{material_id}/versions/{version_id}/analyze",
+        response_model=CareerProfileAnalyzeResponse,
+    )
+    def career_profile_analyze_route(
+        material_id: str,
+        version_id: str,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+    ) -> dict[str, Any]:
+        try:
+            return analyze_career_profile(
+                connection, selected_materials_root, material_id, version_id
+            )
+        except Exception as error:
+            raise _career_profile_error(error, user_input=True) from None
+
+    @app.get(
+        "/career-profile/fact-runs/{run_id}/candidates",
+        response_model=CareerProfileCandidatesResponse,
+    )
+    def career_profile_candidates_route(
+        run_id: str,
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: int = Query(default=0),
+        limit: int = Query(default=20),
+        state: list[Literal["pending", "approved", "approved_edit", "rejected"]]
+        | None = None,
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        try:
+            return career_profile_candidates(
+                connection,
+                run_id,
+                offset=offset,
+                limit=limit,
+                states=tuple(state or ()),
+            )
+        except Exception as error:
+            raise _career_profile_error(error) from None
+
+    @app.get(
+        "/career-profile/candidates/{candidate_id}",
+        response_model=CareerProfileCandidateResponse,
+    )
+    def career_profile_candidate_route(
+        candidate_id: str,
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        evidence_offset: int = Query(default=0),
+        evidence_limit: int = Query(default=20),
+        history_offset: int = Query(default=0),
+        history_limit: int = Query(default=20),
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        try:
+            return candidate_detail(
+                connection,
+                candidate_id,
+                evidence_offset=evidence_offset,
+                evidence_limit=evidence_limit,
+                history_offset=history_offset,
+                history_limit=history_limit,
+            )
+        except Exception as error:
+            raise _career_profile_error(error) from None
+
+    @app.put(
+        "/career-profile/candidates/{candidate_id}/review",
+        response_model=CareerProfileCandidateResponse,
+    )
+    def career_profile_review_route(
+        candidate_id: str,
+        body: CareerProfileReviewRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+    ) -> dict[str, Any]:
+        try:
+            validate_review_candidate_authority(connection, candidate_id)
+            edited = (
+                None
+                if body.edited_value is None
+                else json.dumps(
+                    body.edited_value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            )
+            review_candidate(
+                connection, candidate_id, body.decision, edited_value_json=edited
+            )
+            return candidate_detail(connection, candidate_id)
+        except (
+            WorkspaceError,
+            CareerProfileConflict,
+            CareerProfileValidationError,
+        ) as error:
+            raise _career_profile_error(error, user_input=True) from None
+        except (CareerFactError, ValueError):
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_career_profile_request"},
+            ) from None
+        except Exception as error:
+            raise _career_profile_error(error, user_input=True) from None
+
+    @app.get("/career-profile/current", response_model=CareerProfileCurrentResponse)
+    def career_profile_current_route(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        try:
+            return current_projection(connection)
+        except Exception as error:
+            raise _career_profile_error(error) from None
+
+    @app.get("/career-profile/history", response_model=CareerProfileHistoryResponse)
+    def career_profile_history_route(
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+        offset: int = Query(default=0),
+        limit: int = Query(default=20),
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        try:
+            return history_projection(connection, offset=offset, limit=limit)
+        except Exception as error:
+            raise _career_profile_error(error) from None
+
+    @app.get(
+        "/career-profile/versions/{version_id}",
+        response_model=CareerProfileVersionResponse,
+    )
+    def career_profile_version_route(
+        version_id: str,
+        connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
+    ) -> dict[str, Any]:
+        if connection is None:
+            raise HTTPException(status_code=500, detail=DATABASE_UNAVAILABLE_MESSAGE)
+        try:
+            projected = profile_projection(
+                profile_snapshot(connection, version_id), connection
+            )
+            assert projected is not None
+            return projected
+        except Exception as error:
+            raise _career_profile_error(error) from None
+
+    @app.post("/career-profile/versions", response_model=CareerProfileSaveResponse)
+    def career_profile_save_route(
+        body: CareerProfileSaveRequest,
+        connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
+    ) -> dict[str, Any]:
+        try:
+            entries = parse_manifest(
+                {"entries": [entry.model_dump() for entry in body.entries]}
+            )
+            assemble_profile(connection, body.expected_revision, entries)
+            return current_projection(connection)
+        except Exception as error:
+            raise _career_profile_error(error, user_input=True) from None
 
     @app.get("/preferences", response_model=PreferenceResponse)
     def get_preferences(

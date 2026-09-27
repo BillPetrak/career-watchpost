@@ -15,6 +15,7 @@ from careeros.cli.commands.applications import (
     run_application_set,
     run_application_show,
 )
+from careeros.cli.commands.career_profile import run_career_profile_command
 from careeros.cli.commands.collect import (
     run_collect,
     run_collect_all,
@@ -80,6 +81,7 @@ __all__ = [
     "run_collect_due",
     "run_collect_history",
     "run_collect_status",
+    "run_career_profile_command",
     "run_export",
     "run_export_command",
     "run_group_command",

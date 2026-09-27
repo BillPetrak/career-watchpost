@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    model_validator,
+)
+
+
+class CareerProfileResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class MaterialVersionItem(BaseModel):
@@ -39,6 +50,239 @@ class MaterialListResponse(BaseModel):
     total: int
     offset: int
     limit: int
+
+
+class CareerProfilePage(CareerProfileResponse):
+    items: list[JsonValue]
+    total: int
+    offset: int
+    limit: int
+
+
+class CareerProfileSourcesResponse(CareerProfileResponse):
+    items: list[CareerProfileSource]
+    total: int
+    offset: int
+    limit: int
+
+
+class CareerProfileAnalyzeResponse(CareerProfileResponse):
+    material_id: str
+    version_id: str
+    extraction_run_id: str
+    fact_run_id: str
+    candidate_count: int
+    outcome: str
+
+
+class CareerProfileCandidatesResponse(CareerProfileResponse):
+    items: list[CareerProfileCandidateSummary]
+    total: int
+    offset: int
+    limit: int
+
+
+class CareerProfileFactRun(CareerProfileResponse):
+    id: str
+    outcome: str
+    mode: str
+    input_kind: str
+    created_at: str
+    recognized: bool
+    candidate_count: int | None = None
+
+
+class CareerProfileCandidateSummary(CareerProfileResponse):
+    id: str
+    fact_run_id: str
+    fact_type: str
+    value: JsonValue
+    original_value: JsonValue
+    confidence: float | None = None
+    origin: str
+    review: CareerProfileReviewProjection
+    merge_eligible_candidate_ids: list[str] = Field(default_factory=list)
+    merge_eligible_count: int = 0
+
+
+class CareerProfileExtraction(CareerProfileResponse):
+    id: str
+    outcome: str
+    source_format: str
+    created_at: str
+    fact_runs: list[CareerProfileFactRun]
+
+
+class CareerProfileVersionLineage(CareerProfileResponse):
+    id: str
+    version_number: int
+    display_filename: str
+    media_type: str
+    created_at: str
+    extractions: list[CareerProfileExtraction]
+
+
+class CareerProfileSource(CareerProfileResponse):
+    id: str
+    name: str
+    status: str
+    versions: list[CareerProfileVersionLineage]
+
+
+class CareerProfileReviewProjection(CareerProfileResponse):
+    status: Literal["pending", "approved", "approved_edit", "rejected"]
+    value: JsonValue | None = None
+    event_id: int | None = None
+    created_at: str | None = None
+
+
+class CareerProfileEvidence(CareerProfileResponse):
+    ordinal: int
+    text: str
+    source_label: str
+    start_byte: int
+    end_byte: int
+
+
+class CareerProfileReviewEvent(CareerProfileResponse):
+    id: int
+    candidate_id: str
+    decision: Literal["approved", "approved_edit", "rejected"]
+    created_at: str
+
+
+class CareerProfileEvidencePage(CareerProfileResponse):
+    items: list[CareerProfileEvidence]
+    total: int
+    offset: int
+    limit: int
+
+
+class CareerProfileReviewHistoryPage(CareerProfileResponse):
+    items: list[CareerProfileReviewEvent]
+    total: int
+    offset: int
+    limit: int
+
+
+class CareerProfileCandidateResponse(CareerProfileResponse):
+    id: str
+    fact_run_id: str
+    fact_type: str
+    value: JsonValue
+    original_value: JsonValue
+    confidence: float | None = None
+    origin: str
+    review: CareerProfileReviewProjection
+    provenance: CareerProfileProvenance
+    evidence: CareerProfileEvidencePage
+    review_history: CareerProfileReviewHistoryPage
+    merge_eligible_candidate_ids: list[str] = Field(default_factory=list)
+    merge_eligible_count: int = 0
+
+
+class CareerProfileReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    decision: Literal["approved", "approved_edit", "rejected"]
+    edited_value: dict[str, JsonValue] | None = None
+
+    @model_validator(mode="after")
+    def validate_edited_value(self) -> CareerProfileReviewRequest:
+        if (self.decision == "approved_edit") != (self.edited_value is not None):
+            raise ValueError("edited_value must be supplied only for approved_edit")
+        return self
+
+
+class CareerProfileProvenance(CareerProfileResponse):
+    extraction_run_id: str
+    fact_run_id: str
+    source_name: str
+    source_format: str
+
+
+class CareerProfileVersionProjection(CareerProfileResponse):
+    id: str
+    version_number: int
+    parent_version_id: str | None
+    origin: str
+    created_at: str
+
+
+class CareerProfileFactProjection(CareerProfileResponse):
+    logical_fact_id: str
+    fact_type: str
+    value: JsonValue
+    origin: str
+    privacy_classification: Literal["public", "private", "sensitive"]
+    sort_order: int
+    source_candidate_ids: list[str]
+    assembly_primary_candidate_id: str | None = None
+
+
+class CareerProfileSnapshotProjection(CareerProfileResponse):
+    version: CareerProfileVersionProjection
+    facts: list[CareerProfileFactProjection]
+
+
+class CareerProfileCurrentResponse(CareerProfileResponse):
+    revision: int
+    profile: CareerProfileSnapshotProjection | None
+
+
+class CareerProfileHistoryResponse(CareerProfileResponse):
+    items: list[CareerProfileSnapshotProjection]
+    total: int
+    offset: int
+    limit: int
+
+
+class CareerProfileVersionResponse(CareerProfileResponse):
+    version: CareerProfileVersionProjection
+    facts: list[CareerProfileFactProjection]
+
+
+class CareerProfileSaveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    expected_revision: int = Field(ge=0)
+    entries: list[CareerProfileEntry]
+
+
+class CareerProfileSaveResponse(BaseModel):
+    revision: int
+    profile: CareerProfileSnapshotProjection | None
+
+
+class CareerProfileCandidateEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["candidate"]
+    primary_candidate_id: str
+    supporting_candidate_ids: list[str] = Field(default_factory=list)
+    logical_fact_id: str | None = None
+    distinct_identity: bool = False
+    privacy_override: Literal["public", "private", "sensitive"] | None = None
+
+
+class CareerProfileExistingEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["existing"]
+    logical_fact_id: str
+    privacy_override: Literal["public", "private", "sensitive"] | None = None
+
+
+CareerProfileEntry = CareerProfileCandidateEntry | CareerProfileExistingEntry
+
+for _career_profile_model in (
+    CareerProfileSourcesResponse,
+    CareerProfileCandidateSummary,
+    CareerProfileCandidateResponse,
+    CareerProfileCurrentResponse,
+    CareerProfileVersionResponse,
+    CareerProfileSaveRequest,
+    CareerProfileSaveResponse,
+):
+    _career_profile_model.model_rebuild()
 
 
 class MaterialUpdateRequest(BaseModel):
@@ -1450,6 +1694,17 @@ class ReportResponse(BaseModel):
 
 
 __all__: tuple[str, ...] = (
+    "CareerProfilePage",
+    "CareerProfileSourcesResponse",
+    "CareerProfileAnalyzeResponse",
+    "CareerProfileCandidatesResponse",
+    "CareerProfileCandidateResponse",
+    "CareerProfileReviewRequest",
+    "CareerProfileCurrentResponse",
+    "CareerProfileHistoryResponse",
+    "CareerProfileVersionResponse",
+    "CareerProfileSaveRequest",
+    "CareerProfileSaveResponse",
     "ApplicationHistoryEvent",
     "ApplicationHistoryResponse",
     "ApplicationItem",

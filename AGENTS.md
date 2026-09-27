@@ -62,6 +62,14 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros profile init [PATH] [--force]` | Create a starter candidate profile (default: private XDG config path; refuses to overwrite without `--force`) |
 | `uv run careeros profile validate [PATH]` | Validate a JSON/YAML candidate profile (default: private path) |
 | `uv run careeros profile show [PATH]` | Show a candidate profile readably (default: private path) |
+| `uv run careeros career-profile sources [--format {text,json}] [--database PATH]` | Inspect résumé Material/version/extraction/fact-run lineage for the immutable Career Profile workspace |
+| `uv run careeros career-profile analyze MATERIAL_ID VERSION_ID [--materials-root PATH] [--database PATH]` | Explicitly run closed M3/M5 authority for one exact résumé version (write; locks the DB) |
+| `uv run careeros career-profile candidates FACT_RUN_ID [--state STATE] [--format {text,json}] [--database PATH]` | Inspect deterministic Career Fact candidates from one recognized run |
+| `uv run careeros career-profile candidate CANDIDATE_ID [--evidence-offset N] [--history-offset N] [--format {text,json}] [--database PATH]` | Inspect one candidate with bounded exact evidence and note-free review history |
+| `uv run careeros career-profile review CANDIDATE_ID {approved,approved_edit,rejected} [--value-file PATH] [--database PATH]` | Deliberately review or re-review one candidate (write; locks the DB) |
+| `uv run careeros career-profile show [--version VERSION_ID] [--format {text,json}] [--database PATH]` | Inspect the current or one immutable historical Career Profile version |
+| `uv run careeros career-profile history [--offset N] [--limit N] [--format {text,json}] [--database PATH]` | Inspect immutable Career Profile version history |
+| `uv run careeros career-profile save MANIFEST --expected-revision N [--database PATH]` | Save one deliberate complete profile snapshot through M6 CAS (write; locks the DB) |
 | `uv run careeros preference show [--format {text,json}] [--database PATH]` | Inspect stored explicit and learned matching preferences |
 | `uv run careeros preference explicit replace PROFILE [--database PATH]` | Replace the complete stored explicit profile, including configured-empty state |
 | `uv run careeros preference explicit clear [--database PATH]` | Remove stored explicit authority without changing learned state |
@@ -2310,3 +2318,24 @@ only `has_draft`, approval-for-current-revision, finalized count, and latest
 finalization time—it never claims byte-verified completeness. There is no M3
 CLI, generic export, filesystem package store, Material deletion, submission,
 outreach, or frontend implementation in the backend work package.
+
+## Product 1 v1.05 M7 Career Profile workspace
+
+The private loopback `#career-profile` workspace exposes closed M3 extraction,
+closed deterministic M5 Career Facts, and closed M6 review/immutable Career
+Profile authority. Its panels are Career Facts, Current Profile, and Profile
+History. Analyze always names one résumé Material ID and immutable version ID;
+opening the workspace never analyzes or chooses a current résumé implicitly.
+Candidate evidence is independently paginated exact M3 UTF-8 evidence with
+verified byte ranges/hashes and bounded friendly PDF/DOCX labels. Review notes,
+normalized keys, storage keys, paths, surrounding résumé context, and complete
+raw extracted text are never exposed.
+
+The Career Profile is distinct from the file-backed ranking Matching Profile
+(`careeros profile`) and stored Matching Preferences (`careeros preference`).
+Review and complete-snapshot save operations call M6 under the shared writer
+lock and never mutate either matching authority, ranking, feedback, or adaptive
+state. Profile saves use the observed revision as CAS, never auto-merge or
+silently replay stale drafts, and may deliberately create empty or semantic
+no-op immutable versions. The browser draft is memory-only. The frozen product
+and privacy contract is `docs/m7-career-profile-workspace-contract.md`.

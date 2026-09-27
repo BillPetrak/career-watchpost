@@ -27,6 +27,7 @@
           <a href="#reminders" id="nav-reminders">Reminders</a>
           <a href="#saved-searches" id="nav-saved-searches">Saved Searches</a>
           <a href="#materials" id="nav-materials">Materials</a>
+          <a href="#career-profile" id="nav-career-profile">Career Profile</a>
         </span>
         <span class="nav-group nav-group-utility">
           <a href="#matching" id="nav-matching">Matching Preferences</a>
@@ -48,6 +49,7 @@
           <a href="#reminders">Reminders</a>
           <a href="#saved-searches">Saved Searches</a>
           <a href="#materials">Materials</a>
+          <a href="#career-profile">Career Profile</a>
         </span>
         <span class="nav-group nav-group-utility">
           <a href="#matching">Matching Preferences</a>
@@ -164,6 +166,18 @@
       </p>
       <div id="materials-status" class="status" role="status" aria-live="polite" tabindex="-1"></div>
       <div id="materials-content" class="materials-workspace view-content"></div>
+    </section>
+
+    <section id="view-career-profile" class="view" data-view="career-profile" hidden>
+      <h1>Career Profile</h1>
+      <p class="view-intro">Private local workspace for deterministic Career Facts and immutable profile snapshots.</p>
+      <div id="career-profile-status" class="status" role="status" aria-live="polite" tabindex="-1"></div>
+      <div class="career-profile-panels" role="tablist" aria-label="Career Profile panels">
+        <button type="button" role="tab" tabindex="0" aria-controls="career-profile-content" aria-selected="true" data-career-panel="facts">Career Facts</button>
+        <button type="button" role="tab" tabindex="-1" aria-controls="career-profile-content" aria-selected="false" data-career-panel="current">Current Profile</button>
+        <button type="button" role="tab" tabindex="-1" aria-controls="career-profile-content" aria-selected="false" data-career-panel="history">Profile History</button>
+      </div>
+      <div id="career-profile-content" class="view-content"></div>
     </section>
 
     <section id="view-reminders" class="view" data-view="reminders" hidden>

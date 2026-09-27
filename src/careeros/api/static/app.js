@@ -43,6 +43,7 @@
   var REMINDERS = "reminders";
   var SAVED_SEARCHES = "saved-searches";
   var MATCHING = "matching";
+  var CAREER_PROFILE = "career-profile";
   var JOB = "job";
   var initialized = false;
 
@@ -308,6 +309,7 @@
     if (raw === REMINDERS) return REMINDERS;
     if (raw === SAVED_SEARCHES) return SAVED_SEARCHES;
     if (raw === MATCHING) return MATCHING;
+    if (raw === CAREER_PROFILE) return CAREER_PROFILE;
     if (raw === HOME) return HOME;
     return null; // unknown / absent / non-view (e.g. #main)
   }
@@ -419,6 +421,9 @@
       var matchingStatus = document.getElementById("matching-status");
       if (matchingStatus) doneLoading(matchingStatus);
     }
+    if (leaving === CAREER_PROFILE && name !== CAREER_PROFILE) {
+      careerProfileRequestSeq++;
+    }
     if (name === REVIEWED && leaving !== REVIEWED) {
       reviewedViewGeneration++;
       reviewedRefreshDirty = false;
@@ -499,6 +504,8 @@
         jobDetailOrigin = SAVED_SEARCHES;
       }
       await renderJobDetail(jobId);
+    } else if (view === CAREER_PROFILE) {
+      renderCareerProfilePanel();
     }
     document.getElementById("main").scrollTop = 0;
   }
@@ -7657,6 +7664,417 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Career Profile (M7): server-authoritative, memory-only presentation.
+  // ---------------------------------------------------------------------------
+  var careerProfilePanel = "facts";
+  var careerProfileRequestSeq = 0;
+  var careerProfileOperation = false;
+  var careerProfileState = { source: null, version: null, run: null, sourceOffset: 0, historyListOffset: 0, candidateOffset: 0, evidenceOffset: 0, historyOffset: 0, candidates: null, detail: null, current: null, history: null, draft: [], draftInitialized: false, draftDirty: false, removed: [], preservedDraft: null, analysisNotice: "" };
+
+  function careerProfileStatus(text, alert) {
+    var node = document.getElementById("career-profile-status");
+    if (!node) return;
+    node.textContent = text || "";
+    node.setAttribute("role", alert ? "alert" : "status");
+    if (alert) node.focus();
+  }
+
+  function copyCareerDraft(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function uniqueCareerProfileIds(values) {
+    return values.filter(Boolean).filter(function (value, index, items) {
+      return items.indexOf(value) === index;
+    });
+  }
+
+  function careerFactLabel(fact) {
+    return fact.fact_type + ": " + JSON.stringify(fact.value);
+  }
+
+  function careerEntryFromFact(fact) {
+    if (fact.origin === "approved_candidate" && Array.isArray(fact.source_candidate_ids) && fact.source_candidate_ids.length) {
+      var primary = fact.assembly_primary_candidate_id || "";
+      return {
+        kind: "candidate",
+        primary_candidate_id: primary,
+        supporting_candidate_ids: fact.source_candidate_ids.filter(function (id) { return id !== primary; }),
+        logical_fact_id: fact.logical_fact_id,
+        distinct_identity: false,
+        privacy_override: fact.privacy_classification,
+        _candidate_ids: fact.source_candidate_ids.slice(),
+        _label: careerFactLabel(fact),
+        _invalid: !primary,
+      };
+    }
+    return {
+      kind: "existing",
+      logical_fact_id: fact.logical_fact_id,
+      privacy_override: fact.privacy_classification,
+      _label: careerFactLabel(fact),
+      _invalid: false,
+    };
+  }
+
+  function initializeCareerDraft(current) {
+    careerProfileState.current = current;
+    careerProfileState.draft = current.profile ? current.profile.facts.map(careerEntryFromFact) : [];
+    careerProfileState.draftInitialized = true;
+    careerProfileState.draftDirty = false;
+    careerProfileState.removed = [];
+  }
+
+  function ensureCareerProfileDraft() {
+    if (careerProfileState.draftInitialized) return Promise.resolve();
+    return fetchJson("/career-profile/current").then(function (current) {
+      if (!careerProfileState.draftInitialized) initializeCareerDraft(current);
+    });
+  }
+
+  function careerProfilePayloadEntries(draft) {
+    return draft.map(function (entry) {
+      if (entry.kind === "existing") {
+        return {
+          kind: "existing",
+          logical_fact_id: entry.logical_fact_id,
+          privacy_override: entry.privacy_override || null,
+        };
+      }
+      return {
+        kind: "candidate",
+        primary_candidate_id: entry.primary_candidate_id,
+        supporting_candidate_ids: (entry.supporting_candidate_ids || []).slice(),
+        logical_fact_id: entry.logical_fact_id || null,
+        distinct_identity: Boolean(entry.distinct_identity),
+        privacy_override: entry.privacy_override || null,
+      };
+    });
+  }
+
+  function careerProfileButton(label, action) {
+    var button = el("button", { type: "button", textContent: label });
+    button.addEventListener("click", function () { if (!careerProfileOperation) action(button); });
+    return button;
+  }
+
+  function careerProfilePager(container, page, move) {
+    var nav = el("nav", { className: "career-profile-pager", label: "Career Profile pagination" });
+    var previous = careerProfileButton("Previous", function () { move(Math.max(0, page.offset - page.limit)); });
+    var next = careerProfileButton("Next", function () { move(page.offset + page.limit); });
+    previous.disabled = page.offset <= 0;
+    next.disabled = page.offset + page.limit >= page.total;
+    nav.appendChild(previous);
+    nav.appendChild(el("span", { textContent: " " + page.offset + "–" + Math.min(page.total, page.offset + page.limit) + " of " + page.total + " " }));
+    nav.appendChild(next);
+    container.appendChild(nav);
+  }
+
+  function renderCareerProfileCandidates(content, runId, offset, state) {
+    var seq = ++careerProfileRequestSeq;
+    var stateQuery = state ? "&state=" + encodeURIComponent(state) : "";
+    fetchJson("/career-profile/fact-runs/" + encodeURIComponent(runId) + "/candidates?offset=" + offset + "&limit=20" + stateQuery).then(function (data) {
+      if (seq !== careerProfileRequestSeq) return;
+      careerProfileState.candidates = data;
+      content.textContent = "";
+      content.appendChild(el("h3", { textContent: "Machine-produced candidates" }));
+      content.appendChild(el("p", { textContent: "Candidates are not authority until deliberately approved and saved." }));
+      var states = el("select", { id: "career-profile-state-filter" });
+      ["", "pending", "approved", "approved_edit", "rejected"].forEach(function (state) { var option = el("option", { textContent: state || "All states" }); option.value = state; states.appendChild(option); });
+      states.value = state || "";
+      states.addEventListener("change", function () { renderCareerProfileCandidates(content, runId, 0, states.value); });
+      content.appendChild(states);
+      data.items.forEach(function (candidate) {
+        var row = el("article", { className: "career-profile-candidate" });
+        row.appendChild(el("strong", { textContent: candidate.fact_type + " — " + JSON.stringify(candidate.value) }));
+        row.appendChild(el("p", { textContent: "Review: " + candidate.review.status }));
+        if (candidate.merge_eligible_count) row.appendChild(el("p", { textContent: "Merge eligible candidates: " + candidate.merge_eligible_candidate_ids.join(", ") }));
+        if (candidate.review.status === "approved" || candidate.review.status === "approved_edit") {
+          row.appendChild(careerProfileButton("Add to assembly", function () {
+            careerProfileOperation = true;
+            content.setAttribute("aria-busy", "true");
+            ensureCareerProfileDraft().then(function () {
+              if (!careerProfileState.draft.some(function (entry) { return entry.primary_candidate_id === candidate.id; })) {
+                careerProfileState.draft.push({
+                  kind: "candidate",
+                  primary_candidate_id: candidate.id,
+                  supporting_candidate_ids: [],
+                  distinct_identity: false,
+                  _candidate_ids: [candidate.id].concat(candidate.merge_eligible_candidate_ids || []),
+                  _label: candidate.fact_type + ": " + JSON.stringify(candidate.review.value || candidate.value),
+                  _invalid: false,
+                });
+                careerProfileState.draftDirty = true;
+              }
+              careerProfileStatus("Candidate added to memory-only assembly.");
+            }).catch(function () {
+              careerProfileStatus("Current Career Profile authority is unavailable.", true);
+            }).finally(function () {
+              careerProfileOperation = false;
+              content.removeAttribute("aria-busy");
+            });
+          }));
+        }
+        row.appendChild(careerProfileButton("Inspect evidence and review history", function () { careerProfileState.evidenceOffset = 0; careerProfileState.historyOffset = 0; renderCareerProfileDetail(content, candidate.id); }));
+        content.appendChild(row);
+      });
+      careerProfilePager(content, data, function (nextOffset) { renderCareerProfileCandidates(content, runId, nextOffset); });
+    }).catch(function () { careerProfileStatus("Career Fact authority is unavailable.", true); });
+  }
+
+  function renderCareerProfileDetail(content, candidateId) {
+    var seq = ++careerProfileRequestSeq;
+    fetchJson("/career-profile/candidates/" + encodeURIComponent(candidateId) + "?evidence_offset=" + careerProfileState.evidenceOffset + "&evidence_limit=20&history_offset=" + careerProfileState.historyOffset + "&history_limit=20").then(function (data) {
+      if (seq !== careerProfileRequestSeq) return;
+      careerProfileState.detail = data;
+      content.textContent = "";
+      content.appendChild(el("h3", { textContent: data.fact_type + " candidate" }));
+      content.appendChild(el("p", { textContent: "Original value: " + JSON.stringify(data.original_value) }));
+      content.appendChild(el("p", { textContent: "Effective review: " + data.review.status + (data.review.value ? " — " + JSON.stringify(data.review.value) : "") }));
+      content.appendChild(el("p", { textContent: "Source: " + data.provenance.source_name + " (" + data.provenance.source_format + ")" }));
+      content.appendChild(el("p", { textContent: "Machine-produced candidate — not Career Profile authority until approved and deliberately saved." }));
+      if (data.merge_eligible_count) content.appendChild(el("p", { textContent: "Eligible for deliberate merge with " + data.merge_eligible_candidate_ids.join(", ") + ". Compatibility is revalidated on save." }));
+      if (data.review.status === "rejected") content.appendChild(el("p", { textContent: "This prevents the candidate from sourcing a future version. Existing Career Profile versions are unchanged." }));
+      var actions = el("div", { className: "career-profile-review-actions" });
+      ["approved", "approved_edit", "rejected"].forEach(function (decision) { actions.appendChild(careerProfileButton(decision === "approved_edit" ? "Approve edited" : decision[0].toUpperCase() + decision.slice(1), function () { submitCareerReview(content, candidateId, decision, data); })); });
+      content.appendChild(actions);
+      content.appendChild(el("h4", { textContent: "Exact evidence" }));
+      if (!data.evidence.items.length) content.appendChild(el("p", { textContent: "No evidence records on this page." }));
+      data.evidence.items.forEach(function (item) { content.appendChild(el("p", { textContent: item.source_label + ": " + item.text })); });
+      careerProfilePager(content, data.evidence, function (nextOffset) { careerProfileState.evidenceOffset = nextOffset; renderCareerProfileDetail(content, candidateId); });
+      content.appendChild(el("h4", { textContent: "Review history" }));
+      if (!data.review_history.items.length) content.appendChild(el("p", { textContent: "No review events on this page." }));
+      data.review_history.items.forEach(function (item) { content.appendChild(el("p", { textContent: item.decision + " — " + item.created_at })); });
+      careerProfilePager(content, data.review_history, function (nextOffset) { careerProfileState.historyOffset = nextOffset; renderCareerProfileDetail(content, candidateId); });
+    }).catch(function () { careerProfileStatus("Candidate authority is unavailable.", true); });
+  }
+
+  function submitCareerReview(content, candidateId, decision, detail) {
+    var body = { decision: decision };
+    if (decision === "approved_edit") {
+      var form = el("form", { className: "career-profile-edit-form" });
+      form.setAttribute("aria-label", "Edit candidate value");
+      var fields = detail.fact_type === "identity.name" ? ["name"] : detail.fact_type === "contact.email" ? ["email"] : detail.fact_type === "contact.phone" ? ["phone"] : detail.fact_type === "portfolio_reference" ? ["url"] : detail.fact_type === "skill" || detail.fact_type === "language" ? ["name"] : detail.fact_type === "certification" ? ["name", "issuer", "date"] : detail.fact_type === "employment" ? ["title", "company", "start_date", "end_date"] : detail.fact_type === "education" ? ["degree", "institution", "start_date", "end_date"] : ["value"];
+      var source = detail.review.value || detail.original_value || {};
+      fields.forEach(function (key) { var label = el("label", { textContent: key + (key === "start_date" || key === "end_date" || key === "issuer" || key === "date" ? " (optional)" : "") }); var input = el("input", { type: "text" }); input.name = key; input.required = !(key === "start_date" || key === "end_date" || key === "issuer" || key === "date"); input.value = source[key] === undefined ? "" : String(source[key]); label.appendChild(input); form.appendChild(label); });
+      var save = el("button", { type: "submit", textContent: "Submit edited approval" });
+      form.appendChild(save);
+      content.appendChild(form);
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var value = {};
+        fields.forEach(function (key) { var entered = form.elements[key].value; if (entered !== "" || form.elements[key].required) value[key] = entered; });
+        submitCareerReviewPayload(content, candidateId, body, value);
+      });
+      form.querySelector("input").focus();
+      return;
+    }
+    submitCareerReviewPayload(content, candidateId, body, null);
+  }
+
+  function submitCareerReviewPayload(content, candidateId, body, editedValue) {
+    if (editedValue !== null) body.edited_value = editedValue;
+    careerProfileOperation = true;
+    content.setAttribute("aria-busy", "true");
+    putJson("/career-profile/candidates/" + encodeURIComponent(candidateId) + "/review", body).then(function () { careerProfileState.evidenceOffset = 0; careerProfileState.historyOffset = 0; renderCareerProfileDetail(content, candidateId); }).catch(function () { careerProfileStatus("Review could not be saved.", true); }).finally(function () { careerProfileOperation = false; content.removeAttribute("aria-busy"); });
+  }
+
+  function renderCareerProfileAssembly(content) {
+    var draft = careerProfileState.draft;
+    content.textContent = "";
+    content.appendChild(el("h3", { textContent: "Current Profile assembly" }));
+    content.appendChild(el("p", { textContent: "Draft is memory-only. Nothing is saved until you press Save Profile." }));
+    content.appendChild(el("p", { textContent: "Base revision: " + String(careerProfileState.current ? careerProfileState.current.revision : 0) + " · Ordered facts: " + String(draft.length) }));
+    if (careerProfileState.preservedDraft) {
+      var conflict = el("div", { className: "error-box" });
+      conflict.setAttribute("role", "alert");
+      conflict.appendChild(el("p", { textContent: "The Career Profile changed elsewhere. The submitted draft is preserved in memory and was not replayed." }));
+      conflict.appendChild(careerProfileButton("Reapply preserved draft", function () {
+        careerProfileState.draft = copyCareerDraft(careerProfileState.preservedDraft);
+        careerProfileState.draftDirty = true;
+        careerProfileState.preservedDraft = null;
+        careerProfileState.removed = [];
+        renderCareerProfileAssembly(content);
+        careerProfileStatus("Preserved draft reapplied in memory. Reconcile invalid entries, then press Save Profile again.");
+      }));
+      content.appendChild(conflict);
+    }
+    draft.forEach(function (entry, index) {
+      var row = el("div", { className: "career-profile-draft-row" });
+      row.appendChild(el("strong", { textContent: entry._label || entry.primary_candidate_id || entry.logical_fact_id }));
+      if (entry._invalid) {
+        var invalid = el("p", { className: "warning-note", textContent: "This draft entry is no longer eligible. Review its source authority before saving." });
+        invalid.setAttribute("role", "alert");
+        row.appendChild(invalid);
+      }
+      var privacy = el("select", { label: "Privacy classification" });
+      ["", "public", "private", "sensitive"].forEach(function (value) { var option = el("option", { textContent: value || "Default privacy" }); option.value = value; privacy.appendChild(option); });
+      privacy.value = entry.privacy_override || "";
+      privacy.addEventListener("change", function () { entry.privacy_override = privacy.value || null; careerProfileState.draftDirty = true; });
+      row.appendChild(privacy);
+      if (entry.kind === "candidate") {
+        var candidateIds = uniqueCareerProfileIds((entry._candidate_ids || []).concat([entry.primary_candidate_id]).concat(entry.supporting_candidate_ids || []));
+        var primaryLabel = el("label", { textContent: "Primary source " });
+        var primary = el("select", { label: "Primary source candidate" });
+        var choose = el("option", { textContent: "Choose primary candidate" });
+        choose.value = "";
+        primary.appendChild(choose);
+        candidateIds.forEach(function (id) { var option = el("option", { textContent: id }); option.value = id; primary.appendChild(option); });
+        primary.value = entry.primary_candidate_id || "";
+        primary.addEventListener("change", function () {
+          entry.primary_candidate_id = primary.value;
+          entry.supporting_candidate_ids = (entry.supporting_candidate_ids || []).filter(function (id) { return id !== primary.value; });
+          entry._invalid = !primary.value;
+          careerProfileState.draftDirty = true;
+          renderCareerProfileAssembly(content);
+        });
+        primaryLabel.appendChild(primary);
+        row.appendChild(primaryLabel);
+        candidateIds.filter(function (id) { return id !== entry.primary_candidate_id; }).forEach(function (id) {
+          var supportLabel = el("label", { textContent: " Supporting source " + id });
+          var support = el("input", { type: "checkbox" });
+          support.checked = (entry.supporting_candidate_ids || []).includes(id);
+          support.addEventListener("change", function () {
+            var selected = entry.supporting_candidate_ids || [];
+            entry.supporting_candidate_ids = support.checked ? uniqueCareerProfileIds(selected.concat([id])) : selected.filter(function (value) { return value !== id; });
+            careerProfileState.draftDirty = true;
+          });
+          supportLabel.prepend(support);
+          row.appendChild(supportLabel);
+        });
+        var distinct = el("input", { type: "checkbox" }); distinct.checked = !!entry.distinct_identity; distinct.setAttribute("aria-label", "Keep distinct identity"); distinct.addEventListener("change", function () { entry.distinct_identity = distinct.checked; if (distinct.checked) { entry.logical_fact_id = null; identity.value = ""; } careerProfileState.draftDirty = true; }); row.appendChild(distinct);
+        var identity = el("input", { type: "text" }); identity.placeholder = "Existing logical identity (optional)"; identity.value = entry.logical_fact_id || ""; identity.setAttribute("aria-label", "Logical fact identity"); identity.addEventListener("change", function () { entry.logical_fact_id = identity.value || null; if (entry.logical_fact_id) { entry.distinct_identity = false; distinct.checked = false; } careerProfileState.draftDirty = true; }); row.appendChild(identity);
+      }
+      var up = careerProfileButton("Up", function () { var prior = draft[index - 1]; draft[index - 1] = entry; draft[index] = prior; careerProfileState.draftDirty = true; renderCareerProfileAssembly(content); });
+      up.disabled = index === 0;
+      row.appendChild(up);
+      var down = careerProfileButton("Down", function () { var next = draft[index + 1]; draft[index + 1] = entry; draft[index] = next; careerProfileState.draftDirty = true; renderCareerProfileAssembly(content); });
+      down.disabled = index + 1 >= draft.length;
+      row.appendChild(down);
+      row.appendChild(careerProfileButton("Remove", function () { careerProfileState.removed.push(draft.splice(index, 1)[0]); careerProfileState.draftDirty = true; renderCareerProfileAssembly(content); }));
+      content.appendChild(row);
+    });
+    if (careerProfileState.removed.length) {
+      content.appendChild(el("h4", { textContent: "Removed from this draft" }));
+      careerProfileState.removed.forEach(function (entry, index) {
+        var restore = careerProfileButton("Re-add " + (entry._label || entry.logical_fact_id || entry.primary_candidate_id), function () {
+          careerProfileState.draft.push(careerProfileState.removed.splice(index, 1)[0]);
+          careerProfileState.draftDirty = true;
+          renderCareerProfileAssembly(content);
+        });
+        content.appendChild(restore);
+      });
+    }
+    var save = careerProfileButton("Save Profile", function (button) {
+      button.disabled = true;
+      careerProfileOperation = true;
+      content.setAttribute("aria-busy", "true");
+      var submittedDraft = copyCareerDraft(draft);
+      postJson("/career-profile/versions", { expected_revision: careerProfileState.current ? careerProfileState.current.revision : 0, entries: careerProfilePayloadEntries(submittedDraft) }).then(function () {
+        return Promise.all([fetchJson("/career-profile/current"), fetchJson("/career-profile/history?offset=0&limit=20")]);
+      }).then(function (fresh) {
+        initializeCareerDraft(fresh[0]);
+        careerProfileState.history = fresh[1];
+        careerProfileState.preservedDraft = null;
+        renderCareerProfileAssembly(content);
+        careerProfileStatus("Profile version saved.");
+      }).catch(function (error) {
+        if (error.status === 409) {
+          careerProfileState.preservedDraft = submittedDraft;
+          careerProfileStatus("Profile changed elsewhere. Draft preserved; refetch and explicitly reapply it.", true);
+          var ids = [];
+          submittedDraft.forEach(function (entry) { if (entry.kind === "candidate") ids = ids.concat([entry.primary_candidate_id]).concat(entry.supporting_candidate_ids || []); });
+          return Promise.all([
+            fetchJson("/career-profile/current"),
+            fetchJson("/career-profile/history?offset=0&limit=20"),
+            Promise.all(uniqueCareerProfileIds(ids).map(function (id) { return fetchJson("/career-profile/candidates/" + encodeURIComponent(id) + "?evidence_limit=1&history_limit=1").then(function (detail) { return { id: id, approved: detail.review.status === "approved" || detail.review.status === "approved_edit" }; }).catch(function () { return { id: id, approved: false }; }); })),
+          ]).then(function (fresh) {
+            var eligibility = {};
+            fresh[2].forEach(function (item) { eligibility[item.id] = item.approved; });
+            careerProfileState.preservedDraft.forEach(function (entry) { if (entry.kind === "candidate") entry._invalid = !entry.primary_candidate_id || ![entry.primary_candidate_id].concat(entry.supporting_candidate_ids || []).every(function (id) { return eligibility[id]; }); });
+            initializeCareerDraft(fresh[0]);
+            careerProfileState.history = fresh[1];
+            renderCareerProfileAssembly(content);
+          }).catch(function () {
+            initializeCareerDraft({ revision: error.current_revision || 0, profile: null });
+            renderCareerProfileAssembly(content);
+            careerProfileStatus("Could not refetch authoritative profile state. The submitted draft remains preserved in memory.", true);
+          });
+        } else careerProfileStatus("Profile could not be saved.", true);
+      }).finally(function () { careerProfileOperation = false; content.removeAttribute("aria-busy"); button.disabled = false; });
+    });
+    save.disabled = draft.some(function (entry) { return entry._invalid || (entry.kind === "candidate" && !entry.primary_candidate_id); });
+    content.appendChild(save);
+  }
+
+  function renderCareerProfilePanel() {
+    var content = document.getElementById("career-profile-content");
+    var status = document.getElementById("career-profile-status");
+    if (!content || !status) return;
+    var seq = ++careerProfileRequestSeq;
+    content.textContent = "";
+    status.textContent = "Loading Career Profile…";
+    var endpoint = careerProfilePanel === "current"
+      ? "/career-profile/current"
+      : careerProfilePanel === "history"
+        ? "/career-profile/history?offset=" + careerProfileState.historyListOffset + "&limit=20"
+        : "/career-profile/sources?offset=" + careerProfileState.sourceOffset + "&limit=20";
+    fetchJson(endpoint).then(function (data) {
+      if (seq !== careerProfileRequestSeq) return;
+      status.textContent = "";
+      content.appendChild(el("h2", { textContent: careerProfilePanel === "facts" ? "Career Facts" : careerProfilePanel === "current" ? "Current Profile" : "Profile History" }));
+      if (careerProfilePanel === "facts") {
+        content.appendChild(el("p", { textContent: "Machine-produced candidates are not Career Profile authority until approved and deliberately saved." }));
+        if (careerProfileState.analysisNotice) content.appendChild(el("p", { textContent: careerProfileState.analysisNotice }));
+        if (!data.items.length) content.appendChild(el("p", { textContent: "No résumé Materials are available." }));
+        data.items.forEach(function (source) {
+          var card = el("article", { className: "career-profile-source" });
+          card.appendChild(el("h3", { textContent: String(source.name || "Résumé") }));
+          (source.versions || []).forEach(function (version) {
+            var row = el("p", { textContent: "Version " + String(version.version_number) + " — " + String(version.display_filename || "") + " " });
+            row.appendChild(careerProfileButton("Analyze résumé", function (button) { button.disabled = true; careerProfileOperation = true; content.setAttribute("aria-busy", "true"); postJson("/career-profile/sources/" + encodeURIComponent(source.id) + "/versions/" + encodeURIComponent(version.id) + "/analyze", {}).then(function (result) { careerProfileState.analysisNotice = result.candidate_count === 0 ? "Analysis succeeded with no deterministic Career Facts." : "Analysis succeeded with " + String(result.candidate_count) + " deterministic Career Fact candidates."; renderCareerProfilePanel(); }).catch(function (error) { careerProfileStatus(error.status === 503 ? "Career Profile writes are temporarily busy. Retry Analyze." : "Résumé analysis failed safely.", true); }).finally(function () { careerProfileOperation = false; content.removeAttribute("aria-busy"); button.disabled = false; }); }));
+            (version.extractions || []).forEach(function (extraction) { (extraction.fact_runs || []).forEach(function (run) {
+              if (run.recognized) {
+                row.appendChild(el("span", { textContent: run.candidate_count === 0 ? " Analyzed: no Career Facts. " : " Analyzed: " + String(run.candidate_count) + " candidates. " }));
+                row.appendChild(careerProfileButton("Review facts", function () { renderCareerProfileCandidates(content, run.id, 0); }));
+              } else if (run.outcome === "succeeded") {
+                row.appendChild(el("span", { textContent: " Stored run is not recognized deterministic M5 authority. " }));
+              } else {
+                row.appendChild(el("span", { textContent: " Previous analysis did not succeed. " }));
+              }
+            }); });
+            card.appendChild(row);
+          });
+          content.appendChild(card);
+        });
+        careerProfilePager(content, data, function (offset) { careerProfileState.sourceOffset = offset; renderCareerProfilePanel(); });
+      } else if (careerProfilePanel === "current") {
+        content.appendChild(el("p", { textContent: data.profile ? "Immutable profile revision " + String(data.revision) + "." : "No Career Profile version has been saved." }));
+        if (data.profile) data.profile.facts.forEach(function (fact) { content.appendChild(el("p", { textContent: fact.fact_type + ": " + JSON.stringify(fact.value) + " (" + fact.privacy_classification + ")" })); });
+        if (!careerProfileState.draftInitialized || !careerProfileState.draftDirty) initializeCareerDraft(data);
+        content.appendChild(careerProfileButton("Open memory-only assembly", function () { renderCareerProfileAssembly(content); }));
+      } else {
+        if (!data.items.length) content.appendChild(el("p", { textContent: "No saved profile versions." }));
+        data.items.forEach(function (item) {
+          var version = item.version || {};
+          var row = el("p", { textContent: "Version " + String(version.version_number || "") + " — " + String(version.created_at || "") + " " });
+          row.appendChild(careerProfileButton("View immutable facts", function () {
+            fetchJson("/career-profile/versions/" + encodeURIComponent(version.id)).then(function (detail) {
+              content.textContent = "";
+              content.appendChild(el("h3", { textContent: "Immutable Profile Version " + String(detail.version.version_number) }));
+              detail.facts.forEach(function (fact) {
+                content.appendChild(el("p", { textContent: fact.fact_type + ": " + JSON.stringify(fact.value) + " (" + fact.privacy_classification + ")" }));
+              });
+            });
+          }));
+          content.appendChild(row);
+        });
+        careerProfilePager(content, data, function (offset) { careerProfileState.historyListOffset = offset; renderCareerProfilePanel(); });
+      }
+    }).catch(function () { status.textContent = "Career Profile authority is unavailable."; });
+  }
+
+  // ---------------------------------------------------------------------------
   // Wiring
   // ---------------------------------------------------------------------------
 
@@ -7676,6 +8094,25 @@
         renderJobs();
       });
     }
+    document.querySelectorAll("[data-career-panel]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        careerProfilePanel = button.getAttribute("data-career-panel") || "facts";
+        document.querySelectorAll("[data-career-panel]").forEach(function (other) {
+          other.setAttribute("aria-selected", other === button ? "true" : "false");
+        });
+        renderCareerProfilePanel();
+      });
+      button.addEventListener("keydown", function (event) {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        var tabs = Array.from(document.querySelectorAll("[data-career-panel]"));
+        var index = tabs.indexOf(button);
+        var next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+        event.preventDefault();
+        tabs[next].focus();
+        tabs[next].click();
+        tabs.forEach(function (tab, tabIndex) { tab.tabIndex = tabIndex === next ? 0 : -1; });
+      });
+    });
     navigate();
   });
 

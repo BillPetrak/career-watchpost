@@ -13,6 +13,7 @@ from .models import (
 from .service import (
     assemble_profile,
     candidate_review_history,
+    candidate_review_history_page,
     current_profile,
     effective_candidate_review,
     profile_history,
@@ -32,6 +33,7 @@ __all__ = [
     "review_candidate",
     "effective_candidate_review",
     "candidate_review_history",
+    "candidate_review_history_page",
     "assemble_profile",
     "current_profile",
     "profile_history",

@@ -30,6 +30,7 @@ from careeros.database.career_profile import (
 from careeros.database.resume_intelligence import (
     append_fact_review_in_transaction,
     fact_review_history_records,
+    fact_review_history_records_page,
     latest_fact_review_record,
     load_fact_authority,
     validate_recognized_fact_authority,
@@ -143,6 +144,51 @@ def candidate_review_history(
             if canonical != row.edited_value_json or digest != row.edited_value_sha256:
                 raise CareerProfileValidationError("approved edit authority is corrupt")
     return [asdict(row) for row in records]
+
+
+def candidate_review_history_page(
+    connection: sqlite3.Connection,
+    candidate_id: str,
+    *,
+    offset: int,
+    limit: int,
+) -> dict[str, Any]:
+    """Return one M6-validated review-history page.
+
+    Integrity validation is deliberately limited to rows returned by this page;
+    callers requiring complete-history certification should use
+    :func:`candidate_review_history`.
+    """
+    if isinstance(offset, bool) or offset < 0:
+        raise CareerProfileValidationError("offset must be non-negative")
+    if isinstance(limit, bool) or limit < 1 or limit > 100:
+        raise CareerProfileValidationError("limit must be between 1 and 100")
+    candidate = _candidate(connection, candidate_id)
+    records, total = fact_review_history_records_page(
+        connection, candidate_id, offset=offset, limit=limit
+    )
+    for row in records:
+        if row.event_kind not in ("approved", "rejected", "approved_edit"):
+            raise CareerProfileValidationError("unrecognized review event")
+        if row.event_kind == "approved_edit":
+            if row.edited_value_json is None or row.edited_value_sha256 is None:
+                raise CareerProfileValidationError("approved edit authority is corrupt")
+            try:
+                canonical, digest, _ = validate_candidate_value(
+                    str(candidate["fact_type"]), row.edited_value_json
+                )
+            except (TypeError, ValueError) as exc:
+                raise CareerProfileValidationError(
+                    "approved edit authority is corrupt"
+                ) from exc
+            if canonical != row.edited_value_json or digest != row.edited_value_sha256:
+                raise CareerProfileValidationError("approved edit authority is corrupt")
+    return {
+        "items": [asdict(row) for row in records],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 def _edited_key(fact_type: str, value_json: str) -> str:

@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from careeros.cli.commands import (
     run_application_command,
     run_application_redact_note,
+    run_career_profile_command,
     run_collect_command,
     run_export_command,
     run_group_command,
@@ -120,6 +121,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if arguments.command == "profile":
         return run_profile_command(arguments)
+
+    if arguments.command == "career-profile":
+        return run_career_profile_command(arguments)
 
     if arguments.command == "preference":
         return run_preference_command(arguments)

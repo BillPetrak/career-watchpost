@@ -16,6 +16,7 @@ from careeros.database.resume_intelligence import (
     fact_candidates,
     fact_evidence,
     fact_review_history,
+    fact_review_history_records_page,
     find_successful_fact_runs,
     latest_fact_review,
     latest_fact_review_record,
@@ -803,6 +804,25 @@ def test_m6_review_history_validates_all_timestamps_and_equal_time_ids(db) -> No
     db.commit()
     with pytest.raises(ResumeValidationError):
         latest_fact_review_record(db, candidate_id)
+
+
+def test_m6_review_history_records_page_uses_true_offset_and_count(db) -> None:
+    fact, candidates, _evidence = _persist_valid_m5(db)
+    candidate_id = candidates[0].id
+    stamp = "2026-09-26T15:42:13.123456+00:00"
+    db.executemany(
+        "INSERT INTO career_fact_review_events"
+        "(candidate_id,event_kind,created_at) VALUES (?,?,?)",
+        [(candidate_id, "approved", stamp)] * 4,
+    )
+    db.commit()
+
+    rows, total = fact_review_history_records_page(db, candidate_id, offset=1, limit=2)
+    assert total == 4
+    assert [row.id for row in rows] == [3, 2]
+    rows, total = fact_review_history_records_page(db, candidate_id, offset=4, limit=2)
+    assert rows == [] and total == 4
+    del fact
 
 
 def test_transaction_aware_review_append_and_generic_compatibility(db) -> None:

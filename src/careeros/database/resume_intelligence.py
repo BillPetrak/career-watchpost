@@ -1719,6 +1719,41 @@ def fact_review_history_records(
     return records
 
 
+def fact_review_history_records_page(
+    c: sqlite3.Connection,
+    candidate_id: str,
+    *,
+    offset: int,
+    limit: int,
+) -> tuple[list[FactReviewRecord], int]:
+    """Read one bounded, deterministically ordered review-history page."""
+    if isinstance(offset, bool) or offset < 0:
+        raise ResumeValidationError("offset must be non-negative")
+    if isinstance(limit, bool) or limit < 1 or limit > 100:
+        raise ResumeValidationError("limit must be between 1 and 100")
+    _require(
+        _row(c, "SELECT id FROM career_fact_candidates WHERE id=?", (candidate_id,)),
+        "fact candidate",
+    )
+    total = int(
+        c.execute(
+            "SELECT count(*) FROM career_fact_review_events WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()[0]
+    )
+    rows = c.execute(
+        "SELECT id,candidate_id,event_kind,created_at,edited_value_json,edited_value_sha256,note "
+        "FROM career_fact_review_events WHERE candidate_id=? "
+        "ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
+        (candidate_id, limit, offset),
+    ).fetchall()
+    records: list[FactReviewRecord] = []
+    for row in rows:
+        validate_review_timestamp(row["created_at"])
+        records.append(FactReviewRecord(**dict(row)))
+    return records, total
+
+
 def latest_fact_review_record(
     c: sqlite3.Connection, candidate_id: str
 ) -> FactReviewRecord | None:

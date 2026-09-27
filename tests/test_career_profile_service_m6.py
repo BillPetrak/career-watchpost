@@ -16,6 +16,7 @@ from careeros.career_profile.models import (
 from careeros.career_profile.service import (
     assemble_profile,
     candidate_review_history,
+    candidate_review_history_page,
     current_profile,
     effective_candidate_review,
     profile_history,
@@ -118,6 +119,152 @@ def _candidates(db: sqlite3.Connection, fact_type: str) -> list[sqlite3.Row]:
         "SELECT * FROM career_fact_candidates WHERE fact_type=? ORDER BY id",
         (fact_type,),
     ).fetchall()
+
+
+def test_candidate_review_history_page_is_bounded_and_ordered(db) -> None:
+    candidate_id = str(_candidate(db)["id"])
+    for decision in ("approved", "rejected", "approved", "rejected", "approved"):
+        review_candidate(db, candidate_id, decision, note="audit")
+
+    first = candidate_review_history_page(db, candidate_id, offset=0, limit=2)
+    middle = candidate_review_history_page(db, candidate_id, offset=2, limit=2)
+    final = candidate_review_history_page(db, candidate_id, offset=4, limit=2)
+    beyond = candidate_review_history_page(db, candidate_id, offset=99, limit=2)
+
+    assert first["total"] == middle["total"] == final["total"] == 5
+    assert (first["offset"], first["limit"]) == (0, 2)
+    assert (middle["offset"], middle["limit"]) == (2, 2)
+    assert (final["offset"], final["limit"]) == (4, 2)
+    assert len(first["items"]) == len(middle["items"]) == 2
+    assert len(final["items"]) == 1
+    assert beyond["items"] == []
+    assert [
+        item["id"] for item in first["items"] + middle["items"] + final["items"]
+    ] == [item["id"] for item in candidate_review_history(db, candidate_id)]
+
+    with pytest.raises(CareerProfileValidationError):
+        candidate_review_history_page(db, candidate_id, offset=-1, limit=2)
+    with pytest.raises(CareerProfileValidationError):
+        candidate_review_history_page(db, candidate_id, offset=0, limit=0)
+    with pytest.raises(CareerProfileValidationError):
+        candidate_review_history_page(db, candidate_id, offset=0, limit=101)
+
+
+def test_candidate_review_history_page_empty_and_missing_candidate(db) -> None:
+    candidate_id = str(_candidate(db)["id"])
+    assert candidate_review_history_page(db, candidate_id, offset=0, limit=20) == {
+        "items": [],
+        "total": 0,
+        "offset": 0,
+        "limit": 20,
+    }
+    with pytest.raises(CareerProfileValidationError):
+        candidate_review_history_page(db, "missing", offset=0, limit=20)
+    assert effective_candidate_review(db, candidate_id).status == "pending"
+
+
+def test_candidate_review_history_page_equal_timestamp_and_page_local_integrity(
+    db,
+) -> None:
+    candidate = _candidate(db)
+    candidate_id = str(candidate["id"])
+    stamp = "2026-09-26T15:42:13.123456+00:00"
+    db.executemany(
+        "INSERT INTO career_fact_review_events"
+        "(candidate_id,event_kind,created_at) VALUES (?,?,?)",
+        [(candidate_id, "approved", stamp), (candidate_id, "rejected", stamp)],
+    )
+    db.commit()
+    equal_page = candidate_review_history_page(db, candidate_id, offset=0, limit=2)
+    assert [item["id"] for item in equal_page["items"]] == sorted(
+        [item["id"] for item in equal_page["items"]], reverse=True
+    )
+
+    db.execute(
+        "UPDATE career_fact_review_events SET created_at='not-a-timestamp' "
+        "WHERE candidate_id=? AND id=?",
+        (candidate_id, equal_page["items"][1]["id"]),
+    )
+    db.commit()
+    with pytest.raises(ResumeValidationError):
+        candidate_review_history_page(db, candidate_id, offset=0, limit=2)
+
+
+def test_candidate_review_history_page_does_not_validate_unrequested_corruption(
+    db,
+) -> None:
+    candidate = _candidate(db)
+    candidate_id = str(candidate["id"])
+    newer = "2026-09-27T15:42:13.123456+00:00"
+    older = "2026-09-26T15:42:13.123456+00:00"
+    db.executemany(
+        "INSERT INTO career_fact_review_events"
+        "(candidate_id,event_kind,created_at) VALUES (?,?,?)",
+        [(candidate_id, "approved", newer), (candidate_id, "rejected", older)],
+    )
+    db.commit()
+    older_id = int(
+        db.execute(
+            "SELECT id FROM career_fact_review_events WHERE candidate_id=? "
+            "ORDER BY created_at ASC, id ASC",
+            (candidate_id,),
+        ).fetchone()[0]
+    )
+    db.execute(
+        "UPDATE career_fact_review_events SET created_at='0000' WHERE id=?",
+        (older_id,),
+    )
+    db.commit()
+    page = candidate_review_history_page(db, candidate_id, offset=0, limit=1)
+    assert len(page["items"]) == 1
+    with pytest.raises(ResumeValidationError):
+        candidate_review_history(db, candidate_id)
+
+
+def test_candidate_review_history_page_rejects_corrupt_approved_edit(db) -> None:
+    candidate = _candidate(db)
+    candidate_id = str(candidate["id"])
+    stamp = "2026-09-26T15:42:13.123456+00:00"
+    db.execute(
+        "INSERT INTO career_fact_review_events"
+        "(candidate_id,event_kind,edited_value_json,edited_value_sha256,created_at) "
+        "VALUES (?,?,?,?,?)",
+        (
+            candidate_id,
+            "approved_edit",
+            candidate["canonical_value_json"],
+            candidate["value_sha256"],
+            stamp,
+        ),
+    )
+    db.commit()
+    event_id = int(
+        db.execute(
+            "SELECT id FROM career_fact_review_events WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()[0]
+    )
+    db.execute(
+        "UPDATE career_fact_review_events SET edited_value_sha256=? WHERE id=?",
+        ("0" * 64, event_id),
+    )
+    db.commit()
+    with pytest.raises(CareerProfileValidationError):
+        candidate_review_history_page(db, candidate_id, offset=0, limit=1)
+
+
+def test_candidate_review_history_page_rejects_unrecognized_event_kind(db) -> None:
+    candidate_id = str(_candidate(db)["id"])
+    db.execute("PRAGMA ignore_check_constraints=ON")
+    db.execute(
+        "INSERT INTO career_fact_review_events(candidate_id,event_kind,created_at) "
+        "VALUES (?,?,?)",
+        (candidate_id, "unknown", "2026-09-26T15:42:13.123456+00:00"),
+    )
+    db.commit()
+    db.execute("PRAGMA ignore_check_constraints=OFF")
+    with pytest.raises(CareerProfileValidationError):
+        candidate_review_history_page(db, candidate_id, offset=0, limit=1)
 
 
 def _add_resume_run(
