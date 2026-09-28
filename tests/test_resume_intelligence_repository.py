@@ -510,6 +510,8 @@ def test_sanitized_fact_and_exact_evidence_validation(db) -> None:
     assert [item.ordinal for item in fact_evidence(db, candidate.id)] == [0]
     assert [item.id for item in list_fact_runs(db, run.id)] == [fact.id]
     assert [item.id for item in find_successful_fact_runs(db, "fc")] == [fact.id]
+    with pytest.raises(ResumeValidationError, match="not recognized M5 authority"):
+        validate_recognized_fact_authority(db, fact.id)
     wrong = CareerFactRun(
         "2" * 32,
         run.id,

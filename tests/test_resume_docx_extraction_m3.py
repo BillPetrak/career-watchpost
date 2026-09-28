@@ -287,6 +287,14 @@ def test_unsafe_archive_names_fail_closed(name: str) -> None:
 
 def test_casefold_duplicate_and_encrypted_members_fail_closed() -> None:
     document = body("<w:p><w:r><w:t>Text</w:t></w:r></w:p>")
+    exact_duplicate = package_parts(
+        document=document,
+        extras=[("word/document.xml", document)],
+    )
+    with pytest.raises(ExtractionError) as error:
+        extract_docx(exact_duplicate)
+    assert error.value.code == "document_structurally_unsafe"
+
     duplicate = package_parts(
         document=document,
         extras=[("word/Part.xml", "<x/>"), ("word/part.xml", "<x/>")],
@@ -299,6 +307,86 @@ def test_casefold_duplicate_and_encrypted_members_fail_closed() -> None:
     with pytest.raises(ExtractionError) as error:
         extract_docx(encrypted)
     assert error.value.code == "encrypted_document"
+
+
+@pytest.mark.parametrize(
+    "relationship",
+    [
+        f'<Relationship Id="jump" Type="{R}/hyperlink" Target="#"/>',
+        f'<Relationship Id="jump" Type="{R}/hyperlink" Target="missing.xml"/>',
+        '<Relationship Id="jump" Type="not-a-uri" Target="#skills"/>',
+    ],
+)
+def test_malformed_internal_or_bookmark_relationship_fails_closed(
+    relationship: str,
+) -> None:
+    document = body(
+        '<w:p><w:hyperlink r:id="jump"><w:r><w:t>Jump</w:t></w:r></w:hyperlink></w:p>'
+    )
+    relationships = f'<Relationships xmlns="{PR}">{relationship}</Relationships>'
+    with pytest.raises(ExtractionError) as error:
+        extract_docx(
+            package_parts(
+                document=document,
+                extras=[("word/_rels/document.xml.rels", relationships)],
+            )
+        )
+    assert error.value.code == "document_structurally_unsafe"
+
+
+@pytest.mark.parametrize(
+    "relationships",
+    [
+        f'<Relationships xmlns="{PR}"/>',
+        (
+            f'<Relationships xmlns="{PR}">'
+            f'<Relationship Id="header" Type="{R}/footer" Target="header1.xml"/>'
+            "</Relationships>"
+        ),
+        (
+            f'<Relationships xmlns="{PR}">'
+            f'<Relationship Id="header" Type="{R}/header" Target="missing.xml"/>'
+            "</Relationships>"
+        ),
+    ],
+)
+def test_missing_or_malformed_header_relationship_fails_closed(
+    relationships: str,
+) -> None:
+    document = body(
+        "<w:p><w:r><w:t>Text</w:t></w:r></w:p><w:sectPr>"
+        '<w:headerReference w:type="default" r:id="header"/></w:sectPr>'
+    )
+    extras: list[tuple[str, str | bytes]] = [
+        ("word/_rels/document.xml.rels", relationships),
+        ("word/header1.xml", f'<w:hdr xmlns:w="{W}"/>'),
+    ]
+    with pytest.raises(ExtractionError) as error:
+        extract_docx(package_parts(document=document, extras=extras))
+    assert error.value.code == "document_structurally_unsafe"
+
+
+def test_missing_or_malformed_footer_relationship_fails_closed() -> None:
+    document = body(
+        "<w:p><w:r><w:t>Text</w:t></w:r></w:p><w:sectPr>"
+        '<w:footerReference w:type="default" r:id="footer"/></w:sectPr>'
+    )
+    relationships = (
+        f'<Relationships xmlns="{PR}">'
+        f'<Relationship Id="footer" Type="{R}/header" Target="footer1.xml"/>'
+        "</Relationships>"
+    )
+    with pytest.raises(ExtractionError) as error:
+        extract_docx(
+            package_parts(
+                document=document,
+                extras=[
+                    ("word/_rels/document.xml.rels", relationships),
+                    ("word/footer1.xml", f'<w:ftr xmlns:w="{W}"/>'),
+                ],
+            )
+        )
+    assert error.value.code == "document_structurally_unsafe"
 
 
 def test_ordinary_content_type_is_required_and_arbitrary_zip_is_rejected() -> None:

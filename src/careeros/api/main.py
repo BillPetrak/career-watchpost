@@ -1083,7 +1083,7 @@ def create_app(
             "jobs, never initializes the database, and never contacts external "
             "services."
         ),
-        version="1.0.0",
+        version="1.0.5",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,

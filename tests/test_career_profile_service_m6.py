@@ -20,6 +20,7 @@ from careeros.career_profile.service import (
     current_profile,
     effective_candidate_review,
     profile_history,
+    profile_snapshot,
     review_candidate,
 )
 from careeros.database.career_profile import (
@@ -119,6 +120,141 @@ def _candidates(db: sqlite3.Connection, fact_type: str) -> list[sqlite3.Row]:
         "SELECT * FROM career_fact_candidates WHERE fact_type=? ORDER BY id",
         (fact_type,),
     ).fetchall()
+
+
+def _second_deterministic_skill_candidate(db: sqlite3.Connection) -> str:
+    raw = b"Skills: Python\n"
+    version_id = "6" * 32
+    extraction_id = "b" * 32
+    db.execute(
+        "INSERT INTO material_versions VALUES (?, ?, 2, ?, ?, ?, ?, ?, ?)",
+        (
+            version_id,
+            "2" * 32,
+            "resume-2.txt",
+            "text/plain",
+            len(raw),
+            _sha(raw),
+            "7" * 64,
+            "now-2",
+        ),
+    )
+    db.commit()
+    extraction = ResumeExtractionRun(
+        extraction_id,
+        version_id,
+        "resume-2.txt",
+        "text/plain",
+        len(raw),
+        _sha(raw),
+        "text",
+        "text",
+        "succeeded",
+        raw.decode(),
+        _sha(raw),
+        1,
+        "extractor",
+        "extract-cache-2",
+        "2026-01-02T00:00:00+00:00",
+    )
+    persist_extraction(
+        db,
+        extraction,
+        [ResumeTextSegment(extraction.id, 0, 0, len(raw), "synthetic-2", _sha(raw))],
+    )
+    run, candidates, _ = run_deterministic_facts(
+        db, extraction.id, created_at="2026-01-02T00:00:00+00:00"
+    )
+    return next(
+        candidate.id
+        for candidate in candidates
+        if candidate.fact_run_id == run.id and candidate.fact_type == "skill"
+    )
+
+
+def _schema_valid_model_candidate(db: sqlite3.Connection) -> str:
+    """Insert a schema-valid model/sanitized aggregate without M5 authority."""
+    source = _candidate(db)
+    extraction_id = str(
+        db.execute(
+            "SELECT extraction_run_id FROM career_fact_runs WHERE id=?",
+            (source["fact_run_id"],),
+        ).fetchone()[0]
+    )
+    raw = db.execute(
+        "SELECT raw_text FROM resume_extraction_runs WHERE id=?", (extraction_id,)
+    ).fetchone()[0]
+    sanitized_id = "d" * 32
+    model_run_id = "e" * 32
+    model_candidate_id = "f" * 32
+    db.execute(
+        "INSERT INTO resume_sanitization_runs "
+        "(id,extraction_run_id,sanitized_text,sanitized_text_sha256,"
+        "sanitizer_fingerprint,policy_fingerprint,override_manifest_json,"
+        "cache_fingerprint,outcome,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            sanitized_id,
+            extraction_id,
+            raw,
+            hashlib.sha256(raw.encode()).hexdigest(),
+            "sanitizer",
+            "policy",
+            "{}",
+            "model-sanitization-cache",
+            "succeeded",
+            "2026-01-01T00:00:00+00:00",
+        ),
+    )
+    db.execute(
+        "INSERT INTO career_fact_runs "
+        "(id,extraction_run_id,sanitization_run_id,input_kind,mode,"
+        "extractor_fingerprint,schema_fingerprint,provider_fingerprint,"
+        "model_fingerprint,prompt_fingerprint,outcome,cache_fingerprint,"
+        "input_sha256,input_byte_size,token_count,created_at) "
+        "SELECT ?,extraction_run_id,?,'sanitized','model',NULL,"
+        "schema_fingerprint,'provider','model','prompt',outcome,?,"
+        "input_sha256,input_byte_size,token_count,created_at "
+        "FROM career_fact_runs WHERE id=?",
+        (model_run_id, sanitized_id, "model-fact-cache", source["fact_run_id"]),
+    )
+    db.execute(
+        "INSERT INTO career_fact_candidates "
+        "(id,fact_run_id,fact_type,normalized_key,canonical_value_json,"
+        "value_sha256,confidence,origin) VALUES (?,?,?,?,?,?,?,?)",
+        (
+            model_candidate_id,
+            model_run_id,
+            source["fact_type"],
+            source["normalized_key"],
+            source["canonical_value_json"],
+            source["value_sha256"],
+            source["confidence"],
+            "model",
+        ),
+    )
+    db.commit()
+    return model_candidate_id
+
+
+@pytest.mark.parametrize("decision", ("approved", "rejected", "approved_edit"))
+def test_review_rejects_schema_valid_non_m5_model_candidate(
+    db: sqlite3.Connection, decision: str
+) -> None:
+    candidate_id = _schema_valid_model_candidate(db)
+    kwargs = (
+        {"edited_value_json": '{"name":"Model edit"}'}
+        if decision == "approved_edit"
+        else {}
+    )
+    with pytest.raises(CareerProfileValidationError):
+        review_candidate(db, candidate_id, decision, **kwargs)
+    assert (
+        db.execute(
+            "SELECT count(*) FROM career_fact_review_events WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()[0]
+        == 0
+    )
 
 
 def test_candidate_review_history_page_is_bounded_and_ordered(db) -> None:
@@ -459,6 +595,95 @@ def test_profile_snapshot_is_a_validated_public_read(db: sqlite3.Connection) -> 
     assert snapshot.source_candidate_ids == ((candidate_id,),)
 
 
+def test_profile_source_reparenting_fails_closed_for_all_profile_reads_and_writes(
+    db: sqlite3.Connection,
+) -> None:
+    candidate = _candidate(db)
+    candidate_id = str(candidate["id"])
+    review_candidate(db, candidate_id, "approved")
+    saved = assemble_profile(db, 0, [CandidateProfileFactRequest(candidate_id)])
+    model_candidate_id = _schema_valid_model_candidate(db)
+    model_run_id = str(
+        db.execute(
+            "SELECT fact_run_id FROM career_fact_candidates WHERE id=?",
+            (model_candidate_id,),
+        ).fetchone()[0]
+    )
+    db.execute(
+        "UPDATE career_fact_candidates SET fact_run_id=?,origin='model' WHERE id=?",
+        (model_run_id, candidate_id),
+    )
+    db.commit()
+
+    with pytest.raises(CareerProfileValidationError):
+        current_profile(db)
+    with pytest.raises(CareerProfileValidationError):
+        profile_snapshot(db, saved.version.id)
+    with pytest.raises(CareerProfileValidationError):
+        profile_history(db)
+    with pytest.raises(CareerProfileValidationError):
+        assemble_profile(db, 1, [CandidateProfileFactRequest(candidate_id)])
+
+
+def test_profile_source_reparenting_to_other_deterministic_run_fails_closed(
+    db: sqlite3.Connection,
+) -> None:
+    candidate_id = str(
+        db.execute(
+            "SELECT id FROM career_fact_candidates "
+            "WHERE fact_type='skill' AND canonical_value_json=?",
+            ('{"name":"Python"}',),
+        ).fetchone()[0]
+    )
+    review_candidate(db, candidate_id, "approved")
+    saved = assemble_profile(db, 0, [CandidateProfileFactRequest(candidate_id)])
+    other_candidate_id = _second_deterministic_skill_candidate(db)
+    other_run_id = str(
+        db.execute(
+            "SELECT fact_run_id FROM career_fact_candidates WHERE id=?",
+            (other_candidate_id,),
+        ).fetchone()[0]
+    )
+    db.execute(
+        "UPDATE career_fact_candidates SET fact_run_id=? WHERE id=?",
+        (other_run_id, candidate_id),
+    )
+    db.commit()
+
+    with pytest.raises(CareerProfileValidationError):
+        current_profile(db)
+    with pytest.raises(CareerProfileValidationError):
+        profile_snapshot(db, saved.version.id)
+    with pytest.raises(CareerProfileValidationError):
+        profile_history(db)
+    with pytest.raises(CareerProfileValidationError):
+        assemble_profile(db, 1, [CandidateProfileFactRequest(candidate_id)])
+
+
+def test_saved_profile_candidate_relationship_mismatch_fails_closed(
+    db: sqlite3.Connection,
+) -> None:
+    skills = _candidates(db, "skill")
+    primary_id, other_id = (str(candidate["id"]) for candidate in skills)
+    review_candidate(db, primary_id, "approved")
+    saved = assemble_profile(db, 0, [CandidateProfileFactRequest(primary_id)])
+    db.execute(
+        "UPDATE career_profile_fact_sources SET candidate_id=? "
+        "WHERE profile_fact_id=? AND candidate_id=?",
+        (other_id, saved.facts[0].id, primary_id),
+    )
+    db.commit()
+
+    with pytest.raises(CareerProfileValidationError):
+        current_profile(db)
+    with pytest.raises(CareerProfileValidationError):
+        profile_snapshot(db, saved.version.id)
+    with pytest.raises(CareerProfileValidationError):
+        profile_history(db)
+    with pytest.raises(CareerProfileValidationError):
+        assemble_profile(db, 1, [CandidateProfileFactRequest(primary_id)])
+
+
 def test_review_authority_equal_timestamp_uses_event_id_and_rejects_malformed(
     db: sqlite3.Connection,
 ) -> None:
@@ -548,6 +773,25 @@ def test_multi_source_uses_effective_keys_and_preserves_edited_history(
     with pytest.raises(CareerProfileValidationError, match="merge-compatible"):
         assemble_profile(db, 1, [CandidateProfileFactRequest(first_id, (second_id,))])
     assert profile_history(db)[0].facts[0].canonical_value_json == '{"name":"Go"}'
+
+
+def test_deliberate_cross_run_merge_remains_valid(db: sqlite3.Connection) -> None:
+    first_id = str(
+        db.execute(
+            "SELECT id FROM career_fact_candidates "
+            "WHERE fact_type='skill' AND canonical_value_json=?",
+            ('{"name":"Python"}',),
+        ).fetchone()[0]
+    )
+    second_id = _second_deterministic_skill_candidate(db)
+    review_candidate(db, first_id, "approved")
+    review_candidate(db, second_id, "approved")
+
+    assemble_profile(db, 0, [CandidateProfileFactRequest(first_id, (second_id,))])
+
+    snapshot = current_profile(db)
+    assert snapshot is not None
+    assert snapshot.source_candidate_ids == (tuple(sorted((first_id, second_id))),)
 
 
 def test_primary_is_always_source_and_duplicate_input_rejected(

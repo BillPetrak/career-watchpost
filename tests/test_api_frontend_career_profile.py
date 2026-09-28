@@ -11,6 +11,9 @@ def test_career_profile_workspace_has_three_panels_and_navigation():
     assert 'href="#career-profile"' in html
     for label in ("Career Facts", "Current Profile", "Profile History"):
         assert label in html
+    assert 'id="career-tab-facts"' in html
+    assert 'aria-labelledby="career-tab-facts"' in html
+    assert 'role="tabpanel"' in html
 
 
 def test_career_profile_client_uses_authoritative_routes_and_no_storage():
@@ -98,4 +101,21 @@ def test_career_profile_memory_draft_survives_panel_navigation():
 def test_career_profile_styles_are_narrow_layout_friendly():
     css = (ROOT / "style.css").read_text()
     assert ".career-profile-panels" in css
+    assert ".career-profile-source { min-width: 0;" in css
+    assert "overflow-wrap: anywhere;" in css
     assert "@media (max-width: 700px)" in css
+
+
+def test_career_profile_async_and_keyboard_contracts_are_explicit():
+    javascript = (ROOT / "app.js").read_text()
+    assert "careerProfileViewGeneration" in javascript
+    assert "careerProfileOperationToken" in javascript
+    assert "focusCareerProfileHeading" in javascript
+    assert "setCareerProfileBusy" in javascript
+    assert "Candidate state" in javascript
+    assert "other.tabIndex = other === button ? 0 : -1" in javascript
+    assert (
+        "renderCareerProfileCandidates(content, runId, nextOffset, state)" in javascript
+    )
+    assert "detailSeq !== careerProfileRequestSeq" in javascript
+    assert "Profile version authority is unavailable." in javascript

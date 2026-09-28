@@ -555,6 +555,44 @@ def test_canonical_manifest_must_match_persisted_child_actions(db) -> None:
         repository.validate_sanitization(connection, child.id)
 
 
+@pytest.mark.parametrize(
+    ("manifest", "message"),
+    [
+        ('{"actions":', "valid JSON"),
+        (
+            '{ "actions" : [{"action":"keep","finding_ordinal":0}], "version" : 1 }',
+            "canonical JSON",
+        ),
+    ],
+)
+def test_override_manifest_invalid_or_noncanonical_json_fails_closed(
+    db, manifest: str, message: str
+) -> None:
+    connection, extraction, _ = db
+    parent = sanitize_extraction(
+        connection, extraction.id, created_at="parent", run_id="d" * 32
+    )
+    child = create_override(
+        connection,
+        parent.id,
+        {0: "keep"},
+        created_at="child",
+        run_id="e" * 32,
+    )
+    approve_external_use(connection, child.id, created_at="approved")
+    connection.execute(
+        "UPDATE resume_sanitization_runs SET override_manifest_json=? WHERE id=?",
+        (manifest, child.id),
+    )
+    connection.commit()
+
+    assert not is_approved_for_external_use(connection, child.id)
+    with pytest.raises(repository.ResumeValidationError, match=message):
+        repository.validate_sanitization(connection, child.id)
+    with pytest.raises(repository.ResumeValidationError):
+        approve_external_use(connection, child.id, created_at="retry")
+
+
 def test_post_approval_unresolved_finding_fails_closed(db) -> None:
     connection, extraction, _ = db
     run = sanitize_extraction(

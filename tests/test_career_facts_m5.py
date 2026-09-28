@@ -9,7 +9,9 @@ import pytest
 from careeros.database.connection import connect
 from careeros.database.resume_intelligence import (
     ResumeConflictError,
+    ResumeValidationError,
     persist_extraction,
+    validate_recognized_fact_authority,
 )
 from careeros.database.schema import initialize_schema
 from careeros.resume_intelligence.career_facts import (
@@ -18,6 +20,7 @@ from careeros.resume_intelligence.career_facts import (
     FACT_TYPE_ORDER,
     INPUT_MAX_BYTES,
     MAX_FIELD_BYTES,
+    MAX_NORMALIZED_KEY_LENGTH,
     CareerFactError,
     canonical_json,
     extract_deterministic_facts,
@@ -347,6 +350,17 @@ def test_input_field_and_m4_finding_bounds_fail_closed() -> None:
         extract_deterministic_facts(contacts, "3" * 32)
 
 
+def test_normalized_key_exact_boundary_and_one_over() -> None:
+    overhead = len('skill:{"name":""}')
+    exact = "x" * (MAX_NORMALIZED_KEY_LENGTH - overhead)
+    _, candidates, _ = extract_deterministic_facts(f"Skills: {exact}\n", "3" * 32)
+    assert len(candidates[0].normalized_key) == MAX_NORMALIZED_KEY_LENGTH
+
+    over = exact + "x"
+    with pytest.raises(CareerFactError, match="normalized key bound"):
+        extract_deterministic_facts(f"Skills: {over}\n", "3" * 32)
+
+
 def test_evidence_per_candidate_and_global_bounds_are_exact() -> None:
     exact = "Skills:\n" + "\n".join("Python" for _ in range(1000))
     _, candidates, evidence = extract_deterministic_facts(exact, "2" * 32)
@@ -443,6 +457,58 @@ def test_service_cache_rejects_truncated_evidence_and_run_fingerprint(db) -> Non
     db.commit()
     with pytest.raises(ResumeConflictError):
         run_deterministic_facts(db, source.id, created_at="second")
+
+
+def test_recognized_authority_rejects_multibyte_interior_evidence_offset(db) -> None:
+    text = "Name: Zoë Example\n"
+    source = persist_source(db, text)
+    run, candidates, _ = run_deterministic_facts(db, source.id, created_at="first")
+    candidate = next(item for item in candidates if item.fact_type == "identity.name")
+    row = db.execute(
+        "SELECT start_byte,end_byte FROM career_fact_evidence WHERE candidate_id=?",
+        (candidate.id,),
+    ).fetchone()
+    raw = text.encode("utf-8")
+    interior = text.index("ë") + 1
+    assert raw[interior] & 0b1100_0000 == 0b1000_0000
+    db.execute(
+        "UPDATE career_fact_evidence SET start_byte=?,slice_sha256=? "
+        "WHERE candidate_id=?",
+        (interior, digest(raw[interior : row["end_byte"]]), candidate.id),
+    )
+    db.commit()
+
+    with pytest.raises(ResumeValidationError, match="evidence integrity"):
+        validate_recognized_fact_authority(db, run.id)
+
+
+@pytest.mark.parametrize("tamper", ["candidate_id", "cache_fingerprint"])
+def test_recognized_authority_rejects_identity_tampering(db, tamper: str) -> None:
+    source = persist_source(db, "Skills: Python\n")
+    run, candidates, _ = run_deterministic_facts(db, source.id, created_at="first")
+    candidate = candidates[0]
+    if tamper == "candidate_id":
+        db.commit()
+        db.execute("PRAGMA foreign_keys=OFF")
+        db.execute(
+            "UPDATE career_fact_evidence SET candidate_id=? WHERE candidate_id=?",
+            ("f" * 32, candidate.id),
+        )
+        db.execute(
+            "UPDATE career_fact_candidates SET id=? WHERE id=?",
+            ("f" * 32, candidate.id),
+        )
+        db.commit()
+        db.execute("PRAGMA foreign_keys=ON")
+    else:
+        db.execute(
+            "UPDATE career_fact_runs SET cache_fingerprint=? WHERE id=?",
+            ("f" * 64, run.id),
+        )
+        db.commit()
+
+    with pytest.raises(ResumeValidationError, match="differs from M5 authority"):
+        validate_recognized_fact_authority(db, run.id)
 
 
 def test_zero_candidate_cache_retry_reuses_one_successful_run(db) -> None:

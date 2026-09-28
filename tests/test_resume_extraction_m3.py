@@ -399,6 +399,100 @@ def test_pdf_aggregate_text_limit_is_enforced_across_pages(monkeypatch) -> None:
     assert error.value.code == "document_too_large"
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.replace(b"xref\n", b"xref\n9999999999 ", 1),
+        lambda payload: payload.replace(b"/Root 1 0 R", b"/Root 999 0 R", 1),
+    ],
+    ids=["corrupt-xref", "missing-root"],
+)
+def test_pdf_corrupt_xref_and_root_fail_closed(mutate) -> None:
+    with pytest.raises(ExtractionError) as error:
+        import careeros.resume_intelligence.extraction as extraction
+
+        extraction._extract_pdf(mutate(pdf_pages(["hostile"])))
+    assert error.value.code in {"malformed_document", "parser_failure"}
+
+
+def test_pdf_nested_page_tree_limit_is_translated(monkeypatch) -> None:
+    from pypdf.errors import LimitReachedError
+
+    import careeros.resume_intelligence.extraction as extraction
+
+    class DeepPageTree:
+        def __init__(self, *_args, **_kwargs):
+            raise LimitReachedError()
+
+    monkeypatch.setattr(extraction, "PdfReader", DeepPageTree)
+    with pytest.raises(ExtractionError) as error:
+        extraction._extract_pdf(b"%PDF-1.7 synthetic deep page tree")
+    assert error.value.code == "document_too_large"
+
+
+def test_pdf_recursive_form_invocation_fails_closed(monkeypatch) -> None:
+    import careeros.resume_intelligence.extraction as extraction
+
+    class RecursiveFormPage:
+        def get_contents(self):
+            return None
+
+        def extract_text(self):
+            raise RecursionError("recursive form invocation")
+
+    class RecursiveFormReader:
+        is_encrypted = False
+        pages = [RecursiveFormPage()]
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(extraction, "PdfReader", RecursiveFormReader)
+    with pytest.raises(ExtractionError) as error:
+        extraction._extract_pdf(b"%PDF-1.7 synthetic recursive form")
+    assert error.value.code == "parser_failure"
+
+
+def test_pdf_malformed_text_encoding_fails_closed() -> None:
+    import careeros.resume_intelligence.extraction as extraction
+
+    malformed = pdf_pages(["encoding"])
+    malformed = malformed.replace(b"(encoding)", b"(\\", 1)
+    with pytest.raises(ExtractionError) as error:
+        extraction._extract_pdf(malformed)
+    assert error.value.code in {"malformed_document", "parser_failure"}
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "array_based_stream_maximum_output_length",
+        "jbig2_maximum_output_length",
+        "lzw_maximum_output_length",
+        "run_length_maximum_output_length",
+        "zlib_maximum_output_length",
+        "image_maximum_buffer_size",
+    ],
+)
+def test_pdf_codec_and_image_guards_are_configured_and_fail_closed(
+    monkeypatch, guard
+) -> None:
+    from pypdf.errors import LimitReachedError
+
+    import careeros.resume_intelligence.extraction as extraction
+
+    assert guard in extraction.PDF_CONFIGURATION
+
+    class GuardedReader:
+        def __init__(self, *_args, **_kwargs):
+            raise LimitReachedError()
+
+    monkeypatch.setattr(extraction, "PdfReader", GuardedReader)
+    with pytest.raises(ExtractionError) as error:
+        extraction._extract_pdf(b"%PDF-1.7 synthetic guarded codec")
+    assert error.value.code == "document_too_large"
+
+
 def test_parser_finishes_before_repository_write(material, monkeypatch) -> None:
     db, root, material_id, version_id = material
     import careeros.resume_intelligence.extraction as extraction

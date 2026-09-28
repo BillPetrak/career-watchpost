@@ -208,21 +208,19 @@ def _review_candidate(
     if decision not in ("approved", "rejected", "approved_edit"):
         raise CareerProfileValidationError("invalid review decision")
     candidate = _candidate(connection, candidate_id)
-    authority_digest: str | None = None
-    # approved_edit is authority over an existing recognized M5 aggregate,
+    # Every M6 decision is authority over an existing recognized M5 aggregate,
     # never a way to turn an arbitrary row into a candidate.  This expensive
     # validation deliberately occurs before the short review write lock.
-    if decision == "approved_edit":
-        try:
-            authority_digest = validate_recognized_fact_authority(
-                connection, str(candidate["fact_run_id"])
-            ).digest
-        except Exception as exc:
-            if isinstance(exc, CareerProfileValidationError):
-                raise
-            raise CareerProfileValidationError(
-                "approved edit requires a valid recognized M5 aggregate"
-            ) from exc
+    try:
+        authority_digest = validate_recognized_fact_authority(
+            connection, str(candidate["fact_run_id"])
+        ).digest
+    except Exception as exc:
+        if isinstance(exc, CareerProfileValidationError):
+            raise
+        raise CareerProfileValidationError(
+            "review requires a valid recognized M5 aggregate"
+        ) from exc
     if decision == "approved_edit":
         if edited_value_json is None:
             raise CareerProfileValidationError("approved_edit requires a value")
@@ -243,8 +241,7 @@ def _review_candidate(
     try:
         current = effective_candidate_review(connection, candidate_id)
         if (
-            authority_digest is not None
-            and load_fact_authority(connection, str(candidate["fact_run_id"])).digest
+            load_fact_authority(connection, str(candidate["fact_run_id"])).digest
             != authority_digest
         ):
             raise CareerProfileConflict("M5 aggregate authority changed")
@@ -299,6 +296,36 @@ def _preflight_digest(connection: sqlite3.Connection, fact_run_id: str) -> str:
 
 def _locked_digest(connection: sqlite3.Connection, fact_run_id: str) -> str:
     return load_fact_authority(connection, fact_run_id).digest
+
+
+def _validate_profile_source_authority(
+    connection: sqlite3.Connection, source_candidate_ids: Sequence[str]
+) -> None:
+    """Require every candidate-backed snapshot source to remain M5-authoritative."""
+    runs: dict[str, set[str]] = {}
+    for candidate_id in source_candidate_ids:
+        row = connection.execute(
+            "SELECT fact_run_id FROM career_fact_candidates WHERE id=?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            raise CareerProfileValidationError(
+                "profile source candidate does not exist"
+            )
+        runs.setdefault(str(row["fact_run_id"]), set()).add(candidate_id)
+    for run_id, candidate_ids in runs.items():
+        try:
+            authority = validate_recognized_fact_authority(connection, run_id)
+        except Exception as exc:
+            if isinstance(exc, CareerProfileValidationError):
+                raise
+            raise CareerProfileValidationError(
+                "profile source requires a valid recognized M5 aggregate"
+            ) from exc
+        if candidate_ids.difference(candidate.id for candidate in authority.candidates):
+            raise CareerProfileValidationError(
+                "profile source candidate is outside recognized M5 authority"
+            )
 
 
 def _resolve_identity(
@@ -373,6 +400,7 @@ def assemble_profile(
         )
     prepared: list[ProfileFactInput] = []
     digests: dict[str, str] = {}
+    authority_candidate_ids: dict[str, set[str]] = {}
     used: set[str] = set()
     for entry in entries:
         if isinstance(entry, ManualProfileFactRequest):
@@ -448,10 +476,28 @@ def assemble_profile(
             raise CareerProfileValidationError(
                 "profile sources are not merge-compatible"
             )
-        for row in rows:
+        sources_by_run: dict[str, set[str]] = {}
+        for candidate_id, row in zip(sources, rows, strict=True):
             run_id = str(row["fact_run_id"])
+            sources_by_run.setdefault(run_id, set()).add(candidate_id)
+        for run_id, run_source_ids in sources_by_run.items():
             if run_id not in digests:
-                digests[run_id] = _preflight_digest(connection, run_id)
+                try:
+                    digests[run_id] = _preflight_digest(connection, run_id)
+                    authority = load_fact_authority(connection, run_id)
+                except Exception as exc:
+                    if isinstance(exc, CareerProfileValidationError):
+                        raise
+                    raise CareerProfileValidationError(
+                        "profile source requires a valid recognized M5 aggregate"
+                    ) from exc
+                authority_candidate_ids[run_id] = {
+                    candidate.id for candidate in authority.candidates
+                }
+            if run_source_ids.difference(authority_candidate_ids[run_id]):
+                raise CareerProfileValidationError(
+                    "profile source candidate is outside recognized M5 authority"
+                )
         primary_index = sources.index(entry.primary_candidate_id)
         primary = reviews[primary_index]
         primary_row = rows[primary_index]
@@ -549,6 +595,8 @@ def current_profile(connection: sqlite3.Connection) -> CareerProfileSnapshot | N
     version, facts, sources = validate_profile_snapshot(
         connection, state.current_profile_version_id
     )
+    for source_ids in sources:
+        _validate_profile_source_authority(connection, source_ids)
     return CareerProfileSnapshot(version, facts, sources)
 
 
@@ -558,6 +606,8 @@ def profile_snapshot(
     """Return one fully validated immutable profile version."""
     validate_profile_aggregate(connection)
     version, facts, sources = validate_profile_snapshot(connection, version_id)
+    for source_ids in sources:
+        _validate_profile_source_authority(connection, source_ids)
     return CareerProfileSnapshot(version, facts, sources)
 
 
@@ -576,7 +626,10 @@ def profile_history(
             "SELECT id FROM career_profile_versions ORDER BY version_number DESC LIMIT ?",
             (limit,),
         ).fetchall()
-    return [
-        CareerProfileSnapshot(*validate_profile_snapshot(connection, str(row[0])))
-        for row in rows
-    ]
+    snapshots: list[CareerProfileSnapshot] = []
+    for row in rows:
+        version, facts, sources = validate_profile_snapshot(connection, str(row[0]))
+        for source_ids in sources:
+            _validate_profile_source_authority(connection, source_ids)
+        snapshots.append(CareerProfileSnapshot(version, facts, sources))
+    return snapshots

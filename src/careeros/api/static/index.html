@@ -173,11 +173,11 @@
       <p class="view-intro">Private local workspace for deterministic Career Facts and immutable profile snapshots.</p>
       <div id="career-profile-status" class="status" role="status" aria-live="polite" tabindex="-1"></div>
       <div class="career-profile-panels" role="tablist" aria-label="Career Profile panels">
-        <button type="button" role="tab" tabindex="0" aria-controls="career-profile-content" aria-selected="true" data-career-panel="facts">Career Facts</button>
-        <button type="button" role="tab" tabindex="-1" aria-controls="career-profile-content" aria-selected="false" data-career-panel="current">Current Profile</button>
-        <button type="button" role="tab" tabindex="-1" aria-controls="career-profile-content" aria-selected="false" data-career-panel="history">Profile History</button>
+        <button id="career-tab-facts" type="button" role="tab" tabindex="0" aria-controls="career-profile-content" aria-selected="true" data-career-panel="facts">Career Facts</button>
+        <button id="career-tab-current" type="button" role="tab" tabindex="-1" aria-controls="career-profile-content" aria-selected="false" data-career-panel="current">Current Profile</button>
+        <button id="career-tab-history" type="button" role="tab" tabindex="-1" aria-controls="career-profile-content" aria-selected="false" data-career-panel="history">Profile History</button>
       </div>
-      <div id="career-profile-content" class="view-content"></div>
+      <div id="career-profile-content" class="view-content" role="tabpanel" aria-labelledby="career-tab-facts" tabindex="0"></div>
     </section>
 
     <section id="view-reminders" class="view" data-view="reminders" hidden>

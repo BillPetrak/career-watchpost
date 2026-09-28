@@ -2,29 +2,34 @@
 
 CareerOS is a privacy-first career intelligence platform.
 
-**Product 1 v1.0 is released and release-complete.** Core, H1 production
-hardening, H2 visual polish, and integrated RC qualification are complete. The
-seven existing job sources are the frozen v1.0 source set. Resume/CV
-sanitization, structured extraction, and Candidate Profile/Candidate Identity
-resume intelligence is implemented incrementally in Product 1 v1.05; M3
-extraction artifacts remain the authority for M4 local PII sanitization, while
-resume Materials remain opaque
-stored bytes in v1.0 and are not parsed. Additional source expansion remains
-planned for Product 1 v1.1.## Product 1 v1.05 M2 persistence and authority foundation
+**Product 1 v1.05 is the local résumé intelligence and Career Profile
+release.** It retains the seven-source Product 1 v1.0 job workflow and adds
+explicit analysis of private résumé Materials, deterministic Career Fact
+candidates, human approve/edit/reject review, and complete immutable Career
+Profile snapshots. M4 remains a separate local PII sanitization and approval
+primitive. Model/LLM/provider extraction is not implemented in v1.05. Additional job sources remain planned for Product 1
+v1.1;.## Product 1 v1.05 Career Profile
 
-Schema v13 adds the local persistence and pure domain foundation for immutable
-resume extraction/sanitization artifacts and human-authoritative Career
-Profiles. Internal repository operations atomically persist immutable
-extraction, sanitization, and career-fact aggregates; retain append-only human
-review histories; and save complete immutable Career Profile snapshots through
-an optimistic revision compare-and-swap. Exact UTF-8 artifact coordinates,
-hashes, input identity, and fact provenance are validated before authority is
-advanced.
+Schema v13 stores immutable extraction and sanitization artifacts,
+deterministic Career Fact aggregates, append-only human review history, and
+complete immutable Career Profile snapshots guarded by optimistic revision
+compare-and-swap. Analysis is always explicit for one exact résumé Material
+version; merely opening the CLI, API, or loopback web workspace never analyzes
+or selects a résumé. The supported inputs are text-based PDF and ordinary DOCX.
+OCR/image-only PDF, legacy DOC, and other formats are unsupported.
 
-This remains a persistence/authority foundation only. It does not read or
-parse Material bytes, execute sanitization or fact extraction, call models, or
-add API/CLI/UI workflows; those operations remain later milestones. Existing
-matching profiles and Matching Preferences keep their v1.0 meaning.
+Use `careeros career-profile sources`, `analyze`, `candidates`, `candidate`,
+`review`, `show`, `history`, and `save`, or the private loopback
+`#career-profile` workspace. Career Facts remain non-authoritative until a
+human approves or deliberately edits them; rejected facts remain in audit
+history. Every save is a deliberate complete snapshot, including valid empty
+and semantic no-op snapshots.
+
+The Career Profile is not the file-backed ranking Matching Profile managed by
+`careeros profile`, and it is not stored Matching Preferences managed by
+`careeros preference`. v1.05 does not feed Career Profile values into ranking.
+All extraction and review behavior is local and deterministic; no model,
+provider, telemetry, or external résumé service is called.
 
 Upgrade an existing supported database explicitly while CareerOS processes
 using it are stopped:
@@ -33,11 +38,15 @@ using it are stopped:
 uv run careeros database migrate --database /path/to/careeros.sqlite3
 ```
 
-The normal migration creates
+Back up first. The normal migration creates
 `/path/to/careeros.sqlite3.pre-v13.backup.sqlite3` unless `--backup` selects
 another destination or the acknowledged no-backup path is used. There is no
-in-place downgrade. Restore that database-only backup with `database restore`;
-Materials and private configuration must still be preserved separately.
+in-place or supported down migration. Restore that database-only backup with
+`database restore`; it does **not** contain managed Material objects. Complete
+private recovery requires the SQLite database, its matching Materials root,
+and applicable private configuration/profile state. See
+`docs/v1.05-release-qualification.md` for resource bounds, limitations, and
+release evidence.
 
 ## Adaptive matching preferences (R4)
 
@@ -141,8 +150,8 @@ persistent run history, read-only collection observability (`collect status`,
 `collect history`), plus `search`, `show`, `rank`, `group`,
 `saved-search`, `application`, `reminder` (including local `notify-due`/`
 notify-history` notifications), `review`, `preference`, `profile` (init/show/
-validate for JSON or YAML candidate profiles), a read-only `report` (Career
-Snapshot), and `diagnose` (including notification readiness).
+validate for JSON or YAML candidate profiles), `career-profile`, a read-only
+`report` (Career Snapshot), and `diagnose` (including notification readiness).
 Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
@@ -156,7 +165,7 @@ environment and install the wheel with the API dependencies:
 ```bash
 python3.11 -m venv ~/.venvs/careeros
 source ~/.venvs/careeros/bin/activate
-python -m pip install '/path/to/careeros-1.0.0-py3-none-any.whl[api]'
+python -m pip install '/path/to/careeros-1.0.5-py3-none-any.whl[api]'
 
 careeros --help
 python -m careeros --help
@@ -167,8 +176,9 @@ careeros serve                         # then open http://127.0.0.1:8000/ui
 This route installs an existing release artifact; it does not imply publication
 to PyPI. The server deliberately refuses a missing, uninitialized, or old-schema
 database. The collection command above is the supported first-run bootstrap for
-new private state; users who already have a current schema-v12 database should
-skip it. The wheel and source checkout use the same stable XDG-compatible defaults:
+new private state; users with schema-v12 state must instead make the supported
+backup and run the explicit v12-to-v13 migration described above. The wheel
+and source checkout use the same stable XDG-compatible defaults:
 
 - database: `${XDG_DATA_HOME:-~/.local/share}/careeros/careeros.sqlite3`
 - managed Materials: `${XDG_DATA_HOME:-~/.local/share}/careeros/materials`
@@ -189,7 +199,7 @@ paths above (or keep using explicit environment/CLI overrides), then run
 `careeros material audit` against the selected database and Materials root.
 
 A local web dashboard (Home, Today, Jobs, Review, Reviewed, Applications,
-Reminders, Matching Preferences, and a per-job detail view) is served by the
+Reminders, Matching Preferences, Career Profile, and a per-job detail view) is served by the
 optional FastAPI slice at <http://127.0.0.1:8000/ui>. For contributors working
 from a source checkout, install development and API dependencies separately:
 

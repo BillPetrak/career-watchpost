@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import http.client
+import socket
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -126,6 +129,123 @@ def test_profile_validation_never_echoes_submitted_secret(tmp_path: Path):
     assert "PRIVATE-SENTINEL" not in response.text
 
 
+def test_career_profile_privacy_matrix_covers_all_public_statuses(
+    profile_api,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client: TestClient = profile_api["client"]
+    secrets = (
+        "RAW-RESUME-SENTINEL",
+        "SURROUNDING-CONTEXT-SENTINEL",
+        "normalized-key-sentinel",
+        "storage-key-sentinel",
+        "word/private/header99.xml",
+        "AUDIT-NOTE-SENTINEL",
+        "EDITED-VALUE-SENTINEL",
+        "/private/filesystem/resume.pdf",
+        "PRIVATE-EXCEPTION-SENTINEL",
+        "f" * 64,
+    )
+    combined = "|".join(secrets)
+
+    ok = client.get("/career-profile/current")
+    missing = client.get("/career-profile/versions/missing")
+    first_save = client.post(
+        "/career-profile/versions", json={"expected_revision": 0, "entries": []}
+    )
+    conflict = client.post(
+        "/career-profile/versions", json={"expected_revision": 0, "entries": []}
+    )
+    invalid = client.put(
+        "/career-profile/candidates/missing/review",
+        json={
+            "decision": "approved_edit",
+            "edited_value": {"unexpected": combined},
+            "unexpected": combined,
+        },
+    )
+
+    def private_failure(*_args, **_kwargs):
+        raise RuntimeError(combined)
+
+    monkeypatch.setattr(api_main, "current_projection", private_failure)
+    failed = client.get("/career-profile/current")
+    with collection_lock(profile_api["database"], command=combined):
+        busy = client.post(
+            f"/career-profile/sources/{profile_api['material_id']}/versions/"
+            f"{profile_api['version_id']}/analyze"
+        )
+
+    responses = (ok, missing, first_save, conflict, invalid, failed, busy)
+    assert [response.status_code for response in responses] == [
+        200,
+        404,
+        200,
+        409,
+        422,
+        500,
+        503,
+    ]
+    observed = capsys.readouterr()
+    public_surfaces = [caplog.text, observed.out, observed.err]
+    for response in responses:
+        public_surfaces.extend(
+            [
+                response.text,
+                str(response.headers),
+                str(response.url),
+                " ".join(str(item.url) for item in response.history),
+            ]
+        )
+    for secret in secrets:
+        assert all(secret not in surface for surface in public_surfaces)
+
+
+def test_analyze_review_and_save_have_no_network_egress(
+    profile_api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempted: list[str] = []
+
+    def no_egress(*args, **kwargs):
+        attempted.append(repr((args, kwargs)))
+        raise AssertionError("Career Profile attempted network egress")
+
+    monkeypatch.setattr(socket, "create_connection", no_egress)
+    monkeypatch.setattr(socket, "getaddrinfo", no_egress)
+    monkeypatch.setattr(socket.socket, "connect", no_egress)
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", no_egress)
+    monkeypatch.setattr(urllib.request, "urlopen", no_egress)
+
+    client: TestClient = profile_api["client"]
+    analyzed = _analyze(profile_api)
+    candidate = client.get(
+        f"/career-profile/fact-runs/{analyzed['fact_run_id']}/candidates"
+    ).json()["items"][0]
+    reviewed = client.put(
+        f"/career-profile/candidates/{candidate['id']}/review",
+        json={"decision": "approved"},
+    )
+    assert reviewed.status_code == 200
+    saved = client.post(
+        "/career-profile/versions",
+        json={
+            "expected_revision": 0,
+            "entries": [
+                {
+                    "kind": "candidate",
+                    "primary_candidate_id": candidate["id"],
+                    "supporting_candidate_ids": [],
+                    "distinct_identity": False,
+                }
+            ],
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert attempted == []
+
+
 def test_profile_routes_are_registered():
     app = create_app()
     paths = {route.path for route in app.routes}
@@ -177,6 +297,31 @@ def test_empty_and_semantic_noop_saves_use_revision_cas(tmp_path: Path):
     assert stale.json() == {
         "detail": {"code": "career_profile_revision_conflict", "current_revision": 2}
     }
+
+
+def test_more_than_one_hundred_immutable_versions_paginate_at_api_limit(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "profile-history.sqlite3"
+    with connect(database) as connection:
+        initialize_schema(connection)
+    client = TestClient(create_app(database=database))
+    for revision in range(101):
+        response = client.post(
+            "/career-profile/versions",
+            json={"expected_revision": revision, "entries": []},
+        )
+        assert response.status_code == 200
+
+    first = client.get("/career-profile/history?offset=0&limit=100")
+    second = client.get("/career-profile/history?offset=100&limit=100")
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["total"] == second.json()["total"] == 101
+    assert len(first.json()["items"]) == 100
+    assert len(second.json()["items"]) == 1
+    assert first.json()["items"][0]["version"]["version_number"] == 101
+    assert second.json()["items"][0]["version"]["version_number"] == 1
 
 
 def test_sources_analyze_candidates_and_exact_evidence(profile_api) -> None:
