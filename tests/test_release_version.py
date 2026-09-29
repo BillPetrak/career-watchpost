@@ -1,4 +1,4 @@
-"""Release metadata must expose one coherent Product 1 v1.05 version."""
+"""Release metadata must expose one coherent Product 1 v1.1 version."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 from careeros.api.main import create_app
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "1.0.5"
+EXPECTED_VERSION = "1.1.0"
 
 
 def test_package_lock_and_api_versions_are_coherent() -> None:

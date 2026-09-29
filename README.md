@@ -2,13 +2,33 @@
 
 CareerOS is a privacy-first career intelligence platform.
 
-**Product 1 v1.05 is the local résumé intelligence and Career Profile
-release.** It retains the seven-source Product 1 v1.0 job workflow and adds
-explicit analysis of private résumé Materials, deterministic Career Fact
-candidates, human approve/edit/reject review, and complete immutable Career
-Profile snapshots. M4 remains a separate local PII sanitization and approval
-primitive. Model/LLM/provider extraction is not implemented in v1.05. Additional job sources remain planned for Product 1
-v1.1;.## Product 1 v1.05 Career Profile
+**Product 1 v1.1 is the source-expansion release.** Package version `1.1.0`
+retains the seven released built-in sources as the exact zero-configuration
+defaults and adds four optional credential-free, owner-curated sources through
+private `sources.yaml`: Lever, Greenhouse, Workable, and SmartRecruiters, in
+that fixed order. Product 1 v1.05's local résumé intelligence and immutable
+Career Profile workflow remain intact..See `docs/v1.1-release-qualification.md` for
+the v1.1 release boundary and qualification evidence.
+
+## Product 1 v1.1 source expansion
+
+The built-in collection registry remains exactly Arbeitnow, Remote OK, We Work
+Remotely, Jobicy, Remotive, Working Nomads, and Himalayas. With no private
+source configuration and no historical configurable-source records, active
+collection and shared source surfaces expose exactly those seven sources.
+After configuration is removed, historical configurable sources remain visible
+where applicable for read-only observability and statistics, but are not active
+collection sources.
+
+An optional user-owned `0600` file at
+`${XDG_CONFIG_HOME:-~/.config}/careeros/sources.yaml` can enable explicitly
+configured Lever boards, Greenhouse board tokens, Workable accounts, and
+SmartRecruiters company identifiers. These integrations use credential-free
+public job endpoints, remain bounded and sequential, and do not discover
+accounts or submit applications. Their provider-specific request limits and
+provisional polling policies are documented in `AGENTS.md`.
+
+## Product 1 v1.05 Career Profile
 
 Schema v13 stores immutable extraction and sanitization artifacts,
 deterministic Career Fact aggregates, append-only human review history, and
@@ -165,7 +185,7 @@ environment and install the wheel with the API dependencies:
 ```bash
 python3.11 -m venv ~/.venvs/careeros
 source ~/.venvs/careeros/bin/activate
-python -m pip install '/path/to/careeros-1.0.5-py3-none-any.whl[api]'
+python -m pip install '/path/to/careeros-1.1.0-py3-none-any.whl[api]'
 
 careeros --help
 python -m careeros --help
