@@ -32,7 +32,7 @@ from careeros.source_config import (
     SourceConfigError,
     load_source_config,
 )
-from careeros.sources import resolve_source_catalog
+from careeros.sources import CONFIGURABLE_SOURCES, resolve_source_catalog
 from careeros.status import build_statuses
 
 
@@ -271,7 +271,7 @@ def run_collect_status(database_path: Path, sources_config: Path | None = None) 
             print("  Inserted:       -")
             print("  Updated:        -")
             print("  Error:          -")
-        if status.source == "lever":
+        if status.source in CONFIGURABLE_SOURCES:
             print(f"  Configuration:  {status.configuration}")
         print(
             "  Next due:       "
@@ -283,7 +283,7 @@ def run_collect_status(database_path: Path, sources_config: Path | None = None) 
         )
         display_state = (
             status.state
-            if status.source == "lever" and status.state != "active"
+            if status.source in CONFIGURABLE_SOURCES and status.state != "active"
             else ("due" if status.due else "not due")
         )
         print(f"  State:          {display_state}")
@@ -372,7 +372,7 @@ def run_collect_command(
         parser.error("--limit must be at least 1")
 
     config = None
-    if collect_command in {"all", "due", "lever"}:
+    if collect_command in {"all", "due", *CONFIGURABLE_SOURCES}:
         try:
             config = load_source_config(
                 str(arguments.sources_config)
@@ -382,9 +382,13 @@ def run_collect_command(
         except SourceConfigError as error:
             print(f"Collection failed: {error}", file=sys.stderr)
             return 1
-        if collect_command == "lever" and not config.lever.enabled:
+        if (
+            collect_command in CONFIGURABLE_SOURCES
+            and not getattr(config, collect_command).enabled
+        ):
             print(
-                "Collection failed: Lever is not enabled in source configuration",
+                f"Collection failed: {collect_command.capitalize()} is not enabled "
+                "in source configuration",
                 file=sys.stderr,
             )
             return 1

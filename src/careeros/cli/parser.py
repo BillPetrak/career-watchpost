@@ -17,13 +17,13 @@ from careeros.reminders.models import REMINDER_KINDS
 from careeros.review.models import DECISION_VALUES, QUEUE_STATES
 from careeros.saved_searches.models import SEARCH_MODES
 from careeros.settings import database_path
-from careeros.sources import KNOWN_SOURCES
+from careeros.sources import CONFIGURABLE_SOURCES, KNOWN_SOURCES
 from careeros.systemd import add_parser as add_systemd_parser
 
-# ``COLLECTORS`` remains the frozen seven-source execution registry.  Lever is
-# a known configurable source and is intentionally present only in source
-# selectors and the direct collect command vocabulary; activation is resolved
-# by the source catalog at execution time.
+# ``COLLECTORS`` remains the frozen seven-source execution registry.
+# Configurable sources are intentionally present only in source selectors and
+# the direct collect command vocabulary; activation is resolved by the source
+# catalog at execution time.
 KNOWN_SOURCE_NAMES = KNOWN_SOURCES
 
 _PRIVATE_PROFILE_DEFAULT_HELP = (
@@ -163,7 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    for name in ("all", "due", *COLLECTORS, "lever"):
+    for name in ("all", "due", *COLLECTORS, *CONFIGURABLE_SOURCES):
         if name == "all":
             command_help = "Collect from every registered source."
         elif name == "due":

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol, TypeAlias
 
 from careeros.collectors.arbeitnow import fetch_jobs as arbeitnow_fetch_jobs
+from careeros.collectors.greenhouse import fetch_result as greenhouse_fetch_result
 from careeros.collectors.himalayas import fetch_jobs as himalayas_fetch_jobs
 from careeros.collectors.http import DEFAULT_TIMEOUT
 from careeros.collectors.jobicy import fetch_jobs as jobicy_fetch_jobs
@@ -52,6 +53,12 @@ def configured_collectors(config: SourceConfig) -> dict[CollectorName, Collector
     if config.lever.present and config.lever.enabled:
         result["lever"] = lambda *, limit=25, timeout=DEFAULT_TIMEOUT: (
             lever_fetch_result(config=config.lever, limit=limit, timeout=timeout)
+        )
+    if config.greenhouse.present and config.greenhouse.enabled:
+        result["greenhouse"] = lambda *, limit=25, timeout=DEFAULT_TIMEOUT: (
+            greenhouse_fetch_result(
+                config=config.greenhouse, limit=limit, timeout=timeout
+            )
         )
     return result
 

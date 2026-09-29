@@ -61,6 +61,8 @@ _SOURCE_LABELS = {
     "remotive": "Remotive",
     "weworkremotely": "We Work Remotely",
     "workingnomads": "Working Nomads",
+    "lever": "Lever",
+    "greenhouse": "Greenhouse",
 }
 
 

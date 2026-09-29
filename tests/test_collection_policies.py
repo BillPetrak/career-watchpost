@@ -50,12 +50,20 @@ def test_every_registered_source_has_a_policy() -> None:
         "weworkremotely",
         "workingnomads",
         "lever",
+        "greenhouse",
     }
 
 
 def test_lever_minimum_interval_is_six_hours_and_provisional() -> None:
     assert SOURCE_POLICIES["lever"] == SourcePolicy("lever", timedelta(hours=6))
     assert SOURCE_POLICIES["lever"].documented is False
+
+
+def test_greenhouse_minimum_interval_is_six_hours_and_provisional() -> None:
+    assert SOURCE_POLICIES["greenhouse"] == SourcePolicy(
+        "greenhouse", timedelta(hours=6)
+    )
+    assert SOURCE_POLICIES["greenhouse"].documented is False
 
 
 def test_workingnomads_minimum_interval_is_six_hours() -> None:

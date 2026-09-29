@@ -23,7 +23,7 @@ from careeros.database.runs import (
     parse_utc,
 )
 from careeros.scheduling import due_sources
-from careeros.sources import SourceCatalog, resolve_source_catalog
+from careeros.sources import CONFIGURABLE_SOURCES, SourceCatalog, resolve_source_catalog
 
 
 @dataclass(frozen=True)
@@ -107,14 +107,19 @@ def build_statuses(
     for source in order:
         policy = policies[source]
         configured = source in catalog.active
-        is_configurable = source == "lever"
+        is_configurable = source in CONFIGURABLE_SOURCES
+        source_config = (
+            getattr(catalog.config, source, None)
+            if catalog.config is not None
+            else None
+        )
         configuration = (
             (
                 "enabled"
                 if configured
                 else (
                     "disabled"
-                    if catalog.config and catalog.config.lever.present
+                    if source_config is not None and source_config.present
                     else "historical only"
                 )
             )

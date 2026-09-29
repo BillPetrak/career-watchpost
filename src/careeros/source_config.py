@@ -1,4 +1,4 @@
-"""Secure, private Lever source configuration loading."""
+"""Secure, private configurable-source configuration loading."""
 
 from __future__ import annotations
 
@@ -37,15 +37,34 @@ class LeverConfig:
 
 
 @dataclass(frozen=True)
+class GreenhouseBoard:
+    token: str
+
+
+@dataclass(frozen=True)
+class GreenhouseConfig:
+    present: bool
+    enabled: bool
+    boards: tuple[GreenhouseBoard, ...]
+
+
+@dataclass(frozen=True)
 class SourceConfig:
     version: int
     lever: LeverConfig
     path: Path | None = None
     explicit: bool = False
+    # Keep this after the existing defaulted fields for positional M1
+    # compatibility.
+    greenhouse: GreenhouseConfig = GreenhouseConfig(False, False, ())
 
     @property
     def lever_configured(self) -> bool:
         return self.lever.present
+
+    @property
+    def greenhouse_configured(self) -> bool:
+        return self.greenhouse.present
 
 
 class _UniqueLoader(yaml.SafeLoader):
@@ -210,58 +229,105 @@ def _parse(text: str, path: Path) -> SourceConfig:
         sources = _mapping(root["sources"], "sources")
     except TypeError as error:
         raise SourceConfigError("sources must be a mapping") from error
-    if set(sources) - {"lever"}:
+    if set(sources) - {"lever", "greenhouse"}:
         raise SourceConfigError("sources contains an unknown key")
-    if "lever" not in sources:
-        return SourceConfig(1, LeverConfig(False, False, ()), path)
-    lever = _mapping(sources["lever"], "sources.lever")
-    if set(lever) - {"enabled", "boards"} or "enabled" not in lever:
-        raise SourceConfigError("Lever keys must be exactly enabled and boards")
-    enabled = lever["enabled"]
-    if not isinstance(enabled, bool):
-        raise SourceConfigError("sources.lever.enabled must be boolean")
-    boards_raw = lever.get("boards", [])
-    if not isinstance(boards_raw, list):
-        raise SourceConfigError("sources.lever.boards must be a list")
-    if len(boards_raw) > MAX_BOARDS:
-        raise SourceConfigError(f"at most {MAX_BOARDS} Lever boards are allowed")
-    boards: list[LeverBoard] = []
-    seen: set[tuple[str, str]] = set()
-    for index, item in enumerate(boards_raw):
-        board = _mapping(item, f"board {index}")
-        if set(board) != {"id", "instance", "company"}:
+    lever_config = LeverConfig(False, False, ())
+    if "lever" in sources:
+        lever = _mapping(sources["lever"], "sources.lever")
+        if set(lever) - {"enabled", "boards"} or "enabled" not in lever:
+            raise SourceConfigError("Lever keys must be exactly enabled and boards")
+        enabled = lever["enabled"]
+        if not isinstance(enabled, bool):
+            raise SourceConfigError("sources.lever.enabled must be boolean")
+        boards_raw = lever.get("boards", [])
+        if not isinstance(boards_raw, list):
+            raise SourceConfigError("sources.lever.boards must be a list")
+        if len(boards_raw) > MAX_BOARDS:
+            raise SourceConfigError(f"at most {MAX_BOARDS} Lever boards are allowed")
+        boards: list[LeverBoard] = []
+        seen: set[tuple[str, str]] = set()
+        for index, item in enumerate(boards_raw):
+            board = _mapping(item, f"board {index}")
+            if set(board) != {"id", "instance", "company"}:
+                raise SourceConfigError(
+                    "Lever board keys must be exactly id, instance, company"
+                )
+            board_id = _string(board["id"], "board.id", maximum=100, ascii_only=True)
+            if not _BOARD_ID.fullmatch(board_id):
+                raise SourceConfigError("board.id has invalid format")
+            instance = _string(board["instance"], "board.instance", maximum=6)
+            if instance not in {"global", "eu"}:
+                raise SourceConfigError("board.instance must be global or eu")
+            company = _string(board["company"], "board.company", maximum=200)
+            if (instance, board_id) in seen:
+                raise SourceConfigError("duplicate canonical Lever board")
+            seen.add((instance, board_id))
+            boards.append(LeverBoard(board_id, instance, company))
+        if enabled and not boards:
+            raise SourceConfigError("enabled Lever configuration requires boards")
+        lever_config = LeverConfig(True, enabled, tuple(boards))
+
+    greenhouse_config = GreenhouseConfig(False, False, ())
+    if "greenhouse" in sources:
+        greenhouse = _mapping(sources["greenhouse"], "sources.greenhouse")
+        if set(greenhouse) - {"enabled", "boards"} or "enabled" not in greenhouse:
             raise SourceConfigError(
-                "Lever board keys must be exactly id, instance, company"
+                "Greenhouse keys must be exactly enabled and boards"
             )
-        board_id = _string(board["id"], "board.id", maximum=100, ascii_only=True)
-        if not _BOARD_ID.fullmatch(board_id):
-            raise SourceConfigError("board.id has invalid format")
-        instance = _string(board["instance"], "board.instance", maximum=6)
-        if instance not in {"global", "eu"}:
-            raise SourceConfigError("board.instance must be global or eu")
-        company = _string(board["company"], "board.company", maximum=200)
-        if (instance, board_id) in seen:
-            raise SourceConfigError("duplicate canonical Lever board")
-        seen.add((instance, board_id))
-        boards.append(LeverBoard(board_id, instance, company))
-    if enabled and not boards:
-        raise SourceConfigError("enabled Lever configuration requires boards")
-    return SourceConfig(1, LeverConfig(True, enabled, tuple(boards)), path)
+        enabled = greenhouse["enabled"]
+        if not isinstance(enabled, bool):
+            raise SourceConfigError("sources.greenhouse.enabled must be boolean")
+        boards_raw = greenhouse.get("boards", [])
+        if not isinstance(boards_raw, list):
+            raise SourceConfigError("sources.greenhouse.boards must be a list")
+        if len(boards_raw) > MAX_BOARDS:
+            raise SourceConfigError(
+                f"at most {MAX_BOARDS} Greenhouse boards are allowed"
+            )
+        greenhouse_boards: list[GreenhouseBoard] = []
+        greenhouse_seen: set[str] = set()
+        for index, item in enumerate(boards_raw):
+            board = _mapping(item, f"Greenhouse board {index}")
+            if set(board) != {"token"}:
+                raise SourceConfigError("Greenhouse board keys must be exactly token")
+            token = _string(
+                board["token"], "Greenhouse board.token", maximum=100, ascii_only=True
+            )
+            if not _BOARD_ID.fullmatch(token):
+                raise SourceConfigError("Greenhouse board.token has invalid format")
+            if token in greenhouse_seen:
+                raise SourceConfigError("duplicate canonical Greenhouse board")
+            greenhouse_seen.add(token)
+            greenhouse_boards.append(GreenhouseBoard(token))
+        if enabled and not greenhouse_boards:
+            raise SourceConfigError("enabled Greenhouse configuration requires boards")
+        greenhouse_config = GreenhouseConfig(True, enabled, tuple(greenhouse_boards))
+    return SourceConfig(1, lever_config, path, False, greenhouse_config)
 
 
 def load_source_config(path: str | os.PathLike[str] | None = None) -> SourceConfig:
     selected, explicit = selected_sources_config_path(path)
     text = _read_secure(selected, required=explicit)
     if text is None:
-        return SourceConfig(1, LeverConfig(False, False, ()), selected, False)
+        return SourceConfig(
+            1,
+            LeverConfig(False, False, ()),
+            selected,
+            False,
+            GreenhouseConfig(False, False, ()),
+        )
     result = _parse(text, selected)
-    return SourceConfig(result.version, result.lever, selected, explicit)
+    return SourceConfig(
+        result.version, result.lever, selected, explicit, result.greenhouse
+    )
 
 
 __all__ = [
     "MAX_BOARDS",
     "LeverBoard",
     "LeverConfig",
+    "GreenhouseBoard",
+    "GreenhouseConfig",
     "SourceConfig",
     "SourceConfigError",
     "load_source_config",

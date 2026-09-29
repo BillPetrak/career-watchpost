@@ -297,6 +297,35 @@ then visible in status/statistics as inactive but is never scheduled. Its
 six-hour polling interval is a provisional CareerOS policy, not a provider
 claim. No credentials or authenticated provider access are supported.
 
+### Greenhouse (v1.1 M2)
+
+Greenhouse is an optional, credential-free source using the public Job Board
+API. It uses the same private `sources.yaml` file and accepts up to eight
+strictly validated board tokens:
+
+```yaml
+version: 1
+sources:
+  greenhouse:
+    enabled: true
+    boards:
+      - token: example-company
+```
+
+For each configured board, CareerOS requests board metadata from
+`https://boards-api.greenhouse.io/v1/boards/{board_token}` and jobs with
+`https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs?content=true`.
+The metadata `name` is the authoritative company value. Job identity is the
+stable board-scoped `board_token:public_job_id`; changing a board token creates
+a new source identity. Greenhouse uses a provisional six-hour polling floor.
+
+Requests are sequential, bounded to two per attempted board (16 per
+invocation), with fixed divmod limit allocation across boards. There is no
+pagination, retry, backoff, concurrency, per-job request, authentication, or
+credential support. Each response retains the shared 16 MiB ceiling. A board
+failure is isolated and recorded in the provider outcome; healthy-board jobs
+are retained while the overall Greenhouse run is marked failed.
+
 CareerOS collects from the following public job feeds, each fetched with a
 plain HTTPS request through the shared collector framework (stdlib `urllib`
 only, no API keys, no browser automation):

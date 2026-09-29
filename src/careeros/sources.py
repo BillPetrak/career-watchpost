@@ -9,7 +9,7 @@ from careeros.collectors import COLLECTORS
 from careeros.source_config import SourceConfig, load_source_config
 
 BUILT_IN_SOURCES = tuple(COLLECTORS)
-CONFIGURABLE_SOURCES = ("lever",)
+CONFIGURABLE_SOURCES = ("lever", "greenhouse")
 KNOWN_SOURCES = (*BUILT_IN_SOURCES, *CONFIGURABLE_SOURCES)
 
 
@@ -50,16 +50,33 @@ def resolve_source_catalog(
     if config is None:
         config = load_source_config(config_path)
     historical = _historical(connection)
-    lever_present = config.lever.present
-    lever_enabled = lever_present and config.lever.enabled
-    active = (*BUILT_IN_SOURCES, "lever") if lever_enabled else BUILT_IN_SOURCES
-    visible = lever_present or historical
-    status = (*BUILT_IN_SOURCES, "lever") if visible else BUILT_IN_SOURCES
-    stats = (
-        (*BUILT_IN_SOURCES, "lever")
-        if lever_present or "lever" in _historical_jobs(connection)
-        else BUILT_IN_SOURCES
+    configured_present = {
+        "lever": config.lever.present,
+        "greenhouse": config.greenhouse.present,
+    }
+    configured_enabled = {
+        "lever": config.lever.enabled,
+        "greenhouse": config.greenhouse.enabled,
+    }
+    active_configurable = tuple(
+        source
+        for source in CONFIGURABLE_SOURCES
+        if configured_present[source] and configured_enabled[source]
     )
+    visible_configurable = tuple(
+        source
+        for source in CONFIGURABLE_SOURCES
+        if configured_present[source] or source in historical
+    )
+    historical_jobs = _historical_jobs(connection)
+    statistics_configurable = tuple(
+        source
+        for source in CONFIGURABLE_SOURCES
+        if configured_present[source] or source in historical_jobs
+    )
+    active = (*BUILT_IN_SOURCES, *active_configurable)
+    status = (*BUILT_IN_SOURCES, *visible_configurable)
+    stats = (*BUILT_IN_SOURCES, *statistics_configurable)
     return SourceCatalog(active, status, stats, KNOWN_SOURCES, config)
 
 

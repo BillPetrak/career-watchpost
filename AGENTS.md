@@ -184,6 +184,16 @@ be a user-owned regular `0600` file; `--sources-config`, then
 selection. A missing default is valid and preserves exactly the released seven
 sources. Lever's six-hour polling floor is provisional CareerOS policy.
 
+Product 1 v1.1 M2 adds optional credential-free Greenhouse collection. It uses
+the same private `sources.yaml` with `greenhouse.enabled` and up to eight
+strictly validated board tokens. Greenhouse calls only the public Job Board
+metadata endpoint and its `jobs?content=true` endpoint, uses board metadata
+`name` as company, and identifies jobs by encoded board token plus public job
+id. The six-hour Greenhouse polling floor is provisional CareerOS policy.
+Requests are sequential and bounded to two per attempted board, with no
+pagination, retries, backoff, concurrency, authentication, or per-job calls;
+the shared 16 MiB response ceiling applies independently to each response.
+
 `collect status` and `collect history` are read-only observability commands:
 they never fetch jobs, never write to the database, and never alter scheduling
 state. `collect status` shows, per registered source in registry order: the
