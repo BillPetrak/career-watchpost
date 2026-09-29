@@ -59,7 +59,16 @@ def run_export(
     try:
         if arguments.database.exists():
             connection = connect_read_only(arguments.database)
-        result = build_records(connection, command, request)
+        result = build_records(
+            connection,
+            command,
+            request,
+            config_path=(
+                str(arguments.sources_config)
+                if getattr(arguments, "sources_config", None) is not None
+                else None
+            ),
+        )
     except (OSError, ValueError, sqlite3.Error) as error:
         print(f"Export failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1

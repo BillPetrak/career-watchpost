@@ -20,11 +20,19 @@ from careeros.collecting import (
     collect_due,
     collect_one,
 )
-from careeros.collectors import COLLECTORS
+from careeros.collection_policies import SOURCE_POLICIES
+from careeros.collectors import COLLECTORS, configured_collectors
 from careeros.database.connection import connect, connect_read_only
 from careeros.database.runs import CollectionRun, list_runs, parse_utc
 from careeros.database.schema import initialize_schema
 from careeros.locking import CollectionLockConflict, collection_lock
+from careeros.source_config import (
+    LeverConfig,
+    SourceConfig,
+    SourceConfigError,
+    load_source_config,
+)
+from careeros.sources import resolve_source_catalog
 from careeros.status import build_statuses
 
 
@@ -61,7 +69,13 @@ def _run_status(run: CollectionRun) -> str:
     return "incomplete"
 
 
-def run_collect(source: str, limit: int, database_path: Path) -> int:
+def run_collect(
+    source: str,
+    limit: int,
+    database_path: Path,
+    *,
+    config: SourceConfig | None = None,
+) -> int:
     """Collect jobs from a registered source and save them to SQLite."""
     label = _SOURCE_LABELS.get(source, source)
     print(f"Collecting up to {limit} jobs from {label}...")
@@ -72,7 +86,9 @@ def run_collect(source: str, limit: int, database_path: Path) -> int:
             result = collect_one(
                 connection,
                 source=source,
-                collectors=COLLECTORS,
+                collectors=(
+                    configured_collectors(config) if config is not None else COLLECTORS
+                ),
                 limit=limit,
             )
     except (OSError, sqlite3.Error, ValueError) as error:
@@ -94,15 +110,18 @@ def run_collect(source: str, limit: int, database_path: Path) -> int:
     return 0
 
 
-def run_collect_all(limit: int, database_path: Path) -> int:
+def run_collect_all(limit: int, database_path: Path, *, config: SourceConfig) -> int:
     """Collect from every registered source sequentially and print summaries."""
     results: list[CollectionResult] = []
 
     try:
+        catalog = resolve_source_catalog(config=config)
+        collectors = configured_collectors(config)
         for result in collect_all(
             limit=limit,
             database_path=database_path,
-            collectors=COLLECTORS,
+            collectors=collectors,
+            order=catalog.active,
         ):
             results.append(result)
             print()
@@ -140,15 +159,35 @@ def run_collect_all(limit: int, database_path: Path) -> int:
     return 0 if succeeded == len(results) else 1
 
 
-def run_collect_due(limit: int, database_path: Path) -> int:
+def run_collect_due(
+    limit: int,
+    database_path: Path,
+    *,
+    config: SourceConfig | None = None,
+) -> int:
     """Collect only sources whose polling interval has expired."""
     results: list[CollectionResult] = []
 
     try:
+        if config is None:
+            catalog = resolve_source_catalog(
+                config=SourceConfig(
+                    version=1,
+                    lever=LeverConfig(present=False, enabled=False, boards=()),
+                )
+            )
+            collectors = COLLECTORS
+            order = tuple(COLLECTORS)
+        else:
+            catalog = resolve_source_catalog(config=config)
+            collectors = configured_collectors(config)
+            order = catalog.active
         for result in collect_due(
             limit=limit,
             database_path=database_path,
-            collectors=COLLECTORS,
+            collectors=collectors,
+            policies=SOURCE_POLICIES,
+            order=order,
         ):
             results.append(result)
             print()
@@ -190,12 +229,16 @@ def run_collect_due(limit: int, database_path: Path) -> int:
     return 0 if succeeded == len(results) else 1
 
 
-def run_collect_status(database_path: Path) -> int:
+def run_collect_status(database_path: Path, sources_config: Path | None = None) -> int:
     """Show polling status for every registered source without mutating state."""
     now = common._utc_now()
     try:
         with connect_read_only(database_path) as connection:
-            statuses = build_statuses(connection, now=now)
+            statuses = build_statuses(
+                connection,
+                now=now,
+                config_path=str(sources_config) if sources_config else None,
+            )
     except (OSError, sqlite3.Error, ValueError) as error:
         print(f"Status failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
@@ -228,11 +271,22 @@ def run_collect_status(database_path: Path) -> int:
             print("  Inserted:       -")
             print("  Updated:        -")
             print("  Error:          -")
+        if status.source == "lever":
+            print(f"  Configuration:  {status.configuration}")
         print(
             "  Next due:       "
-            + (status.next_due.isoformat() if status.next_due is not None else "now")
+            + (
+                status.next_due.isoformat()
+                if status.next_due is not None
+                else ("-" if status.state != "active" else "now")
+            )
         )
-        print(f"  State:          {'due' if status.due else 'not due'}")
+        display_state = (
+            status.state
+            if status.source == "lever" and status.state != "active"
+            else ("due" if status.due else "not due")
+        )
+        print(f"  State:          {display_state}")
         if status.incomplete_runs:
             print(f"  Incomplete runs: {status.incomplete_runs}")
 
@@ -299,7 +353,10 @@ def run_collect_command(
     collect_command = arguments.collect_command
 
     if collect_command == "status":
-        return run_collect_status(database_path=arguments.database)
+        return run_collect_status(
+            database_path=arguments.database,
+            sources_config=getattr(arguments, "sources_config", None),
+        )
 
     if collect_command == "history":
         if arguments.limit < 1:
@@ -314,6 +371,24 @@ def run_collect_command(
     if arguments.limit < 1:
         parser.error("--limit must be at least 1")
 
+    config = None
+    if collect_command in {"all", "due", "lever"}:
+        try:
+            config = load_source_config(
+                str(arguments.sources_config)
+                if getattr(arguments, "sources_config", None) is not None
+                else None
+            )
+        except SourceConfigError as error:
+            print(f"Collection failed: {error}", file=sys.stderr)
+            return 1
+        if collect_command == "lever" and not config.lever.enabled:
+            print(
+                "Collection failed: Lever is not enabled in source configuration",
+                file=sys.stderr,
+            )
+            return 1
+
     if collect_command == "due":
         lock_command = "collect due"
     elif collect_command == "all":
@@ -324,21 +399,26 @@ def run_collect_command(
     try:
         with collection_lock(arguments.database, command=lock_command):
             if collect_command == "due":
+                assert config is not None
                 return run_collect_due(
                     limit=arguments.limit,
                     database_path=arguments.database,
+                    config=config,
                 )
 
             if collect_command == "all":
+                assert config is not None
                 return run_collect_all(
                     limit=arguments.limit,
                     database_path=arguments.database,
+                    config=config,
                 )
 
             return run_collect(
                 source=collect_command,
                 limit=arguments.limit,
                 database_path=arguments.database,
+                config=config,
             )
     except CollectionLockConflict as error:
         print(_lock_conflict_message(error), file=sys.stderr)

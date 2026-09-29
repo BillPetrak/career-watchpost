@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from careeros.collection_policies import SOURCE_POLICIES, SourcePolicy
-from careeros.collectors import COLLECTORS, CollectorName
+from careeros.collectors import CollectorName
 from careeros.database.runs import (
     CollectionRun,
     incomplete_run_count,
@@ -23,6 +23,7 @@ from careeros.database.runs import (
     parse_utc,
 )
 from careeros.scheduling import due_sources
+from careeros.sources import SourceCatalog, resolve_source_catalog
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,8 @@ class SourceStatus:
     next_due: datetime | None
     due: bool
     incomplete_runs: int
+    configuration: str = "enabled"
+    state: str = "active"
 
 
 def build_statuses(
@@ -55,6 +58,8 @@ def build_statuses(
     now: datetime,
     policies: Mapping[CollectorName, SourcePolicy] | None = None,
     order: Sequence[CollectorName] | None = None,
+    catalog: SourceCatalog | None = None,
+    config_path: str | None = None,
 ) -> list[SourceStatus]:
     """Return one status snapshot per registered source, in ``order``.
 
@@ -64,8 +69,10 @@ def build_statuses(
     """
     if policies is None:
         policies = SOURCE_POLICIES
+    if catalog is None:
+        catalog = resolve_source_catalog(connection, config_path=config_path)
     if order is None:
-        order = tuple(COLLECTORS)
+        order = catalog.status
 
     last_runs: dict[CollectorName, CollectionRun | None] = {}
     for source in order:
@@ -99,11 +106,33 @@ def build_statuses(
     statuses: list[SourceStatus] = []
     for source in order:
         policy = policies[source]
+        configured = source in catalog.active
+        is_configurable = source == "lever"
+        configuration = (
+            (
+                "enabled"
+                if configured
+                else (
+                    "disabled"
+                    if catalog.config and catalog.config.lever.present
+                    else "historical only"
+                )
+            )
+            if is_configurable
+            else "built-in"
+        )
+        state = (
+            "active"
+            if configured
+            else (
+                "disabled" if configuration == "disabled" else "inactive (historical)"
+            )
+        )
         run = last_runs[source]
         last_attempt = last_attempts[source]
         next_due = (
             None
-            if latest_incomplete[source]
+            if not configured or latest_incomplete[source]
             else (
                 last_attempt + policy.min_interval if last_attempt is not None else None
             )
@@ -120,8 +149,10 @@ def build_statuses(
                 last_updated=run.updated if run is not None else 0,
                 last_error=run.error if run is not None else None,
                 next_due=next_due,
-                due=source in due_set,
+                due=source in due_set if configured else False,
                 incomplete_runs=incomplete_run_count(connection, source=source),
+                configuration=configuration,
+                state=state,
             )
         )
     return statuses

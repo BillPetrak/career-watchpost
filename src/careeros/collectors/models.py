@@ -20,3 +20,15 @@ class CollectedJob:
     remote_status: str | None
     published_at: str | None
     collected_at: str
+
+
+@dataclass(frozen=True)
+class CollectorOutcome:
+    """Optional structured result for configurable providers."""
+
+    jobs: tuple[CollectedJob, ...]
+    succeeded: bool = True
+    error: str | None = None
+
+
+__all__ = ["CollectedJob", "CollectorOutcome"]

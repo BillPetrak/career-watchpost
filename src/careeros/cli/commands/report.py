@@ -80,8 +80,13 @@ def run_report(
                     else None
                 ),
                 use_adaptive=not arguments.no_adaptive,
+                sources_config=(
+                    str(arguments.sources_config)
+                    if getattr(arguments, "sources_config", None) is not None
+                    else None
+                ),
             )
-    except (OSError, sqlite3.Error) as error:
+    except (OSError, sqlite3.Error, ValueError) as error:
         print(f"Report failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 

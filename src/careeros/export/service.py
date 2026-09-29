@@ -384,13 +384,24 @@ def _source_stats_record(stats: SourceStats) -> dict[str, Any]:
 def build_source_stats_records(
     connection: sqlite3.Connection | None,
     request: ExportRequest,
+    *,
+    config_path: str | None = None,
 ) -> ExportResult:
     """Build per-source statistics records for every registered source."""
     cap = effective_limit(request.limit)
     if connection is None:
-        stats = empty_source_stats()
+        from careeros.sources import resolve_source_catalog
+
+        stats = empty_source_stats(
+            catalog=resolve_source_catalog(config_path=config_path)
+        )
     else:
-        stats = compute_source_stats(connection)
+        from careeros.sources import resolve_source_catalog
+
+        stats = compute_source_stats(
+            connection,
+            catalog=resolve_source_catalog(connection, config_path=config_path),
+        )
     records = [_source_stats_record(entry) for entry in stats]
     if request.source is not None:
         records = [record for record in records if record["source"] == request.source]
@@ -434,6 +445,8 @@ def build_records(
     connection: sqlite3.Connection | None,
     command: str,
     request: ExportRequest,
+    *,
+    config_path: str | None = None,
 ) -> ExportResult:
     """Dispatch to the builder for one export subcommand."""
     if command == "jobs":
@@ -443,7 +456,7 @@ def build_records(
     if command == "review":
         return build_review_records(connection, request)
     if command == "source-stats":
-        return build_source_stats_records(connection, request)
+        return build_source_stats_records(connection, request, config_path=config_path)
     if command == "collection-history":
         return build_history_records(connection, request)
     raise ValueError(f"Unknown export command: {command!r}")

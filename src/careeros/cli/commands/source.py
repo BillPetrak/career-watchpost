@@ -13,6 +13,7 @@ from careeros.source_stats.render import (
     render_source_stats_text,
 )
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
+from careeros.sources import resolve_source_catalog
 
 
 def run_source_stats(
@@ -20,6 +21,7 @@ def run_source_stats(
     source: str | None,
     database_path: Path,
     output_format: str,
+    sources_config: Path | None = None,
 ) -> int:
     """Show unified per-source statistics (read-only, no lock, no writes).
 
@@ -29,10 +31,17 @@ def run_source_stats(
     try:
         if database_path.exists():
             with connect_read_only(database_path) as connection:
-                stats = compute_source_stats(connection)
+                catalog = resolve_source_catalog(
+                    connection,
+                    config_path=str(sources_config) if sources_config else None,
+                )
+                stats = compute_source_stats(connection, catalog=catalog)
         else:
-            stats = empty_source_stats()
-    except (OSError, sqlite3.Error) as error:
+            catalog = resolve_source_catalog(
+                config_path=str(sources_config) if sources_config else None
+            )
+            stats = empty_source_stats(catalog=catalog)
+    except (OSError, sqlite3.Error, ValueError) as error:
         print(f"Source stats failed: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
@@ -52,4 +61,5 @@ def run_source_command(arguments: argparse.Namespace) -> int:
         source=arguments.source,
         database_path=arguments.database,
         output_format=arguments.format,
+        sources_config=getattr(arguments, "sources_config", None),
     )

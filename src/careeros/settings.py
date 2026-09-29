@@ -13,6 +13,7 @@ from pathlib import Path
 
 ENV_DATABASE = "CAREEROS_DATABASE"
 ENV_MATERIALS_ROOT = "CAREEROS_MATERIALS_ROOT"
+ENV_SOURCES_CONFIG = "CAREEROS_SOURCES_CONFIG"
 
 
 def _xdg_home(variable: str, fallback: str) -> Path:
@@ -34,6 +35,11 @@ def default_materials_root() -> Path:
 def default_profile_path() -> Path:
     """Return the stable per-user private-profile default without creating it."""
     return _xdg_home("XDG_CONFIG_HOME", "~/.config") / "careeros/candidate_profile.yaml"
+
+
+def default_sources_config_path() -> Path:
+    """Return the private source configuration path without creating it."""
+    return _xdg_home("XDG_CONFIG_HOME", "~/.config") / "careeros/sources.yaml"
 
 
 # Compatibility constants reflect the process environment at import time.
@@ -71,9 +77,11 @@ __all__: tuple[str, ...] = (
     "DEFAULT_PROFILE_PATH",
     "ENV_DATABASE",
     "ENV_MATERIALS_ROOT",
+    "ENV_SOURCES_CONFIG",
     "database_path",
     "default_database_path",
     "default_materials_root",
     "default_profile_path",
+    "default_sources_config_path",
     "materials_root",
 )

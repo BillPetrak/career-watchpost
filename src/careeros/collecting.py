@@ -21,6 +21,7 @@ from typing import TypeAlias
 
 from careeros.collection_policies import SOURCE_POLICIES, SourcePolicy
 from careeros.collectors import COLLECTORS, Collector, CollectorName
+from careeros.collectors.models import CollectorOutcome
 from careeros.database.connection import connect
 from careeros.database.groups import ensure_grouped
 from careeros.database.jobs import save_jobs
@@ -100,7 +101,13 @@ def _run_collection(
     for source in sources:
         run_id = insert_run(connection, source=source, started_at=clock())
         try:
-            jobs = collectors[source](limit=limit)
+            collected = collectors[source](limit=limit)
+            outcome = (
+                collected
+                if isinstance(collected, CollectorOutcome)
+                else CollectorOutcome(tuple(collected))
+            )
+            jobs = outcome.jobs
             connection.execute("BEGIN IMMEDIATE")
             saved = save_jobs(connection, jobs, commit=False)
             ensure_grouped(connection, commit=False)
@@ -108,11 +115,11 @@ def _run_collection(
                 connection,
                 run_id=run_id,
                 finished_at=clock(),
-                succeeded=True,
+                succeeded=outcome.succeeded,
                 fetched=len(jobs),
                 inserted=saved.inserted,
                 updated=saved.updated,
-                error=None,
+                error=outcome.error,
                 commit=False,
             )
             connection.commit()
@@ -121,7 +128,8 @@ def _run_collection(
                 fetched=len(jobs),
                 inserted=saved.inserted,
                 updated=saved.updated,
-                succeeded=True,
+                succeeded=outcome.succeeded,
+                error=outcome.error,
             )
         except _EXPECTED_COLLECT_EXCEPTIONS as error:
             connection.rollback()

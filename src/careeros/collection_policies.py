@@ -46,4 +46,5 @@ SOURCE_POLICIES: dict[CollectorName, SourcePolicy] = {
     "remotive": SourcePolicy("remotive", timedelta(hours=6), documented=True),
     "workingnomads": SourcePolicy("workingnomads", timedelta(hours=6)),
     "himalayas": SourcePolicy("himalayas", timedelta(days=1), documented=True),
+    "lever": SourcePolicy("lever", timedelta(hours=6)),
 }

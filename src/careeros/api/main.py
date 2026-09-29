@@ -552,7 +552,9 @@ from careeros.saved_searches.service import (
     update_search,
 )
 from careeros.settings import database_path, materials_root
+from careeros.source_config import SourceConfigError
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
+from careeros.sources import resolve_source_catalog
 from careeros.today.service import build_today
 
 _MATERIAL_UPLOAD_SLOT = threading.Lock()
@@ -1757,10 +1759,19 @@ def create_app(
         limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
         source: str | None = None,
     ) -> SourceStatsListResponse:
-        if connection is None:
-            stats = empty_source_stats()
-        else:
-            stats = compute_source_stats(connection)
+        try:
+            if connection is None:
+                stats = empty_source_stats(catalog=resolve_source_catalog())
+            else:
+                stats = compute_source_stats(
+                    connection,
+                    catalog=resolve_source_catalog(connection),
+                )
+        except (SourceConfigError, ValueError) as error:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Invalid source configuration: {error}",
+            ) from error
         if source is not None:
             stats = tuple(entry for entry in stats if entry.source == source)
         return SourceStatsListResponse(

@@ -177,6 +177,13 @@ collection failures. Jobicy's request limit is the documented provider maximum
 of 200 results. The existing seven-source registry is frozen for v1.0;
 additional sources belong to v1.1.
 
+Product 1 v1.1 M1 adds optional credential-free Lever collection. Its private
+configuration is `${XDG_CONFIG_HOME:-~/.config}/careeros/sources.yaml` and must
+be a user-owned regular `0600` file; `--sources-config`, then
+`CAREEROS_SOURCES_CONFIG`, then the XDG default determine CLI configuration
+selection. A missing default is valid and preserves exactly the released seven
+sources. Lever's six-hour polling floor is provisional CareerOS policy.
+
 `collect status` and `collect history` are read-only observability commands:
 they never fetch jobs, never write to the database, and never alter scheduling
 state. `collect status` shows, per registered source in registry order: the

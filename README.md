@@ -269,6 +269,34 @@ occurrence, and a due time missed across a reboot still fires once).
 
 ## Job sources
 
+### Private configurable sources (v1.1 M1)
+
+The released seven built-in sources remain the default when no configuration
+exists. Lever is an optional, credential-free source configured in the private
+file `${XDG_CONFIG_HOME:-~/.config}/careeros/sources.yaml`; the file must be
+owned by the current user with mode `0600`. CLI operations accept
+`--sources-config PATH`, then `CAREEROS_SOURCES_CONFIG`, then the XDG default.
+HTTP surfaces use the environment/XDG order. Reads do not create the file or
+its parent directory.
+
+Example (fictional/public-safe board data):
+
+```yaml
+version: 1
+sources:
+  lever:
+    enabled: true
+    boards:
+      - id: appfollow
+        instance: global
+        company: AppFollow
+```
+
+Lever can be explicitly disabled while retaining its board definitions. It is
+then visible in status/statistics as inactive but is never scheduled. Its
+six-hour polling interval is a provisional CareerOS policy, not a provider
+claim. No credentials or authenticated provider access are supported.
+
 CareerOS collects from the following public job feeds, each fetched with a
 plain HTTPS request through the shared collector framework (stdlib `urllib`
 only, no API keys, no browser automation):

@@ -8,11 +8,13 @@ from careeros.collectors.arbeitnow import fetch_jobs as arbeitnow_fetch_jobs
 from careeros.collectors.himalayas import fetch_jobs as himalayas_fetch_jobs
 from careeros.collectors.http import DEFAULT_TIMEOUT
 from careeros.collectors.jobicy import fetch_jobs as jobicy_fetch_jobs
-from careeros.collectors.models import CollectedJob
+from careeros.collectors.lever import fetch_result as lever_fetch_result
+from careeros.collectors.models import CollectedJob, CollectorOutcome
 from careeros.collectors.remoteok import fetch_jobs as remoteok_fetch_jobs
 from careeros.collectors.remotive import fetch_jobs as remotive_fetch_jobs
 from careeros.collectors.weworkremotely import fetch_jobs as weworkremotely_fetch_jobs
 from careeros.collectors.workingnomads import fetch_jobs as workingnomads_fetch_jobs
+from careeros.source_config import SourceConfig
 
 
 class Collector(Protocol):
@@ -23,7 +25,7 @@ class Collector(Protocol):
         *,
         limit: int = 25,
         timeout: float = DEFAULT_TIMEOUT,
-    ) -> list[CollectedJob]: ...
+    ) -> list[CollectedJob] | CollectorOutcome: ...
 
 
 CollectorName: TypeAlias = str
@@ -42,3 +44,16 @@ COLLECTORS: dict[CollectorName, Collector] = {
     "workingnomads": workingnomads_fetch_jobs,
     "himalayas": himalayas_fetch_jobs,
 }
+
+
+def configured_collectors(config: SourceConfig) -> dict[CollectorName, Collector]:
+    """Return a runtime collector mapping without changing the built-in registry."""
+    result = dict(COLLECTORS)
+    if config.lever.present and config.lever.enabled:
+        result["lever"] = lambda *, limit=25, timeout=DEFAULT_TIMEOUT: (
+            lever_fetch_result(config=config.lever, limit=limit, timeout=timeout)
+        )
+    return result
+
+
+__all__ = ["COLLECTORS", "Collector", "CollectorName", "configured_collectors"]

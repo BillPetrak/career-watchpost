@@ -17,7 +17,14 @@ from careeros.reminders.models import REMINDER_KINDS
 from careeros.review.models import DECISION_VALUES, QUEUE_STATES
 from careeros.saved_searches.models import SEARCH_MODES
 from careeros.settings import database_path
+from careeros.sources import KNOWN_SOURCES
 from careeros.systemd import add_parser as add_systemd_parser
+
+# ``COLLECTORS`` remains the frozen seven-source execution registry.  Lever is
+# a known configurable source and is intentionally present only in source
+# selectors and the direct collect command vocabulary; activation is resolved
+# by the source catalog at execution time.
+KNOWN_SOURCE_NAMES = KNOWN_SOURCES
 
 _PRIVATE_PROFILE_DEFAULT_HELP = (
     "private XDG configuration path "
@@ -156,7 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    for name in ("all", "due", *COLLECTORS):
+    for name in ("all", "due", *COLLECTORS, "lever"):
         if name == "all":
             command_help = "Collect from every registered source."
         elif name == "due":
@@ -176,6 +183,12 @@ def build_parser() -> argparse.ArgumentParser:
             default=DEFAULT_DATABASE_PATH,
             help="SQLite database path.",
         )
+        command_parser.add_argument(
+            "--sources-config",
+            type=Path,
+            default=None,
+            help="Private source configuration path (defaults to XDG sources.yaml).",
+        )
 
     status_parser = collect_commands.add_parser(
         "status",
@@ -187,6 +200,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DATABASE_PATH,
         help="SQLite database path.",
     )
+    status_parser.add_argument(
+        "--sources-config",
+        type=Path,
+        default=None,
+        help="Private source configuration path (defaults to XDG sources.yaml).",
+    )
 
     history_parser = collect_commands.add_parser(
         "history",
@@ -194,7 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     history_parser.add_argument(
         "--source",
-        choices=[*COLLECTORS],
+        choices=KNOWN_SOURCE_NAMES,
         help="Only show runs for this source.",
     )
     history_parser.add_argument(
@@ -716,6 +735,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable persistent learned-preference adjustments.",
     )
+    report_parser.add_argument(
+        "--sources-config",
+        type=Path,
+        default=None,
+        help="Private source configuration path (defaults to XDG sources.yaml).",
+    )
 
     source_parser = subparsers.add_parser(
         "source",
@@ -732,7 +757,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stats_parser.add_argument(
         "--source",
-        choices=[*COLLECTORS],
+        choices=KNOWN_SOURCE_NAMES,
         help="Only show statistics for this source.",
     )
     stats_parser.add_argument(
@@ -746,6 +771,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_DATABASE_PATH,
         help="SQLite database path.",
+    )
+    stats_parser.add_argument(
+        "--sources-config",
+        type=Path,
+        default=None,
+        help="Private source configuration path (defaults to XDG sources.yaml).",
     )
 
     group_parser = subparsers.add_parser(
@@ -1478,7 +1509,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     source_stats_parser.add_argument(
         "--source",
-        choices=[*COLLECTORS],
+        choices=KNOWN_SOURCE_NAMES,
         help="Only export statistics for this source.",
     )
     _add_export_common_flags(source_stats_parser, default_database)
@@ -1489,7 +1520,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     history_parser.add_argument(
         "--source",
-        choices=[*COLLECTORS],
+        choices=KNOWN_SOURCE_NAMES,
         help="Only export runs for this source.",
     )
     history_parser.add_argument(
@@ -1515,7 +1546,7 @@ def _add_export_filter_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--source",
-        choices=[*COLLECTORS],
+        choices=KNOWN_SOURCE_NAMES,
         help="Only export jobs from this source.",
     )
     parser.add_argument(
@@ -1561,6 +1592,12 @@ def _add_export_common_flags(
         type=Path,
         default=default_database,
         help="SQLite database path.",
+    )
+    parser.add_argument(
+        "--sources-config",
+        type=Path,
+        default=None,
+        help="Private source configuration path (defaults to XDG sources.yaml).",
     )
 
 

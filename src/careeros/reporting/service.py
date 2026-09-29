@@ -47,6 +47,7 @@ from careeros.saved_searches.execution import execute_rank, rank_candidates
 from careeros.saved_searches.models import SavedSearch
 from careeros.saved_searches.service import list_searches
 from careeros.source_stats.service import compute_source_stats
+from careeros.sources import resolve_source_catalog
 from careeros.status import build_statuses
 
 _JOB_COLUMNS: tuple[str, ...] = tuple(JOB_COLUMNS.split(", "))
@@ -331,6 +332,7 @@ def build_report(
     grouped: bool = False,
     feedback: FeedbackSet | None = None,
     use_adaptive: bool = True,
+    sources_config: str | None = None,
 ) -> Report:
     """Build a complete Career Snapshot from stored state (read-only).
 
@@ -339,9 +341,10 @@ def build_report(
     review-feedback set shared by the review queue and the recommendations
     (built once by the caller); None disables review feedback.
     """
-    source_snapshots = tuple(build_statuses(connection, now=now))
+    catalog = resolve_source_catalog(connection, config_path=sources_config)
+    source_snapshots = tuple(build_statuses(connection, now=now, catalog=catalog))
     due_sources = tuple(status.source for status in source_snapshots if status.due)
-    source_stats = compute_source_stats(connection)
+    source_stats = compute_source_stats(connection, catalog=catalog)
 
     summary = grouping_summary(connection)
     distinct_opportunities = summary.total_jobs - summary.grouped_jobs + summary.groups

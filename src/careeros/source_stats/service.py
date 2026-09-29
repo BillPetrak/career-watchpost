@@ -21,6 +21,7 @@ from careeros.source_stats.models import (
     FieldCoverage,
     SourceStats,
 )
+from careeros.sources import SourceCatalog, resolve_source_catalog
 
 
 def _field_is_missing(job: StoredJob, column: str) -> bool:
@@ -80,6 +81,8 @@ def _never_groupable_count(jobs: Sequence[StoredJob]) -> int:
 
 def empty_source_stats(
     order: Sequence[CollectorName] | None = None,
+    *,
+    catalog: SourceCatalog | None = None,
 ) -> tuple[SourceStats, ...]:
     """Return per-source statistics for an empty database.
 
@@ -90,7 +93,7 @@ def empty_source_stats(
     creating the file.
     """
     if order is None:
-        order = tuple(COLLECTORS)
+        order = catalog.statistics if catalog is not None else tuple(COLLECTORS)
     return tuple(
         SourceStats(
             source=source,
@@ -106,6 +109,8 @@ def compute_source_stats(
     connection: sqlite3.Connection,
     *,
     order: Sequence[CollectorName] | None = None,
+    catalog: SourceCatalog | None = None,
+    config_path: str | None = None,
 ) -> tuple[SourceStats, ...]:
     """Return one :class:`SourceStats` per source, in ``order``.
 
@@ -115,7 +120,9 @@ def compute_source_stats(
     complete and deterministic.
     """
     if order is None:
-        order = tuple(COLLECTORS)
+        if catalog is None:
+            catalog = resolve_source_catalog(connection, config_path=config_path)
+        order = catalog.statistics
 
     by_source: dict[str, list[StoredJob]] = {source: [] for source in order}
     for job in list_all_jobs(connection):
