@@ -63,6 +63,7 @@ _SOURCE_LABELS = {
     "workingnomads": "Working Nomads",
     "lever": "Lever",
     "greenhouse": "Greenhouse",
+    "workable": "Workable",
 }
 
 

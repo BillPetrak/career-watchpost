@@ -48,4 +48,6 @@ SOURCE_POLICIES: dict[CollectorName, SourcePolicy] = {
     "himalayas": SourcePolicy("himalayas", timedelta(days=1), documented=True),
     "lever": SourcePolicy("lever", timedelta(hours=6)),
     "greenhouse": SourcePolicy("greenhouse", timedelta(hours=6)),
+    # Workable publishes no public-feed polling cadence; this is provisional.
+    "workable": SourcePolicy("workable", timedelta(hours=6)),
 }

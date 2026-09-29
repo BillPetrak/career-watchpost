@@ -194,6 +194,17 @@ Requests are sequential and bounded to two per attempted board, with no
 pagination, retries, backoff, concurrency, authentication, or per-job calls;
 the shared 16 MiB response ceiling applies independently to each response.
 
+Product 1 v1.1 M3 adds optional credential-free Workable collection. It uses
+the same private `sources.yaml` with `workable.enabled` and up to eight
+strictly validated account subdomains. Workable calls only its documented
+public `GET https://www.workable.com/api/accounts/{subdomain}?details=true`
+endpoint, uses top-level `name` as company, and scopes identity by encoded
+subdomain plus shortcode. Workable publishes no public-feed polling cadence;
+CareerOS uses a provisional six-hour floor. Requests are sequential and
+bounded to one per positive-quota account, with no pagination, retries,
+backoff, concurrency, account discovery, authentication, or per-job calls;
+the shared 16 MiB response ceiling applies independently to each response.
+
 `collect status` and `collect history` are read-only observability commands:
 they never fetch jobs, never write to the database, and never alter scheduling
 state. `collect status` shows, per registered source in registry order: the

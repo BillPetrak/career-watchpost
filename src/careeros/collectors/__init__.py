@@ -14,6 +14,7 @@ from careeros.collectors.models import CollectedJob, CollectorOutcome
 from careeros.collectors.remoteok import fetch_jobs as remoteok_fetch_jobs
 from careeros.collectors.remotive import fetch_jobs as remotive_fetch_jobs
 from careeros.collectors.weworkremotely import fetch_jobs as weworkremotely_fetch_jobs
+from careeros.collectors.workable import fetch_result as workable_fetch_result
 from careeros.collectors.workingnomads import fetch_jobs as workingnomads_fetch_jobs
 from careeros.source_config import SourceConfig
 
@@ -59,6 +60,10 @@ def configured_collectors(config: SourceConfig) -> dict[CollectorName, Collector
             greenhouse_fetch_result(
                 config=config.greenhouse, limit=limit, timeout=timeout
             )
+        )
+    if config.workable.present and config.workable.enabled:
+        result["workable"] = lambda *, limit=25, timeout=DEFAULT_TIMEOUT: (
+            workable_fetch_result(config=config.workable, limit=limit, timeout=timeout)
         )
     return result
 

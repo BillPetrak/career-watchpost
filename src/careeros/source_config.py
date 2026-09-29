@@ -49,6 +49,18 @@ class GreenhouseConfig:
 
 
 @dataclass(frozen=True)
+class WorkableBoard:
+    subdomain: str
+
+
+@dataclass(frozen=True)
+class WorkableConfig:
+    present: bool
+    enabled: bool
+    boards: tuple[WorkableBoard, ...]
+
+
+@dataclass(frozen=True)
 class SourceConfig:
     version: int
     lever: LeverConfig
@@ -57,6 +69,7 @@ class SourceConfig:
     # Keep this after the existing defaulted fields for positional M1
     # compatibility.
     greenhouse: GreenhouseConfig = GreenhouseConfig(False, False, ())
+    workable: WorkableConfig = WorkableConfig(False, False, ())
 
     @property
     def lever_configured(self) -> bool:
@@ -65,6 +78,10 @@ class SourceConfig:
     @property
     def greenhouse_configured(self) -> bool:
         return self.greenhouse.present
+
+    @property
+    def workable_configured(self) -> bool:
+        return self.workable.present
 
 
 class _UniqueLoader(yaml.SafeLoader):
@@ -229,7 +246,7 @@ def _parse(text: str, path: Path) -> SourceConfig:
         sources = _mapping(root["sources"], "sources")
     except TypeError as error:
         raise SourceConfigError("sources must be a mapping") from error
-    if set(sources) - {"lever", "greenhouse"}:
+    if set(sources) - {"lever", "greenhouse", "workable"}:
         raise SourceConfigError("sources contains an unknown key")
     lever_config = LeverConfig(False, False, ())
     if "lever" in sources:
@@ -302,7 +319,43 @@ def _parse(text: str, path: Path) -> SourceConfig:
         if enabled and not greenhouse_boards:
             raise SourceConfigError("enabled Greenhouse configuration requires boards")
         greenhouse_config = GreenhouseConfig(True, enabled, tuple(greenhouse_boards))
-    return SourceConfig(1, lever_config, path, False, greenhouse_config)
+    workable_config = WorkableConfig(False, False, ())
+    if "workable" in sources:
+        workable = _mapping(sources["workable"], "sources.workable")
+        if set(workable) - {"enabled", "boards"} or "enabled" not in workable:
+            raise SourceConfigError("Workable keys must be exactly enabled and boards")
+        enabled = workable["enabled"]
+        if not isinstance(enabled, bool):
+            raise SourceConfigError("sources.workable.enabled must be boolean")
+        boards_raw = workable.get("boards", [])
+        if not isinstance(boards_raw, list):
+            raise SourceConfigError("sources.workable.boards must be a list")
+        if len(boards_raw) > MAX_BOARDS:
+            raise SourceConfigError(f"at most {MAX_BOARDS} Workable boards are allowed")
+        workable_boards: list[WorkableBoard] = []
+        workable_seen: set[str] = set()
+        for index, item in enumerate(boards_raw):
+            board = _mapping(item, f"Workable board {index}")
+            if set(board) != {"subdomain"}:
+                raise SourceConfigError("Workable board keys must be exactly subdomain")
+            subdomain = _string(
+                board["subdomain"],
+                "Workable board.subdomain",
+                maximum=100,
+                ascii_only=True,
+            )
+            if not _BOARD_ID.fullmatch(subdomain):
+                raise SourceConfigError("Workable board.subdomain has invalid format")
+            if subdomain in workable_seen:
+                raise SourceConfigError("duplicate canonical Workable board")
+            workable_seen.add(subdomain)
+            workable_boards.append(WorkableBoard(subdomain))
+        if enabled and not workable_boards:
+            raise SourceConfigError("enabled Workable configuration requires boards")
+        workable_config = WorkableConfig(True, enabled, tuple(workable_boards))
+    return SourceConfig(
+        1, lever_config, path, False, greenhouse_config, workable_config
+    )
 
 
 def load_source_config(path: str | os.PathLike[str] | None = None) -> SourceConfig:
@@ -315,10 +368,16 @@ def load_source_config(path: str | os.PathLike[str] | None = None) -> SourceConf
             selected,
             False,
             GreenhouseConfig(False, False, ()),
+            WorkableConfig(False, False, ()),
         )
     result = _parse(text, selected)
     return SourceConfig(
-        result.version, result.lever, selected, explicit, result.greenhouse
+        result.version,
+        result.lever,
+        selected,
+        explicit,
+        result.greenhouse,
+        result.workable,
     )
 
 
@@ -328,6 +387,8 @@ __all__ = [
     "LeverConfig",
     "GreenhouseBoard",
     "GreenhouseConfig",
+    "WorkableBoard",
+    "WorkableConfig",
     "SourceConfig",
     "SourceConfigError",
     "load_source_config",

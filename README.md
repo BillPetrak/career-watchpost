@@ -326,6 +326,34 @@ credential support. Each response retains the shared 16 MiB ceiling. A board
 failure is isolated and recorded in the provider outcome; healthy-board jobs
 are retained while the overall Greenhouse run is marked failed.
 
+### Workable (v1.1 M3)
+
+Workable is an optional, credential-free source for explicitly configured
+account subdomains. It uses the same private `sources.yaml` file and accepts
+up to eight accounts:
+
+```yaml
+version: 1
+sources:
+  workable:
+    enabled: true
+    boards:
+      - subdomain: example-account
+```
+
+Each account uses only Workable's documented public endpoint
+`https://www.workable.com/api/accounts/{subdomain}?details=true`. The public
+account `name` is authoritative for company, and the durable job identity is
+the percent-encoded pair `subdomain:shortcode`. Workable does not explicitly
+guarantee shortcode immutability; a changed shortcode is therefore a new
+identity. The six-hour polling floor is a provisional CareerOS policy.
+
+Requests are sequential, one per positive-quota account, with fixed divmod
+allocation of the provider-wide limit. There is no pagination, retry, backoff,
+concurrency, per-job request, credential, or account discovery. Each response
+uses the shared 16 MiB ceiling; an account failure is isolated while healthy
+account jobs are retained and the provider run is marked failed.
+
 CareerOS collects from the following public job feeds, each fetched with a
 plain HTTPS request through the shared collector framework (stdlib `urllib`
 only, no API keys, no browser automation):
