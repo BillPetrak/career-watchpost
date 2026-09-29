@@ -61,6 +61,18 @@ class WorkableConfig:
 
 
 @dataclass(frozen=True)
+class SmartRecruitersCompany:
+    identifier: str
+
+
+@dataclass(frozen=True)
+class SmartRecruitersConfig:
+    present: bool
+    enabled: bool
+    companies: tuple[SmartRecruitersCompany, ...]
+
+
+@dataclass(frozen=True)
 class SourceConfig:
     version: int
     lever: LeverConfig
@@ -70,6 +82,7 @@ class SourceConfig:
     # compatibility.
     greenhouse: GreenhouseConfig = GreenhouseConfig(False, False, ())
     workable: WorkableConfig = WorkableConfig(False, False, ())
+    smartrecruiters: SmartRecruitersConfig = SmartRecruitersConfig(False, False, ())
 
     @property
     def lever_configured(self) -> bool:
@@ -82,6 +95,10 @@ class SourceConfig:
     @property
     def workable_configured(self) -> bool:
         return self.workable.present
+
+    @property
+    def smartrecruiters_configured(self) -> bool:
+        return self.smartrecruiters.present
 
 
 class _UniqueLoader(yaml.SafeLoader):
@@ -246,7 +263,7 @@ def _parse(text: str, path: Path) -> SourceConfig:
         sources = _mapping(root["sources"], "sources")
     except TypeError as error:
         raise SourceConfigError("sources must be a mapping") from error
-    if set(sources) - {"lever", "greenhouse", "workable"}:
+    if set(sources) - {"lever", "greenhouse", "workable", "smartrecruiters"}:
         raise SourceConfigError("sources contains an unknown key")
     lever_config = LeverConfig(False, False, ())
     if "lever" in sources:
@@ -353,8 +370,63 @@ def _parse(text: str, path: Path) -> SourceConfig:
         if enabled and not workable_boards:
             raise SourceConfigError("enabled Workable configuration requires boards")
         workable_config = WorkableConfig(True, enabled, tuple(workable_boards))
+    smartrecruiters_config = SmartRecruitersConfig(False, False, ())
+    if "smartrecruiters" in sources:
+        smartrecruiters = _mapping(
+            sources["smartrecruiters"], "sources.smartrecruiters"
+        )
+        if (
+            set(smartrecruiters) - {"enabled", "companies"}
+            or "enabled" not in smartrecruiters
+        ):
+            raise SourceConfigError(
+                "SmartRecruiters keys must be exactly enabled and companies"
+            )
+        enabled = smartrecruiters["enabled"]
+        if not isinstance(enabled, bool):
+            raise SourceConfigError("sources.smartrecruiters.enabled must be boolean")
+        companies_raw = smartrecruiters.get("companies", [])
+        if not isinstance(companies_raw, list):
+            raise SourceConfigError("sources.smartrecruiters.companies must be a list")
+        if len(companies_raw) > MAX_BOARDS:
+            raise SourceConfigError(
+                f"at most {MAX_BOARDS} SmartRecruiters companies are allowed"
+            )
+        companies: list[SmartRecruitersCompany] = []
+        seen_companies: set[str] = set()
+        for index, item in enumerate(companies_raw):
+            company_mapping = _mapping(item, f"SmartRecruiters company {index}")
+            if set(company_mapping) != {"identifier"}:
+                raise SourceConfigError(
+                    "SmartRecruiters company keys must be exactly identifier"
+                )
+            identifier = _string(
+                company_mapping["identifier"],
+                "SmartRecruiters company.identifier",
+                maximum=100,
+                ascii_only=True,
+            )
+            if not _BOARD_ID.fullmatch(identifier):
+                raise SourceConfigError(
+                    "SmartRecruiters company.identifier has invalid format"
+                )
+            if identifier in seen_companies:
+                raise SourceConfigError("duplicate canonical SmartRecruiters company")
+            seen_companies.add(identifier)
+            companies.append(SmartRecruitersCompany(identifier))
+        if enabled and not companies:
+            raise SourceConfigError(
+                "enabled SmartRecruiters configuration requires companies"
+            )
+        smartrecruiters_config = SmartRecruitersConfig(True, enabled, tuple(companies))
     return SourceConfig(
-        1, lever_config, path, False, greenhouse_config, workable_config
+        1,
+        lever_config,
+        path,
+        False,
+        greenhouse_config,
+        workable_config,
+        smartrecruiters_config,
     )
 
 
@@ -369,6 +441,7 @@ def load_source_config(path: str | os.PathLike[str] | None = None) -> SourceConf
             False,
             GreenhouseConfig(False, False, ()),
             WorkableConfig(False, False, ()),
+            SmartRecruitersConfig(False, False, ()),
         )
     result = _parse(text, selected)
     return SourceConfig(
@@ -378,6 +451,7 @@ def load_source_config(path: str | os.PathLike[str] | None = None) -> SourceConf
         explicit,
         result.greenhouse,
         result.workable,
+        result.smartrecruiters,
     )
 
 
@@ -389,6 +463,8 @@ __all__ = [
     "GreenhouseConfig",
     "WorkableBoard",
     "WorkableConfig",
+    "SmartRecruitersCompany",
+    "SmartRecruitersConfig",
     "SourceConfig",
     "SourceConfigError",
     "load_source_config",

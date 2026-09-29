@@ -29,6 +29,7 @@ def _config(*, present: bool, enabled: bool):
         lever=SimpleNamespace(present=False, enabled=False),
         greenhouse=SimpleNamespace(present=False, enabled=False),
         workable=SimpleNamespace(present=present, enabled=enabled),
+        smartrecruiters=SimpleNamespace(present=False, enabled=False),
     )
 
 
@@ -75,6 +76,7 @@ def test_workable_is_known_but_not_a_builtin() -> None:
         "lever",
         "greenhouse",
         "workable",
+        "smartrecruiters",
     )
     assert _SOURCE_LABELS["workable"] == "Workable"
 
@@ -203,6 +205,7 @@ def test_all_configurable_sources_keep_fixed_order() -> None:
         lever=SimpleNamespace(present=True, enabled=False),
         greenhouse=SimpleNamespace(present=True, enabled=False),
         workable=SimpleNamespace(present=True, enabled=False),
+        smartrecruiters=SimpleNamespace(present=False, enabled=False),
     )
     catalog = resolve_source_catalog(config=config)
     expected = (*BUILT_IN_SOURCES, "lever", "greenhouse", "workable")

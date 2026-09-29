@@ -52,6 +52,7 @@ def test_every_registered_source_has_a_policy() -> None:
         "lever",
         "greenhouse",
         "workable",
+        "smartrecruiters",
     }
 
 
@@ -70,6 +71,13 @@ def test_greenhouse_minimum_interval_is_six_hours_and_provisional() -> None:
 def test_workable_minimum_interval_is_six_hours_and_provisional() -> None:
     assert SOURCE_POLICIES["workable"] == SourcePolicy("workable", timedelta(hours=6))
     assert SOURCE_POLICIES["workable"].documented is False
+
+
+def test_smartrecruiters_minimum_interval_is_six_hours_and_provisional() -> None:
+    assert SOURCE_POLICIES["smartrecruiters"] == SourcePolicy(
+        "smartrecruiters", timedelta(hours=6)
+    )
+    assert SOURCE_POLICIES["smartrecruiters"].documented is False
 
 
 def test_workingnomads_minimum_interval_is_six_hours() -> None:

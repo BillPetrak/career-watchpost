@@ -354,6 +354,29 @@ concurrency, per-job request, credential, or account discovery. Each response
 uses the shared 16 MiB ceiling; an account failure is isolated while healthy
 account jobs are retained and the provider run is marked failed.
 
+### SmartRecruiters (v1.1 M4)
+
+SmartRecruiters is an optional, credential-free source for explicitly
+configured company identifiers. It uses the same private `sources.yaml` file
+and accepts up to eight companies:
+
+```yaml
+version: 1
+sources:
+  smartrecruiters:
+    enabled: true
+    companies:
+      - identifier: smartrecruiters
+```
+
+CareerOS uses only SmartRecruiters' public Posting API list and detail
+endpoints, with `destination=PUBLIC` on every list request. Company identifiers
+must match the defensive lowercase ASCII policy `[a-z0-9][a-z0-9-]{0,99}`.
+Requests are sequential, limited to one list page and at most one detail
+request per selected posting, with fixed provider-wide quota allocation and a
+provisional six-hour polling floor. No credentials, discovery, pagination,
+retry, backoff, concurrency, or application operations are supported.
+
 CareerOS collects from the following public job feeds, each fetched with a
 plain HTTPS request through the shared collector framework (stdlib `urllib`
 only, no API keys, no browser automation):

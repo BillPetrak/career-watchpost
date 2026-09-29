@@ -205,6 +205,17 @@ bounded to one per positive-quota account, with no pagination, retries,
 backoff, concurrency, account discovery, authentication, or per-job calls;
 the shared 16 MiB response ceiling applies independently to each response.
 
+Product 1 v1.1 M4 adds optional credential-free SmartRecruiters collection. It
+uses the same private `sources.yaml` with `smartrecruiters.enabled` and up to
+eight strictly validated company identifiers. SmartRecruiters calls only the
+public Posting API list/detail endpoints, uses `destination=PUBLIC` on list
+requests, and scopes identity by configured company identifier plus canonical
+posting UUID. Its six-hour polling floor is provisional CareerOS policy.
+Requests are sequential and bounded to one list page plus one detail request
+per selected posting, with no pagination, retries, backoff, concurrency,
+authentication, discovery, or application operations; the shared 16 MiB
+response ceiling applies independently to each response.
+
 `collect status` and `collect history` are read-only observability commands:
 they never fetch jobs, never write to the database, and never alter scheduling
 state. `collect status` shows, per registered source in registry order: the

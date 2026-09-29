@@ -9,7 +9,7 @@ from careeros.collectors import COLLECTORS
 from careeros.source_config import SourceConfig, load_source_config
 
 BUILT_IN_SOURCES = tuple(COLLECTORS)
-CONFIGURABLE_SOURCES = ("lever", "greenhouse", "workable")
+CONFIGURABLE_SOURCES = ("lever", "greenhouse", "workable", "smartrecruiters")
 KNOWN_SOURCES = (*BUILT_IN_SOURCES, *CONFIGURABLE_SOURCES)
 
 
@@ -54,11 +54,13 @@ def resolve_source_catalog(
         "lever": config.lever.present,
         "greenhouse": config.greenhouse.present,
         "workable": config.workable.present,
+        "smartrecruiters": config.smartrecruiters.present,
     }
     configured_enabled = {
         "lever": config.lever.enabled,
         "greenhouse": config.greenhouse.enabled,
         "workable": config.workable.enabled,
+        "smartrecruiters": config.smartrecruiters.enabled,
     }
     active_configurable = tuple(
         source

@@ -13,6 +13,9 @@ from careeros.collectors.lever import fetch_result as lever_fetch_result
 from careeros.collectors.models import CollectedJob, CollectorOutcome
 from careeros.collectors.remoteok import fetch_jobs as remoteok_fetch_jobs
 from careeros.collectors.remotive import fetch_jobs as remotive_fetch_jobs
+from careeros.collectors.smartrecruiters import (
+    fetch_result as smartrecruiters_fetch_result,
+)
 from careeros.collectors.weworkremotely import fetch_jobs as weworkremotely_fetch_jobs
 from careeros.collectors.workable import fetch_result as workable_fetch_result
 from careeros.collectors.workingnomads import fetch_jobs as workingnomads_fetch_jobs
@@ -64,6 +67,12 @@ def configured_collectors(config: SourceConfig) -> dict[CollectorName, Collector
     if config.workable.present and config.workable.enabled:
         result["workable"] = lambda *, limit=25, timeout=DEFAULT_TIMEOUT: (
             workable_fetch_result(config=config.workable, limit=limit, timeout=timeout)
+        )
+    if config.smartrecruiters.present and config.smartrecruiters.enabled:
+        result["smartrecruiters"] = lambda *, limit=25, timeout=DEFAULT_TIMEOUT: (
+            smartrecruiters_fetch_result(
+                config=config.smartrecruiters, limit=limit, timeout=timeout
+            )
         )
     return result
 
