@@ -56,6 +56,19 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
+def _profile_timestamp(value: str) -> datetime:
+    """Parse persisted profile time without imposing review-time formatting."""
+    try:
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("profile timestamp must be timezone-aware")
+        return parsed.astimezone(UTC)
+    except (TypeError, ValueError) as exc:
+        raise CareerProfileValidationError(
+            "Career Profile snapshot timestamp is unavailable"
+        ) from exc
+
+
 def _candidate(connection: sqlite3.Connection, candidate_id: str) -> sqlite3.Row:
     row = connection.execute(
         "SELECT * FROM career_fact_candidates WHERE id=?", (candidate_id,)
@@ -70,6 +83,15 @@ def effective_candidate_review(
 ) -> EffectiveCandidateReview:
     candidate = _candidate(connection, candidate_id)
     event = latest_fact_review_record(connection, candidate_id)
+    return _effective_review_from_event(candidate, event)
+
+
+def _effective_review_from_event(
+    candidate: sqlite3.Row,
+    event: Any,
+) -> EffectiveCandidateReview:
+    """Materialize one validated review event as effective review authority."""
+    candidate_id = str(candidate["id"])
     if event is None:
         return EffectiveCandidateReview(candidate_id, "pending")
     status = event.event_kind
@@ -122,6 +144,31 @@ def effective_candidate_review(
         event.id,
         event.created_at,
     )
+
+
+def effective_candidate_review_at(
+    connection: sqlite3.Connection, candidate_id: str, cutoff: str
+) -> EffectiveCandidateReview:
+    """Return review authority as it existed at an immutable snapshot cutoff.
+
+    Review events are append-only.  We parse timestamps as UTC datetimes and
+    choose the latest event at or before the cutoff, breaking equal timestamps
+    by the durable event ID rather than relying on textual ordering.
+    """
+    candidate = _candidate(connection, candidate_id)
+    cutoff_dt = _profile_timestamp(cutoff)
+    events = fact_review_history_records(connection, candidate_id, limit=None)
+    as_of = [
+        event
+        for event in events
+        if datetime.fromisoformat(event.created_at) <= cutoff_dt
+    ]
+    event = max(
+        as_of,
+        key=lambda item: (datetime.fromisoformat(item.created_at), item.id),
+        default=None,
+    )
+    return _effective_review_from_event(candidate, event)
 
 
 def candidate_review_history(
@@ -252,6 +299,21 @@ def _review_candidate(
         if semantic_same and note is None:
             connection.commit()
             return current
+        review_time = _profile_timestamp(created_at)
+        sourced_versions = connection.execute(
+            "SELECT DISTINCT v.created_at FROM career_profile_versions v "
+            "JOIN career_profile_facts f ON f.profile_version_id=v.id "
+            "JOIN career_profile_fact_sources s ON s.profile_fact_id=f.id "
+            "WHERE s.candidate_id=?",
+            (candidate_id,),
+        ).fetchall()
+        if any(
+            _profile_timestamp(str(row["created_at"])) >= review_time
+            for row in sourced_versions
+        ):
+            raise CareerProfileValidationError(
+                "candidate review must follow saved Career Profile authority"
+            )
         append_fact_review_in_transaction(
             connection,
             CareerFactReviewEvent(
@@ -530,6 +592,18 @@ def assemble_profile(
         candidate_id: effective_candidate_review(connection, candidate_id)
         for candidate_id in used
     }
+    profile_created_at = created_at
+    if review_tokens:
+        profile_created_at = created_at or _now()
+        profile_time = _profile_timestamp(profile_created_at)
+        if any(
+            token.created_at is None
+            or _profile_timestamp(token.created_at) >= profile_time
+            for token in review_tokens.values()
+        ):
+            raise CareerProfileValidationError(
+                "Career Profile snapshot must follow source review authority"
+            )
 
     def recheck(c: sqlite3.Connection) -> None:
         state_row = c.execute(
@@ -580,7 +654,7 @@ def assemble_profile(
         expected_revision,
         prepared,
         origin="approved_facts",
-        created_at=created_at,
+        created_at=profile_created_at,
         before_write=recheck,
         before_commit=validate_before_commit,
     )

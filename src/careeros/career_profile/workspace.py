@@ -22,6 +22,7 @@ from careeros.career_profile.service import (
     candidate_review_history_page,
     current_profile,
     effective_candidate_review,
+    effective_candidate_review_at,
     profile_snapshot,
 )
 from careeros.database.materials import material_row, version_rows
@@ -485,7 +486,9 @@ def profile_projection(
         if connection is not None and fact.origin == "approved_candidate":
             matching: list[str] = []
             for candidate_id in source_ids:
-                review = effective_candidate_review(connection, candidate_id)
+                review = effective_candidate_review_at(
+                    connection, candidate_id, version.created_at
+                )
                 if (
                     review.status in ("approved", "approved_edit")
                     and review.canonical_value_json == fact.canonical_value_json

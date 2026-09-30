@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Barrier
 
@@ -19,10 +20,12 @@ from careeros.career_profile.service import (
     candidate_review_history_page,
     current_profile,
     effective_candidate_review,
+    effective_candidate_review_at,
     profile_history,
     profile_snapshot,
     review_candidate,
 )
+from careeros.career_profile.workspace import profile_projection
 from careeros.database.career_profile import (
     CareerProfileConflict,
     CareerProfileValidationError,
@@ -735,6 +738,124 @@ def test_approved_edit_changed_key_survives_immutable_history(
     )
     assert current_profile(db) is not None
     assert profile_history(db)[0].facts[0].canonical_value_json == '{"name":"Python 3"}'
+
+
+def test_approved_edit_projection_stays_immutable_after_later_rejection(
+    db: sqlite3.Connection,
+) -> None:
+    candidate_id = str(_candidate(db)["id"])
+    review_candidate(
+        db, candidate_id, "approved_edit", edited_value_json='{"name":"Python 3"}'
+    )
+    saved = assemble_profile(db, 0, [CandidateProfileFactRequest(candidate_id)])
+    before = profile_projection(profile_snapshot(db, saved.version.id), db)
+    assert before is not None
+    assert before["facts"][0]["value"] == {"name": "Python 3"}
+    assert before["facts"][0]["source_candidate_ids"] == [candidate_id]
+    assert before["facts"][0]["assembly_primary_candidate_id"] == candidate_id
+
+    review_candidate(db, candidate_id, "rejected")
+    after = profile_projection(profile_snapshot(db, saved.version.id), db)
+    assert after == before
+
+
+def test_manual_projection_has_no_assembly_primary_candidate(
+    db: sqlite3.Connection,
+) -> None:
+    saved = save_profile(
+        db,
+        0,
+        [
+            ProfileFactInput(
+                "manual:one",
+                "note",
+                "manual-one",
+                '{"value":"Manual"}',
+                "manual",
+                "private",
+                0,
+            )
+        ],
+        origin="manual",
+    )
+    projected = profile_projection(profile_snapshot(db, saved.version.id), db)
+    assert projected is not None
+    assert projected["facts"][0]["assembly_primary_candidate_id"] is None
+
+
+def test_multi_source_projection_matches_saved_value_as_of_assembly(
+    db: sqlite3.Connection,
+) -> None:
+    first_id, second_id = (str(row["id"]) for row in _candidates(db, "skill"))
+    review_candidate(db, first_id, "approved_edit", edited_value_json='{"name":"GO"}')
+    review_candidate(db, second_id, "approved_edit", edited_value_json='{"name":"Go"}')
+    saved = assemble_profile(
+        db, 0, [CandidateProfileFactRequest(second_id, (first_id,))]
+    )
+    before = profile_projection(profile_snapshot(db, saved.version.id), db)
+    assert before is not None
+    fact = before["facts"][0]
+    assert fact["source_candidate_ids"] == sorted((first_id, second_id))
+    assert fact["assembly_primary_candidate_id"] == second_id
+    assert (
+        effective_candidate_review_at(db, first_id, saved.version.created_at).status
+        == "approved_edit"
+    )
+
+    review_candidate(db, second_id, "rejected")
+    assert profile_projection(profile_snapshot(db, saved.version.id), db) == before
+
+
+@pytest.mark.parametrize("offset", (timedelta(0), -timedelta(microseconds=1)))
+def test_equal_or_backdated_rereview_cannot_rewrite_saved_projection(
+    db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+    offset: timedelta,
+) -> None:
+    candidate_id = str(_candidate(db)["id"])
+    review_candidate(db, candidate_id, "approved")
+    saved = assemble_profile(db, 0, [CandidateProfileFactRequest(candidate_id)])
+    before = profile_projection(profile_snapshot(db, saved.version.id), db)
+    event_count = int(
+        db.execute(
+            "SELECT count(*) FROM career_fact_review_events WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()[0]
+    )
+    review_time = (datetime.fromisoformat(saved.version.created_at) + offset).isoformat(
+        timespec="microseconds"
+    )
+    monkeypatch.setattr(profile_service, "_now", lambda: review_time)
+
+    with pytest.raises(CareerProfileValidationError, match="must follow"):
+        review_candidate(db, candidate_id, "rejected")
+
+    assert (
+        db.execute(
+            "SELECT count(*) FROM career_fact_review_events WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()[0]
+        == event_count
+    )
+    assert profile_projection(profile_snapshot(db, saved.version.id), db) == before
+
+
+def test_candidate_snapshot_timestamp_must_follow_source_review(
+    db: sqlite3.Connection,
+) -> None:
+    candidate_id = str(_candidate(db)["id"])
+    review = review_candidate(db, candidate_id, "approved")
+    assert review.created_at is not None
+
+    with pytest.raises(CareerProfileValidationError, match="must follow"):
+        assemble_profile(
+            db,
+            0,
+            [CandidateProfileFactRequest(candidate_id)],
+            created_at=review.created_at,
+        )
+
+    assert get_profile_state(db).revision == 0
 
 
 def test_multi_source_uses_effective_keys_and_preserves_edited_history(

@@ -287,6 +287,36 @@ def test_cli_exact_analyze_review_profile_lifecycle(
     assert saved["revision"] == 1
     assert saved["fact_count"] == 1
 
+    # Capture the complete saved projections before any later review event.
+    assert (
+        cli.main(
+            [
+                "career-profile",
+                "show",
+                "--database",
+                str(database),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    saved_current_projection = json.loads(capsys.readouterr().out)
+    assert (
+        cli.main(
+            [
+                "career-profile",
+                "history",
+                "--database",
+                str(database),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    saved_history_projection = json.loads(capsys.readouterr().out)
+
     for command in ("show", "history"):
         assert (
             cli.main(
@@ -340,6 +370,23 @@ def test_cli_exact_analyze_review_profile_lifecycle(
     )
     capsys.readouterr()
 
+    # Re-reviewing a source candidate cannot rewrite the current saved
+    # snapshot's value or assembly provenance.
+    assert (
+        cli.main(
+            [
+                "career-profile",
+                "show",
+                "--database",
+                str(database),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == saved_current_projection
+
     # Later rejection does not rewrite the immutable historical snapshot.
     assert (
         cli.main(
@@ -356,7 +403,52 @@ def test_cli_exact_analyze_review_profile_lifecycle(
         )
         == 0
     )
-    assert candidate_value in capsys.readouterr().out
+    historical_after_rejection = json.loads(capsys.readouterr().out)
+    assert historical_after_rejection["profile"] == saved_current_projection["profile"]
+
+    # A later revision leaves the original history item value-equivalent.
+    empty_manifest = tmp_path / "empty-profile.json"
+    empty_manifest.write_text('{"entries": []}', encoding="utf-8")
+    assert (
+        cli.main(
+            [
+                "career-profile",
+                "save",
+                str(empty_manifest),
+                "--expected-revision",
+                "1",
+                "--database",
+                str(database),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert (
+        cli.main(
+            [
+                "career-profile",
+                "history",
+                "--database",
+                str(database),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    history_after_revision = json.loads(capsys.readouterr().out)
+    original = next(
+        item
+        for item in history_after_revision["items"]
+        if item["version"]["id"] == saved["version"]["id"]
+    )
+    expected_original = next(
+        item
+        for item in saved_history_projection["items"]
+        if item["version"]["id"] == saved["version"]["id"]
+    )
+    assert original == expected_original
 
 
 def test_cli_review_rejects_candidate_outside_recognized_m5_authority(
