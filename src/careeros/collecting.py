@@ -25,6 +25,7 @@ from careeros.collectors.models import CollectorOutcome
 from careeros.database.connection import connect
 from careeros.database.groups import ensure_grouped
 from careeros.database.jobs import save_jobs
+from careeros.database.review_ranking import update_opportunity_authority
 from careeros.database.runs import (
     complete_run,
     insert_run,
@@ -32,6 +33,14 @@ from careeros.database.runs import (
     latest_attempt_is_incomplete,
 )
 from careeros.database.schema import initialize_schema
+from careeros.preferences.service import (
+    effective_learned_authority_fingerprint,
+    refresh_learned_authority,
+)
+from careeros.ranking.materialization import (
+    opportunity_corpus_fingerprint,
+    snapshot_opportunities,
+)
 from careeros.scheduling import due_sources
 
 
@@ -79,7 +88,31 @@ def _repair_grouping_after_interruption(
 ) -> None:
     """Repair derived grouping when the newest attempt was interrupted."""
     if any(latest_attempt_is_incomplete(connection, source) for source in sources):
-        ensure_grouped(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            previous_learned_fingerprint = effective_learned_authority_fingerprint(
+                connection
+            )
+            ensure_grouped(connection, commit=False)
+            refresh_opportunity_authority(connection)
+            refresh_learned_authority(
+                connection,
+                previous_fingerprint=previous_learned_fingerprint,
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+
+def refresh_opportunity_authority(connection: sqlite3.Connection) -> bool:
+    """Refresh scorer-visible opportunity authority in the caller's transaction."""
+    opportunities = snapshot_opportunities(connection)
+    return update_opportunity_authority(
+        connection,
+        opportunity_corpus_fingerprint(opportunities),
+        len(opportunities),
+    )
 
 
 def _run_collection(
@@ -109,8 +142,16 @@ def _run_collection(
             )
             jobs = outcome.jobs
             connection.execute("BEGIN IMMEDIATE")
+            previous_learned_fingerprint = effective_learned_authority_fingerprint(
+                connection
+            )
             saved = save_jobs(connection, jobs, commit=False)
             ensure_grouped(connection, commit=False)
+            refresh_opportunity_authority(connection)
+            refresh_learned_authority(
+                connection,
+                previous_fingerprint=previous_learned_fingerprint,
+            )
             complete_run(
                 connection,
                 run_id=run_id,

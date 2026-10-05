@@ -7,6 +7,20 @@ tests opt into an explicit loopback peer through this helper.
 from fastapi.testclient import TestClient as _TestClient
 
 
+def prepare_today_ranking(connection):
+    """Materialize current test authority without changing test-owned grouping."""
+    from careeros.collecting import refresh_opportunity_authority
+    from careeros.database.review_ranking import fully_prepared
+    from careeros.ranking.rebuild import rebuild_once
+
+    if connection.in_transaction:
+        connection.commit()
+    refresh_opportunity_authority(connection)
+    connection.commit()
+    rebuild_once(connection)
+    assert fully_prepared(connection)
+
+
 class TestClient(_TestClient):
     def __init__(self, app, *args, **kwargs):
         self._auto_write = kwargs.pop("auto_write", True)

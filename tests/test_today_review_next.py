@@ -21,7 +21,7 @@ from careeros.ranking.explanations import explain_result
 from careeros.review.service import build_queue, set_decision
 from careeros.today import service as today_service
 from careeros.today.service import build_today
-from tests.support import TestClient
+from tests.support import TestClient, prepare_today_ranking
 
 NOW = datetime(2026, 9, 17, 12, tzinfo=UTC)
 
@@ -31,6 +31,11 @@ def _db() -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     initialize_schema(connection)
     return connection
+
+
+def _today(connection: sqlite3.Connection, **kwargs):
+    prepare_today_ranking(connection)
+    return build_today(connection, **kwargs)
 
 
 def _job(
@@ -163,7 +168,7 @@ def test_preview_totals_limit_grouping_and_frozen_order() -> None:
     connection = _db()
     scored, _zero = _seed_preview(connection)
 
-    review_next = build_today(connection, now=NOW, limit=1).review_next
+    review_next = _today(connection, now=NOW, limit=1).review_next
 
     assert review_next.candidate_total == 5
     assert review_next.total == 4
@@ -198,7 +203,7 @@ def test_any_current_group_member_application_excludes_preview(
         now=NOW,
     )
 
-    review_next = build_today(connection, now=NOW).review_next
+    review_next = _today(connection, now=NOW).review_next
 
     assert review_next.candidate_total == 1
     assert [item.group.representative.id for item in review_next.items] == [singleton]
@@ -226,7 +231,7 @@ def test_resolved_review_excludes_whole_group() -> None:
         now=NOW,
     )
 
-    review_next = build_today(connection, now=NOW).review_next
+    review_next = _today(connection, now=NOW).review_next
 
     assert review_next.candidate_total == review_next.total == 0
     assert review_next.items == ()
@@ -263,7 +268,7 @@ def test_absent_and_configured_empty_preserve_learning_without_profile_fallback(
         raise AssertionError("Today must not load a private candidate profile")
 
     monkeypatch.setattr("careeros.ranking.profile.load_profile", fail_profile_load)
-    review_next = build_today(connection, now=NOW).review_next
+    review_next = _today(connection, now=NOW).review_next
 
     assert review_next.candidate_total == 1
     assert review_next.total == 1
@@ -330,8 +335,8 @@ def test_inactive_learned_state_is_neutral_and_not_personalized(
         raise AssertionError("Today must not load a private candidate profile")
 
     monkeypatch.setattr("careeros.ranking.profile.load_profile", fail_profile_load)
-    adaptive = build_today(connection, now=NOW).review_next
-    opted_out = build_today(
+    adaptive = _today(connection, now=NOW).review_next
+    opted_out = _today(
         connection,
         now=NOW,
         use_learned_preferences=False,
@@ -371,8 +376,8 @@ def test_explicit_title_authority_locks_matching_learned_title() -> None:
         item.dimension == "title" and item.active for item in preferences.learned
     )
 
-    snapshot = build_today(connection, now=NOW).review_next
-    opted_out = build_today(
+    snapshot = _today(connection, now=NOW).review_next
+    opted_out = _today(
         connection,
         now=NOW,
         use_learned_preferences=False,
@@ -430,8 +435,8 @@ def test_active_nonmatching_learning_has_zero_effective_adjustment() -> None:
     assert any(
         item.dimension == "title" and item.active for item in preferences.learned
     )
-    adaptive = build_today(connection, now=NOW).review_next
-    opted_out = build_today(
+    adaptive = _today(connection, now=NOW).review_next
+    opted_out = _today(
         connection,
         now=NOW,
         use_learned_preferences=False,
@@ -490,8 +495,8 @@ def test_learned_default_opt_out_and_suppression() -> None:
         now=NOW,
     )
 
-    adaptive = build_today(connection, now=NOW).review_next
-    opted_out = build_today(
+    adaptive = _today(connection, now=NOW).review_next
+    opted_out = _today(
         connection,
         now=NOW,
         use_learned_preferences=False,
@@ -515,7 +520,7 @@ def test_learned_default_opt_out_and_suppression() -> None:
         if item.dimension == "title" and item.active
     )
     suppress_learned_preference(connection, preference.preference_key, now=NOW)
-    suppressed = build_today(connection, now=NOW).review_next
+    suppressed = _today(connection, now=NOW).review_next
     assert suppressed.total == 2
     assert suppressed.items[0].group.representative.id == newer
     assert suppressed.personalized is True
@@ -541,27 +546,17 @@ def test_hard_exclusion_remains_a_final_veto() -> None:
         now=NOW,
     )
 
-    review_next = build_today(connection, now=NOW).review_next
+    review_next = _today(connection, now=NOW).review_next
 
     assert review_next.candidate_total == 1
     assert review_next.total == 0
     assert review_next.items == ()
 
 
-def test_today_matches_shared_queue_without_legacy_feedback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_today_matches_shared_queue_without_legacy_feedback() -> None:
     connection = _db()
     _seed_preview(connection)
-    calls: list[object] = []
-    real_build_queue = today_service.build_queue
-
-    def recording_build_queue(*args: object, **kwargs: object):
-        calls.append(kwargs.get("feedback"))
-        return real_build_queue(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(today_service, "build_queue", recording_build_queue)
-    snapshot = build_today(connection, now=NOW)
+    snapshot = _today(connection, now=NOW)
 
     context = resolve_explicit_profile(connection)
     preferences = build_adaptive_preference_set(
@@ -576,7 +571,6 @@ def test_today_matches_shared_queue_without_legacy_feedback(
         feedback=None,
         adaptive_preferences=preferences,
     )
-    assert calls == [None]
     assert [item.ranked.match_score for item in snapshot.review_next.items] == [
         item.ranked.match_score for item in shared.items
     ]
@@ -601,6 +595,7 @@ def test_review_next_queries_do_not_scale_with_candidate_count() -> None:
             ExplicitPreferenceProfile(desired_titles=("Python Engineer",)),
             now=NOW,
         )
+        prepare_today_ranking(connection)
         statements: list[str] = []
         connection.set_trace_callback(statements.append)
         build_today(connection, now=NOW)
@@ -611,7 +606,7 @@ def test_review_next_queries_do_not_scale_with_candidate_count() -> None:
     assert count_for(1) == count_for(25)
 
 
-def test_today_builds_one_preference_snapshot_and_passes_it_to_review(
+def test_today_builds_one_preference_snapshot_and_scores_only_selected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connection = _db()
@@ -619,10 +614,10 @@ def test_today_builds_one_preference_snapshot_and_passes_it_to_review(
     resolve_calls = 0
     adaptive_calls = 0
     built_preferences: list[object] = []
-    queue_preferences: list[object] = []
+    scored_counts: list[int] = []
     real_resolve = today_service.resolve_explicit_profile
-    real_build_adaptive = today_service.build_adaptive_preference_set
-    real_build_queue = today_service.build_queue
+    real_build_adaptive = today_service.build_ranking_adaptive_preference_set
+    real_score_groups = today_service.score_groups
 
     def recording_resolve(*args: object, **kwargs: object):
         nonlocal resolve_calls
@@ -636,32 +631,26 @@ def test_today_builds_one_preference_snapshot_and_passes_it_to_review(
         built_preferences.append(preferences)
         return preferences
 
-    def recording_build_queue(*args: object, **kwargs: object):
-        queue_preferences.append(kwargs.get("adaptive_preferences"))
-        return real_build_queue(*args, **kwargs)  # type: ignore[arg-type]
-
-    def unexpected_review_rebuild(*args: object, **kwargs: object) -> None:
-        raise AssertionError("Review queue must consume Today's preference snapshot")
+    def recording_score_groups(groups, *args: object, **kwargs: object):
+        groups = list(groups)
+        scored_counts.append(len(groups))
+        return real_score_groups(groups, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(today_service, "resolve_explicit_profile", recording_resolve)
     monkeypatch.setattr(
         today_service,
-        "build_adaptive_preference_set",
+        "build_ranking_adaptive_preference_set",
         recording_build_adaptive,
     )
-    monkeypatch.setattr(today_service, "build_queue", recording_build_queue)
-    monkeypatch.setattr(
-        "careeros.review.service.build_adaptive_preference_set",
-        unexpected_review_rebuild,
-    )
+    monkeypatch.setattr(today_service, "score_groups", recording_score_groups)
 
-    review_next = build_today(connection, now=NOW).review_next
+    review_next = _today(connection, now=NOW).review_next
 
     assert review_next.candidate_total == 5
     assert resolve_calls == 1
     assert adaptive_calls == 1
     assert len(built_preferences) == 1
-    assert queue_preferences == [built_preferences[0]]
+    assert scored_counts == [3]
 
 
 def test_review_next_does_not_execute_saved_search_or_network(
@@ -681,7 +670,7 @@ def test_review_next_does_not_execute_saved_search_or_network(
     )
     monkeypatch.setattr("careeros.collectors.http.urlopen", unexpected_call)
 
-    review_next = build_today(connection, now=NOW).review_next
+    review_next = _today(connection, now=NOW).review_next
 
     assert review_next.total == 4
 
@@ -700,6 +689,7 @@ def test_api_exact_public_projection_and_adaptive_flag(
         ExplicitPreferenceProfile(desired_titles=("Python Engineer",)),
         now=NOW,
     )
+    prepare_today_ranking(connection)
     connection.close()
     monkeypatch.setenv("CAREEROS_DATABASE", str(database))
 
@@ -741,4 +731,4 @@ def test_api_exact_public_projection_and_adaptive_flag(
         "negative_examples",
     ):
         assert private_key not in serialized
-    assert SCHEMA_VERSION == 13
+    assert SCHEMA_VERSION == 14

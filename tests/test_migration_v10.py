@@ -13,6 +13,13 @@ PREFERENCE_TABLES = (
 def test_v9_to_v10(tmp_path):
     c = connect(tmp_path / "db")
     initialize_schema(c)
+    for table in (
+        "review_ranking_current",
+        "review_ranking_items",
+        "review_ranking_generations",
+        "review_ranking_authority",
+    ):
+        c.execute("DROP TABLE " + table)
     for table in reversed(V13_TABLES):
         c.execute("DROP TABLE " + table)
     for table in PREFERENCE_TABLES:

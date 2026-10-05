@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from careeros.cli.common import EXIT_TEMP_FAILURE, _lock_conflict_message
+from careeros.collecting import refresh_opportunity_authority
 from careeros.database.connection import connect, connect_read_only
 from careeros.database.groups import (
     ensure_grouped,
@@ -16,6 +17,10 @@ from careeros.database.groups import (
 )
 from careeros.database.schema import initialize_schema
 from careeros.locking import CollectionLockConflict, collection_lock
+from careeros.preferences.service import (
+    effective_learned_authority_fingerprint,
+    refresh_learned_authority,
+)
 
 
 def run_group_regroup(database_path: Path) -> int:
@@ -23,7 +28,21 @@ def run_group_regroup(database_path: Path) -> int:
     try:
         with connect(database_path) as connection:
             initialize_schema(connection)
-            ensure_grouped(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                previous_learned_fingerprint = effective_learned_authority_fingerprint(
+                    connection
+                )
+                ensure_grouped(connection, commit=False)
+                refresh_opportunity_authority(connection)
+                refresh_learned_authority(
+                    connection,
+                    previous_fingerprint=previous_learned_fingerprint,
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
             summary = grouping_summary(connection)
     except (OSError, sqlite3.Error) as error:
         print(f"Regroup failed: {type(error).__name__}: {error}", file=sys.stderr)

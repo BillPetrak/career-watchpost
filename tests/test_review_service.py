@@ -282,6 +282,29 @@ def test_rollback_on_transition_write_failure(
     assert events[0].new_decision == "shortlist"
 
 
+def test_clear_decision_rolls_back_if_initial_fingerprint_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _open(tmp_path) as connection:
+        job_ids = _seed_jobs(connection)
+        set_decision(connection, job_id=job_ids["a-1"], decision="shortlist")
+
+        def fail_fingerprint(*args: object, **kwargs: object) -> str:
+            raise RuntimeError("simulated fingerprint failure")
+
+        monkeypatch.setattr(
+            "careeros.review.service._learned_authority_fingerprint",
+            fail_fingerprint,
+        )
+        with pytest.raises(RuntimeError, match="simulated fingerprint failure"):
+            clear_decision(connection, job_id=job_ids["a-1"])
+        assert connection.in_transaction is False
+        assert get_decision(connection, job_id=job_ids["a-1"]) is not None
+        assert (
+            connection.execute("SELECT count(*) FROM review_events").fetchone()[0] == 1
+        )
+
+
 def test_list_decisions_returns_decided_jobs_newest_first(tmp_path: Path) -> None:
     with _open(tmp_path) as connection:
         job_ids = _seed_jobs(connection)

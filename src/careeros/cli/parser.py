@@ -87,6 +87,10 @@ def build_parser() -> argparse.ArgumentParser:
     restore_parser.add_argument("backup", type=Path)
     restore_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
     restore_parser.add_argument("--confirm-replace", action="store_true")
+    rebuild_parser = database_commands.add_parser(
+        "rebuild-ranking", help="Rebuild durable materialized Review rankings locally."
+    )
+    rebuild_parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE_PATH)
     serve_parser = subparsers.add_parser(
         "serve", help="Serve the protected local web application."
     )

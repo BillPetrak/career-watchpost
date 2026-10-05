@@ -11,10 +11,75 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from careeros.database.schema import SCHEMA_VERSION, V13_DDL
+from careeros.database.schema import SCHEMA_VERSION, V13_DDL, V14_DDL
 
 MigrationStep = Callable[[sqlite3.Connection], None]
 MIGRATIONS: dict[int, MigrationStep] = {}
+
+
+def _valid_v14_structure(connection: sqlite3.Connection) -> bool:
+    """Require the complete additive v14 layout, exactly as bootstrapped."""
+    from careeros.database.schema import initialize_schema
+
+    tables = (
+        "review_ranking_authority",
+        "review_ranking_generations",
+        "review_ranking_items",
+        "review_ranking_current",
+    )
+    reference = sqlite3.connect(":memory:")
+    reference.row_factory = sqlite3.Row
+    try:
+        initialize_schema(reference)
+        for table in tables:
+            if not _table_exists(connection, table):
+                return False
+            if (
+                _canonical_master_sql(connection, "table", table)
+                != _canonical_master_sql(reference, "table", table)
+                or _pragma_rows(connection, "table_info", table)
+                != _pragma_rows(reference, "table_info", table)
+                or _pragma_rows(connection, "foreign_key_list", table)
+                != _pragma_rows(reference, "foreign_key_list", table)
+            ):
+                return False
+            actual_indexes = {
+                str(row[1]): (int(row[2]), str(row[3]), int(row[4]))
+                for row in connection.execute(f"PRAGMA index_list({table})")
+            }
+            expected_indexes = {
+                str(row[1]): (int(row[2]), str(row[3]), int(row[4]))
+                for row in reference.execute(f"PRAGMA index_list({table})")
+            }
+            if actual_indexes != expected_indexes:
+                return False
+            for index in actual_indexes:
+                if _canonical_master_sql(
+                    connection, "index", index
+                ) != _canonical_master_sql(reference, "index", index) or _pragma_rows(
+                    connection, "index_xinfo", index
+                ) != _pragma_rows(reference, "index_xinfo", index):
+                    return False
+
+        expected_objects = set(tables)
+        expected_objects.update(
+            str(row[1])
+            for table in tables
+            for row in reference.execute(f"PRAGMA index_list({table})")
+            if not str(row[1]).startswith("sqlite_autoindex_")
+        )
+        actual_objects = {
+            str(row[1])
+            for row in connection.execute(
+                "SELECT type,name,tbl_name FROM sqlite_master "
+                "WHERE type IN ('table','index','trigger')"
+            )
+            if (str(row[1]).startswith("review_ranking_") or str(row[2]) in tables)
+            and not str(row[1]).startswith("sqlite_autoindex_")
+        }
+        return actual_objects == expected_objects
+    finally:
+        reference.close()
 
 
 def inspect_schema(connection: sqlite3.Connection) -> str:
@@ -43,7 +108,7 @@ def inspect_schema(connection: sqlite3.Connection) -> str:
         return "unsupported"
     if version > SCHEMA_VERSION:
         return "future"
-    if version in (8, 9, 10, 11, 12):
+    if version in (8, 9, 10, 11, 12, 13):
         if not _valid_structure(connection, version):
             return "malformed"
     return "upgrade_required"
@@ -121,7 +186,7 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
             "created_at",
             "updated_at",
         }
-    if version in (10, 11, 12, 13):
+    if version in (10, 11, 12, 13, 14):
         required.update(
             {
                 "material_store": {"singleton", "store_id", "created_at"},
@@ -154,21 +219,21 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
         actual = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
         if not columns <= actual:
             return False
-    if version in (9, 10, 11, 12):
+    if version in (9, 10, 11, 12, 13, 14):
         if not _valid_v9_columns(connection) or not _valid_v9_sql(connection):
             return False
         if not _valid_v9_foreign_keys(connection):
             return False
         if not _valid_v9_indexes(connection):
             return False
-    if version in (10, 11, 12):
+    if version in (10, 11, 12, 13, 14):
         if not _valid_v10_tables(connection):
             return False
         if not _valid_v10_indexes(connection):
             return False
-    if version in (11, 12, 13) and not _valid_v11_structure(connection):
+    if version in (11, 12, 13, 14) and not _valid_v11_structure(connection):
         return False
-    if version in (11, 12, 13) and (
+    if version in (11, 12, 13, 14) and (
         not _valid_v9_columns(connection)
         or not _valid_v9_sql(connection)
         or not _valid_v9_foreign_keys(connection)
@@ -179,7 +244,9 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
         return False
     if version == 11 and _preference_objects(connection):
         return False
-    if version == 12 and not _valid_v12_structure(connection):
+    if version in (12, 13, 14) and not _valid_v12_structure(
+        connection, allow_ranking_columns=version == 14
+    ):
         return False
     if version == 12 and any(
         str(row[1]).startswith(("resume_", "career_"))
@@ -195,9 +262,9 @@ def _valid_structure(connection: sqlite3.Connection, version: int) -> bool:
         )
     ):
         return False
-    if version == 13 and not _valid_v12_structure(connection):
+    if version in (13, 14) and not _valid_v13_structure(connection):
         return False
-    if version == 13 and not _valid_v13_structure(connection):
+    if version == 14 and not _valid_v14_structure(connection):
         return False
     return True
 
@@ -228,6 +295,13 @@ def _valid_v13_structure(connection: sqlite3.Connection) -> bool:
     reference.row_factory = sqlite3.Row
     try:
         initialize_schema(reference)
+        # The v12 preference boundary predates ranking authority columns.
+        reference.execute(
+            "ALTER TABLE preference_state DROP COLUMN explicit_ranking_fingerprint"
+        )
+        reference.execute(
+            "ALTER TABLE preference_state DROP COLUMN explicit_ranking_revision"
+        )
         for table in V13_TABLES:
             if not _table_exists(connection, table):
                 return False
@@ -302,7 +376,9 @@ def _preference_objects(connection: sqlite3.Connection) -> list[tuple[str, str, 
     ]
 
 
-def _valid_v12_structure(connection: sqlite3.Connection) -> bool:
+def _valid_v12_structure(
+    connection: sqlite3.Connection, *, allow_ranking_columns: bool
+) -> bool:
     """Compare every preference table and index with a normative fresh v12."""
     from careeros.database.schema import initialize_schema
 
@@ -336,6 +412,25 @@ def _valid_v12_structure(connection: sqlite3.Connection) -> bool:
     reference.row_factory = sqlite3.Row
     try:
         initialize_schema(reference)
+        actual_state_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(preference_state)")
+        }
+        ranking_columns = {
+            "explicit_ranking_revision",
+            "explicit_ranking_fingerprint",
+        }
+        present_ranking_columns = actual_state_columns & ranking_columns
+        expected_ranking_columns = ranking_columns if allow_ranking_columns else set()
+        if present_ranking_columns != expected_ranking_columns:
+            return False
+        if not allow_ranking_columns:
+            reference.execute(
+                "ALTER TABLE preference_state DROP COLUMN explicit_ranking_fingerprint"
+            )
+            reference.execute(
+                "ALTER TABLE preference_state DROP COLUMN explicit_ranking_revision"
+            )
         for table in tables:
             if (
                 _canonical_master_sql(connection, "table", table)
@@ -1339,6 +1434,120 @@ def _apply_12_to_13(connection: sqlite3.Connection) -> None:
 
 
 MIGRATIONS[12] = _apply_12_to_13
+
+
+def _apply_13_to_14(connection: sqlite3.Connection) -> None:
+    if any(
+        _table_exists(connection, table)
+        for table in (
+            "review_ranking_current",
+            "review_ranking_items",
+            "review_ranking_generations",
+            "review_ranking_authority",
+        )
+    ):
+        raise ValueError("schema-13 database contains pre-existing ranking objects")
+    dimensions = (
+        "desired_titles",
+        "skills",
+        "required_skills",
+        "preferred_locations",
+        "remote_preference",
+        "excluded_terms",
+        "hard_excluded_terms",
+        "preferred_employment_types",
+        "preferred_seniority",
+    )
+    from careeros.preferences.models import (
+        ExplicitPreferenceProfile,
+        explicit_ranking_authority_fingerprint,
+    )
+
+    values = {
+        dimension: tuple(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT value FROM explicit_preferences WHERE dimension=? ORDER BY position",
+                (dimension,),
+            )
+        )
+        for dimension in dimensions
+    }
+    profile = ExplicitPreferenceProfile(
+        desired_titles=values["desired_titles"],
+        skills=values["skills"],
+        required_skills=values["required_skills"],
+        preferred_locations=values["preferred_locations"],
+        remote_preference=(
+            values["remote_preference"][0] if values["remote_preference"] else None
+        ),
+        excluded_terms=values["excluded_terms"],
+        hard_excluded_terms=values["hard_excluded_terms"],
+        preferred_employment_types=values["preferred_employment_types"],
+        preferred_seniority=values["preferred_seniority"],
+    )
+    explicit_fp = explicit_ranking_authority_fingerprint(profile)
+    connection.execute("ALTER TABLE preference_state RENAME TO preference_state_v13")
+    connection.execute(
+        """CREATE TABLE preference_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            explicit_configured INTEGER NOT NULL DEFAULT 0
+                CHECK (explicit_configured IN (0,1)),
+            explicit_updated_at TEXT,
+            explicit_ranking_revision INTEGER NOT NULL DEFAULT 0 CHECK (typeof(explicit_ranking_revision)='integer' AND explicit_ranking_revision >= 0),
+            explicit_ranking_fingerprint TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000' CHECK (length(explicit_ranking_fingerprint)=64),
+            learning_reset_at TEXT,
+            learning_reset_review_event_id INTEGER NOT NULL DEFAULT 0
+                CHECK (learning_reset_review_event_id >= 0),
+            created_at TEXT NOT NULL
+        )"""
+    )
+    connection.execute(
+        """INSERT INTO preference_state(
+               singleton,explicit_configured,explicit_updated_at,
+               explicit_ranking_revision,explicit_ranking_fingerprint,
+               learning_reset_at,learning_reset_review_event_id,created_at
+           )
+           SELECT singleton,explicit_configured,explicit_updated_at,0,?,
+                  learning_reset_at,learning_reset_review_event_id,created_at
+           FROM preference_state_v13""",
+        (explicit_fp,),
+    )
+    connection.execute("DROP TABLE preference_state_v13")
+    for statement in V14_DDL.split(";"):
+        statement = statement.strip()
+        if statement:
+            connection.execute(statement)
+    from careeros.database.review_ranking import (
+        REVIEW_RANKING_GENERATION_FORMAT_VERSION,
+        REVIEW_RANKING_NORMALIZER_VERSION,
+        REVIEW_RANKING_SCORER_VERSION,
+    )
+    from careeros.preferences.service import _learned_authority_fingerprint
+    from careeros.ranking.materialization import (
+        opportunity_corpus_fingerprint,
+        snapshot_opportunities,
+    )
+
+    learned_fp = _learned_authority_fingerprint(connection)
+    opportunities = snapshot_opportunities(connection)
+    opportunity_fp = opportunity_corpus_fingerprint(opportunities)
+    connection.execute(
+        "INSERT INTO review_ranking_authority(singleton,target_revision,explicit_revision,explicit_fingerprint,opportunity_revision,opportunity_fingerprint,opportunity_count,learned_revision,learned_fingerprint,scorer_version,normalizer_version,generation_format_version,required_mode_mask,state,updated_at) SELECT 1,0,explicit_ranking_revision,?,0,?,?,0,?,?,?,?,3,'rebuild_required',? FROM preference_state WHERE singleton=1",
+        (
+            explicit_fp,
+            opportunity_fp,
+            len(opportunities),
+            learned_fp,
+            REVIEW_RANKING_SCORER_VERSION,
+            REVIEW_RANKING_NORMALIZER_VERSION,
+            REVIEW_RANKING_GENERATION_FORMAT_VERSION,
+            datetime.now(UTC).isoformat(),
+        ),
+    )
+
+
+MIGRATIONS[13] = _apply_13_to_14
 
 
 def migrate_12_to_13(connection: sqlite3.Connection) -> None:

@@ -38,7 +38,7 @@ from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.locking import collection_lock
 from careeros.reminders.service import add_reminder
 from careeros.review.service import set_decision
-from tests.support import TestClient
+from tests.support import TestClient, prepare_today_ranking
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1114,7 +1114,7 @@ def test_absent_database_is_empty_without_creating_anything(
     database_path = tmp_path / "nested" / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v13"):
+    with pytest.raises(ValueError, match="current schema v14"):
         with TestClient(app):
             pass
 
@@ -1130,7 +1130,7 @@ def test_uninitialized_database_is_500(
     _set_database(monkeypatch, database_path)
 
     before = database_path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v13"):
+    with pytest.raises(ValueError, match="current schema v14"):
         with TestClient(app):
             pass
     assert database_path.read_bytes() == before
@@ -1144,7 +1144,7 @@ def test_malformed_database_is_500(
     _set_database(monkeypatch, database_path)
 
     before = database_path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v13"):
+    with pytest.raises(ValueError, match="current schema v14"):
         with TestClient(app):
             pass
     assert database_path.read_bytes() == before
@@ -1160,6 +1160,8 @@ def test_read_only_no_lock_no_side_effects(
 ) -> None:
     path = tmp_path / "careeros.sqlite3"
     path, _job_ids, _group_id = _track_seed(tmp_path)
+    with connect(path) as connection:
+        prepare_today_ranking(connection)
     before = hashlib.sha256(path.read_bytes()).digest()
     _set_database(monkeypatch, path)
 
@@ -1332,7 +1334,7 @@ def test_existing_groups_behavior_unchanged(
 
 
 def test_schema_version_is_ten() -> None:
-    assert SCHEMA_VERSION == 13
+    assert SCHEMA_VERSION == 14
 
 
 def test_api_does_not_import_careeros_cli() -> None:

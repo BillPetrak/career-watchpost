@@ -4,17 +4,28 @@ from datetime import UTC, datetime
 
 import pytest
 
+from careeros.cli.commands.group import run_group_regroup
+from careeros.collecting import refresh_opportunity_authority
 from careeros.database import preferences as preference_database
 from careeros.database.connection import connect
+from careeros.database.groups import ensure_grouped
+from careeros.database.review_ranking import fully_prepared, get_authority
 from careeros.database.schema import initialize_schema
-from careeros.preferences.models import ExplicitPreferenceProfile, preference_key
+from careeros.preferences.models import (
+    ExplicitPreferenceProfile,
+    explicit_ranking_authority_fingerprint,
+    preference_key,
+)
 from careeros.preferences.service import (
     clear_explicit_profile,
     load_stored_explicit_profile,
     replace_explicit_profile,
     resolve_explicit_profile,
 )
+from careeros.ranking.rebuild import rebuild_once
 from careeros.ranking.scorer import CandidateProfile, MatchFacts, score_facts
+from careeros.review.service import set_decision
+from careeros.today.service import build_today
 
 
 def _connection(tmp_path):
@@ -76,6 +87,25 @@ def test_configured_empty_profile_is_distinct_from_absence(tmp_path) -> None:
     clear_explicit_profile(connection)
     assert load_stored_explicit_profile(connection) is None
     assert resolve_explicit_profile(connection).source == "default"
+
+
+def test_explicit_ranking_identity_preserves_order_duplicates_and_null(
+    tmp_path,
+) -> None:
+    first = ExplicitPreferenceProfile(
+        desired_titles=("Engineer", "Engineer"),
+        remote_preference=None,
+    )
+    reordered = ExplicitPreferenceProfile(
+        desired_titles=("Engineer",),
+        remote_preference="remote",
+    )
+    assert explicit_ranking_authority_fingerprint(first) != (
+        explicit_ranking_authority_fingerprint(reordered)
+    )
+    assert explicit_ranking_authority_fingerprint(ExplicitPreferenceProfile()) == (
+        explicit_ranking_authority_fingerprint(ExplicitPreferenceProfile())
+    )
 
 
 def test_clear_does_not_touch_other_preference_or_review_state(tmp_path) -> None:
@@ -214,3 +244,65 @@ def test_persisted_preferences_do_not_change_ranking(tmp_path) -> None:
     after = score_facts(facts, run_profile)
     assert after == before
     assert all(component.kind != "learned_preference" for component in after.components)
+
+
+def _learned_regroup_db(tmp_path, *, with_decisions: bool = True):
+    connection = _connection(tmp_path)
+    for source_job_id, location in (("one", "Berlin"), ("two", "Munich")):
+        connection.execute(
+            """INSERT INTO jobs(
+                   source, source_job_id, title, company, location, collected_at
+               ) VALUES ('test', ?, 'Backend Engineer', 'Acme', ?, 'now')""",
+            (source_job_id, location),
+        )
+    ensure_grouped(connection)
+    refresh_opportunity_authority(connection)
+    connection.commit()
+    if with_decisions:
+        set_decision(connection, job_id=1, decision="shortlist")
+        set_decision(connection, job_id=2, decision="shortlist")
+    return connection
+
+
+def test_regroup_refreshes_learned_authority_when_effective_member_changes(
+    tmp_path,
+) -> None:
+    connection = _learned_regroup_db(tmp_path)
+    before = get_authority(connection)
+    assert before.learned_fingerprint != "0" * 64
+    connection.execute("UPDATE jobs SET location='Berlin' WHERE id=2")
+    connection.commit()
+
+    assert run_group_regroup(tmp_path / "preferences.sqlite3") == 0
+    after = get_authority(connection)
+
+    assert after.learned_revision == before.learned_revision + 1
+    assert after.learned_fingerprint != before.learned_fingerprint
+    assert after.opportunity_revision > before.opportunity_revision
+    rebuild_once(connection)
+    assert fully_prepared(connection)
+    learned_generation = connection.execute(
+        """SELECT g.learned_fingerprint
+           FROM review_ranking_current AS c
+           JOIN review_ranking_generations AS g ON g.id=c.generation_id
+           WHERE c.learned_mode=1"""
+    ).fetchone()
+    assert learned_generation[0] == after.learned_fingerprint
+    snapshot = build_today(connection, use_learned_preferences=True)
+    assert snapshot.review_next.use_learned_preferences is True
+    connection.close()
+
+
+def test_unchanged_regroup_does_not_churn_learned_authority(tmp_path) -> None:
+    connection = _learned_regroup_db(tmp_path, with_decisions=False)
+    before = get_authority(connection)
+    connection.execute("UPDATE jobs SET location='Berlin' WHERE id=2")
+    connection.commit()
+
+    assert run_group_regroup(tmp_path / "preferences.sqlite3") == 0
+    after = get_authority(connection)
+
+    assert after.learned_revision == before.learned_revision
+    assert after.learned_fingerprint == before.learned_fingerprint
+    assert after.opportunity_revision > before.opportunity_revision
+    connection.close()

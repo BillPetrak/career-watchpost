@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from careeros.cli.main import main
 from careeros.database.admin import _check, backup, migrate_database, restore
 from careeros.database.connection import connect
 from careeros.database.schema import initialize_schema
@@ -78,3 +79,20 @@ def test_restore_rejects_alias_symlink_and_sidecars(tmp_path: Path):
     (Path(str(target) + "-wal")).write_bytes(b"pending")
     with pytest.raises(ValueError):
         restore(backup_path, target)
+
+
+def test_rebuild_ranking_command_is_local_and_idempotent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database = tmp_path / "ranking.sqlite3"
+    fresh(database)
+
+    assert main(["database", "rebuild-ranking", "--database", str(database)]) == 0
+    first = capsys.readouterr()
+    assert "Ranking rebuild complete" in first.out
+    assert first.err == ""
+
+    assert main(["database", "rebuild-ranking", "--database", str(database)]) == 0
+    second = capsys.readouterr()
+    assert "Ranking already ready." in second.out
+    assert second.err == ""

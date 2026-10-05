@@ -51,7 +51,8 @@ uv run careeros diagnose      # verify environment
 | `uv run uvicorn careeros.api:app` | Serve the local FastAPI application |
 | `uv run careeros serve --database PATH` | Serve the protected local web application against an explicit database |
 | `uv run careeros database backup DESTINATION --database PATH` | Create a supported SQLite-only backup; Materials/profile remain separate |
-| `uv run careeros database migrate --database PATH` | Explicitly migrate a supported old schema; default backup suffix is `.pre-v13.backup.sqlite3` |
+| `uv run careeros database migrate --database PATH` | Explicitly migrate a supported old schema; default backup suffix is `.pre-v14.backup.sqlite3` |
+| `uv run careeros database rebuild-ranking --database PATH` | Locally and idempotently rebuild durable Today Review-ranking generations |
 | `uv run careeros database restore BACKUP --database PATH --confirm-replace` | Replace a SQLite database from a validated backup (managed Material files are separate) |
 | `uv run careeros collect arbeitnow --limit 10` | Collect jobs |
 | `uv run careeros collect arbeitnow --database /tmp/test.db` | Override DB path |
@@ -664,16 +665,16 @@ clobbering newer edits. Learning, aggregation, ranking, and explanations are
 local deterministic code with no model call or recurring model cost.
 
 The current administration flow creates a SQLite backup before migration at
-`<database>.pre-v13.backup.sqlite3` unless the operator supplies
+`<database>.pre-v14.backup.sqlite3` unless the operator supplies
 `--backup` or explicitly acknowledges `--no-backup`. The migration validates
 the target structure before advancing metadata and rolls back DDL/data/metadata
-together on failure. Re-running administration against a current valid v13
+together on failure. Re-running administration against a current valid v14
 database is idempotent. There is no
 down migration; recovery is:
 
 ```bash
 uv run careeros database restore \
-  /path/to/careeros.sqlite3.pre-v13.backup.sqlite3 \
+  /path/to/careeros.sqlite3.pre-v14.backup.sqlite3 \
   --database /path/to/careeros.sqlite3 \
   --confirm-replace
 ```
@@ -2302,6 +2303,20 @@ Package/Material details, raw preference evidence, provider errors, or private
 scorer diagnostics. It never initializes a missing database or makes model or
 network calls.
 
+Schema 14 materializes Review ranking in durable generations. The normal Today
+path validates the complete persisted current-item set and its stored
+fingerprints, applies live Review/Application eligibility, reconstructs and
+re-scores only selected preview items, and never reconstructs, fingerprints, or
+scores the whole opportunity corpus. Canonical regroup refreshes changed
+effective learned authority atomically with opportunity authority and does not
+churn an unchanged learned identity. Generation persistence is bound to its
+live claim and scoring-authority snapshot; stale takeover removes abandoned
+unbound generations. Unready, stale, or corrupt ranking returns HTTP 503 with
+`{"detail":{"code":"review_ranking_rebuilding"}}` and `Retry-After: 5`.
+The lifespan-owned local worker uses durable SQLite claims and roughly
+five-second rediscovery; `database rebuild-ranking` is the lock-safe local
+administrative path. See `docs/today-materialized-ranking.md`.
+
 ## Ranking explanation API boundary
 
 Ranked web projections embed a deterministic public `explanation` derived from
@@ -2315,7 +2330,7 @@ there is no explanation endpoint or persistence. Grouped explanations belong
 to the union-scored opportunity and retain the exact response member count.
 ## R3 M2 private Materials library
 
-Materials were introduced in schema v11; the current `SCHEMA_VERSION` is 13.
+Materials were introduced in schema v11; the current `SCHEMA_VERSION` is 14.
 They are global reusable private records with
 immutable versions; they are not owned by jobs or applications. Managed bytes
 live outside the checkout under an XDG-configured root, with a DB/root marker

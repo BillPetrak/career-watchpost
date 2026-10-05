@@ -13,7 +13,7 @@ from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 from careeros.database.today import list_today_applications
 from careeros.today.models import TodayApplication
 from careeros.today.service import build_today
-from tests.support import TestClient
+from tests.support import TestClient, prepare_today_ranking
 
 NOW = datetime(2026, 8, 27, 12, tzinfo=UTC)
 
@@ -111,6 +111,7 @@ def _requirement(
 def _all_application_items(
     connection: sqlite3.Connection,
 ) -> list[TodayApplication]:
+    prepare_today_ranking(connection)
     snapshot = build_today(connection, now=NOW, limit=20)
     return [
         *snapshot.application_overdue.items,
@@ -266,6 +267,7 @@ def test_exact_as_of_deadline_is_due_today_and_blocks_preparation(
     )
     connection.commit()
 
+    prepare_today_ranking(connection)
     item = build_today(connection, now=as_of, limit=20).application_due_today.items[0]
 
     assert item.classification == "due_today"
@@ -409,6 +411,7 @@ def test_work_order_uses_stage_update_then_application_id() -> None:
         if status in ("applied", "interested"):
             _preparation(connection, application_id)
     connection.commit()
+    prepare_today_ranking(connection)
     work = build_today(connection, now=NOW, limit=20).application_work.items
     assert [item.application_id for item in work] == [
         expected[4],
@@ -442,6 +445,7 @@ def test_temporal_order_uses_deadline_stage_update_then_id() -> None:
             deadline_at=deadline,
         )
     connection.commit()
+    prepare_today_ranking(connection)
     overdue = build_today(connection, now=NOW, limit=20).application_overdue.items
     assert [item.application_id for item in overdue] == [
         records[4],
@@ -475,6 +479,7 @@ def test_application_totals_precede_each_independent_limit() -> None:
     for _ in range(3):
         _application(connection, "offer")
     connection.commit()
+    prepare_today_ranking(connection)
     snapshot = build_today(connection, now=NOW, limit=2)
     assert (
         snapshot.application_overdue.total,
@@ -676,6 +681,7 @@ def test_http_projection_is_strictly_public(
         )
         connection.commit()
         open_draft(connection, job_id, preparation_revision=0)
+        prepare_today_ranking(connection)
     monkeypatch.setenv("CAREEROS_DATABASE", str(path))
     response = TestClient(create_app()).get("/today?limit=20")
     assert response.status_code == 200
@@ -730,5 +736,5 @@ def test_http_projection_is_strictly_public(
         assert private_name not in serialized.lower()
 
 
-def test_schema_version_remains_twelve() -> None:
-    assert SCHEMA_VERSION == 13
+def test_schema_version_is_fourteen() -> None:
+    assert SCHEMA_VERSION == 14

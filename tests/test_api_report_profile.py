@@ -54,7 +54,7 @@ from careeros.reminders.service import add_reminder
 from careeros.review.service import set_decision
 from careeros.saved_searches.models import SavedSearchFields
 from careeros.saved_searches.service import create_search
-from tests.support import TestClient
+from tests.support import TestClient, prepare_today_ranking
 
 _SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -1019,7 +1019,7 @@ def test_post_report_missing_database_empty_report(
     database_path = tmp_path / _SENTINEL_DIRECTORY / "careeros.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v13"):
+    with pytest.raises(ValueError, match="current schema v14"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -1033,7 +1033,7 @@ def test_post_report_missing_database_profile_matches_get(
     database_path = tmp_path / "missing.sqlite3"
     _set_database(monkeypatch, database_path)
 
-    with pytest.raises(ValueError, match="current schema v13"):
+    with pytest.raises(ValueError, match="current schema v14"):
         with TestClient(app):
             pass
     assert not database_path.exists()
@@ -1048,7 +1048,7 @@ def test_post_report_uninitialized_database_500(
     _set_database(monkeypatch, path)
 
     before = path.read_bytes()
-    with pytest.raises(ValueError, match="current schema v13"):
+    with pytest.raises(ValueError, match="current schema v14"):
         with TestClient(app):
             pass
     assert path.read_bytes() == before
@@ -1062,7 +1062,7 @@ def test_post_report_malformed_database_500(
     _set_database(monkeypatch, malformed)
 
     before = malformed.read_bytes()
-    with pytest.raises(ValueError, match="current schema v13"):
+    with pytest.raises(ValueError, match="current schema v14"):
         with TestClient(app):
             pass
     assert malformed.read_bytes() == before
@@ -1097,6 +1097,8 @@ def test_post_report_does_not_write_to_database(
 ) -> None:
     path = tmp_path / "careeros.sqlite3"
     _seed_profile_database(path)
+    with connect(path) as connection:
+        prepare_today_ranking(connection)
     before = hashlib.sha256(path.read_bytes()).hexdigest()
     _set_database(monkeypatch, path)
 
@@ -1273,8 +1275,8 @@ def test_post_report_schema_version_unchanged(
     with TestClient(app) as client:
         health = client.get("/health").json()
 
-    assert SCHEMA_VERSION == 13
-    assert health["schema_version"] == 13
+    assert SCHEMA_VERSION == 14
+    assert health["schema_version"] == 14
 
 
 def test_api_does_not_import_careeros_cli() -> None:

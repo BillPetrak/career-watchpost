@@ -49,7 +49,7 @@ def _index_names(connection: sqlite3.Connection) -> set[str]:
 
 
 def test_schema_version_is_current(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 13
+    assert SCHEMA_VERSION == 14
 
 
 def test_fresh_schema_has_review_tables(tmp_path: Path) -> None:
@@ -206,6 +206,13 @@ def test_explicit_v8_to_current_migration_preserves_review_rows(
             decision="shortlist",
             now=_EPOCH,
         )
+        for table in (
+            "review_ranking_current",
+            "review_ranking_items",
+            "review_ranking_generations",
+            "review_ranking_authority",
+        ):
+            connection.execute(f"DROP TABLE {table}")
         for table in reversed(V13_TABLES):
             connection.execute(f"DROP TABLE {table}")
         connection.executescript(

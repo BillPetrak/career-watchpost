@@ -175,7 +175,7 @@ def test_reference_endpoints_unchanged(
 
 
 def test_schema_version_is_10_for_m1() -> None:
-    assert SCHEMA_VERSION == 13
+    assert SCHEMA_VERSION == 14
 
 
 def test_real_default_database_untouched(

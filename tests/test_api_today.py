@@ -3,33 +3,20 @@ from pathlib import Path
 import pytest
 
 from careeros.api.main import create_app
-from tests.support import TestClient
+from careeros.database.connection import connect
+from careeros.database.schema import initialize_schema
+from tests.support import TestClient, prepare_today_ranking
 
 
-def test_today_missing_database_is_empty_and_does_not_create_file(
+def test_today_missing_database_fails_closed_and_does_not_create_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "missing.sqlite3"
     monkeypatch.setenv("CAREEROS_DATABASE", str(path))
     response = TestClient(create_app()).get("/today")
-    assert response.status_code == 200
-    assert response.json()["reminders"]["overdue"] == {"total": 0, "items": []}
-    assert response.json()["applications"] == {
-        "overdue": {"total": 0, "items": []},
-        "due_today": {"total": 0, "items": []},
-        "work": {"total": 0, "items": []},
-    }
-    assert response.json()["review"] == {
-        "next": {
-            "candidate_total": 0,
-            "total": 0,
-            "limit": 3,
-            "minimum_score": 1,
-            "personalized": False,
-            "use_learned_preferences": True,
-            "items": [],
-        }
-    }
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert response.json() == {"detail": {"code": "review_ranking_rebuilding"}}
     assert not path.exists()
 
 
@@ -47,6 +34,9 @@ def test_today_response_is_publicly_pruned_and_uses_server_sections(
 ) -> None:
     path = tmp_path / "today.sqlite3"
     monkeypatch.setenv("CAREEROS_DATABASE", str(path))
+    with connect(path) as connection:
+        initialize_schema(connection)
+        prepare_today_ranking(connection)
     response = TestClient(create_app()).get("/today?limit=20")
     assert response.status_code == 200
     payload = response.json()

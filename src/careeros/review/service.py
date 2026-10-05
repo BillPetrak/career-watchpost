@@ -69,7 +69,10 @@ from careeros.preferences.learning import (
     replace_review_evidence,
 )
 from careeros.preferences.models import AdaptivePreferenceSet
-from careeros.preferences.service import build_adaptive_preference_set
+from careeros.preferences.service import (
+    _learned_authority_fingerprint,
+    build_adaptive_preference_set,
+)
 from careeros.ranking.feedback import FeedbackSet
 from careeros.ranking.scorer import CandidateProfile, RankedGroup, score_groups
 from careeros.review.models import (
@@ -90,6 +93,23 @@ def _serialize(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.isoformat()
+
+
+def _mark_learned_authority_changed(
+    connection: sqlite3.Connection,
+    previous_fingerprint: str,
+    fingerprint: str,
+) -> None:
+    """Refresh durable learned-ranking target inside the current transaction."""
+    try:
+        from careeros.database.review_ranking import update_learned_authority
+    except ImportError:
+        return
+    update_learned_authority(
+        connection,
+        fingerprint,
+        previous_fingerprint=previous_fingerprint,
+    )
 
 
 @dataclass(frozen=True)
@@ -229,11 +249,18 @@ def set_decision(
         validate_decision(decision)
     except ValueError as error:
         raise ValidationError(str(error)) from error
+    connection.execute("BEGIN IMMEDIATE")
     if get_job_by_id(connection, job_id) is None:
+        connection.rollback()
         raise UnknownJobError(f"No job found with ID {job_id}.")
 
     timestamp = _serialize(now if now is not None else _utc_now())
     existing = _get_decision(connection, job_id)
+    try:
+        previous_learned_fingerprint = _learned_authority_fingerprint(connection)
+    except Exception:
+        connection.rollback()
+        raise
 
     try:
         if existing is None:
@@ -262,6 +289,11 @@ def set_decision(
                 )
             else:
                 remove_review_evidence(connection, job_id=job_id)
+            _mark_learned_authority_changed(
+                connection,
+                previous_learned_fingerprint,
+                _learned_authority_fingerprint(connection),
+            )
             connection.commit()
             return SetDecisionResult(
                 decision_id=decision_id,
@@ -294,6 +326,11 @@ def set_decision(
                 )
             else:
                 remove_review_evidence(connection, job_id=job_id)
+            _mark_learned_authority_changed(
+                connection,
+                previous_learned_fingerprint,
+                _learned_authority_fingerprint(connection),
+            )
             connection.commit()
             return SetDecisionResult(
                 decision_id=existing.id,
@@ -316,6 +353,7 @@ def set_decision(
                 decision=decision,
                 updated_at=timestamp,
             )
+            # A note-only event does not alter effective learned authority.
             connection.commit()
             return SetDecisionResult(
                 decision_id=existing.id,
@@ -323,6 +361,7 @@ def set_decision(
                 changed=True,
             )
 
+        connection.rollback()
         return SetDecisionResult(
             decision_id=existing.id,
             created=False,
@@ -344,15 +383,18 @@ def clear_decision(
     Clearing an already-unreviewed job is an idempotent no-op that appends no
     event. Raises :class:`UnknownJobError` for a missing job.
     """
-    if get_job_by_id(connection, job_id) is None:
-        raise UnknownJobError(f"No job found with ID {job_id}.")
-
-    existing = _get_decision(connection, job_id)
-    if existing is None:
-        return ClearDecisionResult(changed=False)
-
-    timestamp = _serialize(now if now is not None else _utc_now())
+    connection.execute("BEGIN IMMEDIATE")
     try:
+        if get_job_by_id(connection, job_id) is None:
+            raise UnknownJobError(f"No job found with ID {job_id}.")
+
+        existing = _get_decision(connection, job_id)
+        if existing is None:
+            connection.rollback()
+            return ClearDecisionResult(changed=False)
+
+        timestamp = _serialize(now if now is not None else _utc_now())
+        previous_learned_fingerprint = _learned_authority_fingerprint(connection)
         delete_decision(connection, job_id=job_id)
         append_event(
             connection,
@@ -363,6 +405,11 @@ def clear_decision(
             created_at=timestamp,
         )
         remove_review_evidence(connection, job_id=job_id)
+        _mark_learned_authority_changed(
+            connection,
+            previous_learned_fingerprint,
+            _learned_authority_fingerprint(connection),
+        )
         connection.commit()
     except Exception:
         connection.rollback()

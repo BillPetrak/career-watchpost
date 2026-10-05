@@ -92,7 +92,7 @@ def test_default_app_remains_settings_driven_and_does_not_migrate(
     monkeypatch.setenv("CAREEROS_MATERIALS_ROOT", str(tmp_path / "materials"))
 
     with TestClient(create_app()) as client:
-        assert client.get("/health").json()["schema_version"] == 13
+        assert client.get("/health").json()["schema_version"] == 14
 
     assert not selected.exists()
 

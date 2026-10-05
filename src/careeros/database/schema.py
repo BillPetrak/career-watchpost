@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 V13_DDL = """
@@ -172,6 +172,83 @@ CREATE TABLE career_profile_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton=1), current_profile_version_id TEXT REFERENCES career_profile_versions(id) ON DELETE RESTRICT, revision INTEGER NOT NULL CHECK (revision >= 0), next_version_number INTEGER NOT NULL CHECK (next_version_number >= 1)
 );
 INSERT INTO career_profile_state(singleton, current_profile_version_id, revision, next_version_number) VALUES (1, NULL, 0, 1);
+"""
+
+# v14 contains only reconstructible ranking state.  Preference values and
+# descriptions deliberately remain in their authoritative tables/jobs rows.
+V14_DDL = """
+CREATE TABLE review_ranking_authority (
+    singleton INTEGER PRIMARY KEY CHECK (typeof(singleton)='integer' AND singleton=1),
+    target_revision INTEGER NOT NULL CHECK (typeof(target_revision)='integer' AND target_revision >= 0),
+    explicit_revision INTEGER NOT NULL CHECK (typeof(explicit_revision)='integer' AND explicit_revision >= 0),
+    explicit_fingerprint TEXT NOT NULL CHECK (length(explicit_fingerprint)=64 AND explicit_fingerprint NOT GLOB '*[^0-9a-f]*'),
+    opportunity_revision INTEGER NOT NULL CHECK (typeof(opportunity_revision)='integer' AND opportunity_revision >= 0),
+    opportunity_fingerprint TEXT NOT NULL CHECK (length(opportunity_fingerprint)=64 AND opportunity_fingerprint NOT GLOB '*[^0-9a-f]*'),
+    opportunity_count INTEGER NOT NULL CHECK (typeof(opportunity_count)='integer' AND opportunity_count >= 0),
+    learned_revision INTEGER NOT NULL CHECK (typeof(learned_revision)='integer' AND learned_revision >= 0),
+    learned_fingerprint TEXT NOT NULL CHECK (length(learned_fingerprint)=64 AND learned_fingerprint NOT GLOB '*[^0-9a-f]*'),
+    scorer_version TEXT NOT NULL CHECK (length(scorer_version) BETWEEN 1 AND 64),
+    normalizer_version TEXT NOT NULL CHECK (length(normalizer_version) BETWEEN 1 AND 64),
+    generation_format_version TEXT NOT NULL CHECK (length(generation_format_version) BETWEEN 1 AND 64),
+    required_mode_mask INTEGER NOT NULL CHECK (typeof(required_mode_mask)='integer' AND required_mode_mask BETWEEN 0 AND 3),
+    state TEXT NOT NULL CHECK (state IN ('ready','rebuild_required','building','failed')),
+    claim_token TEXT CHECK (claim_token IS NULL OR (length(claim_token)=32 AND claim_token NOT GLOB '*[^0-9a-f]*')),
+    claim_target_revision INTEGER CHECK (claim_target_revision IS NULL OR (typeof(claim_target_revision)='integer' AND claim_target_revision >= 0)),
+    claim_mode_mask INTEGER CHECK (claim_mode_mask IS NULL OR (typeof(claim_mode_mask)='integer' AND claim_mode_mask BETWEEN 0 AND 3)),
+    claimed_at TEXT, heartbeat_at TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (typeof(attempt_count)='integer' AND attempt_count >= 0),
+    last_failed_at TEXT, retry_not_before TEXT,
+    failure_code TEXT CHECK (failure_code IS NULL OR failure_code IN ('database','validation','lost_claim','cancelled','unknown')),
+    updated_at TEXT NOT NULL CHECK (length(updated_at)>0),
+    CHECK ((state='building') = (claim_token IS NOT NULL AND claim_target_revision IS NOT NULL AND claim_mode_mask IS NOT NULL)),
+    CHECK (claim_token IS NULL OR (claimed_at IS NOT NULL AND heartbeat_at IS NOT NULL))
+);
+CREATE TABLE review_ranking_generations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    content_fingerprint TEXT NOT NULL UNIQUE CHECK (length(content_fingerprint)=64 AND content_fingerprint NOT GLOB '*[^0-9a-f]*'),
+    target_revision INTEGER NOT NULL CHECK (typeof(target_revision)='integer' AND target_revision >= 0),
+    learned_mode INTEGER NOT NULL CHECK (typeof(learned_mode)='integer' AND learned_mode IN (0,1)),
+    explicit_revision INTEGER NOT NULL CHECK (typeof(explicit_revision)='integer' AND explicit_revision >= 0),
+    explicit_fingerprint TEXT NOT NULL CHECK (length(explicit_fingerprint)=64 AND explicit_fingerprint NOT GLOB '*[^0-9a-f]*'),
+    opportunity_revision INTEGER NOT NULL CHECK (typeof(opportunity_revision)='integer' AND opportunity_revision >= 0),
+    opportunity_fingerprint TEXT NOT NULL CHECK (length(opportunity_fingerprint)=64 AND opportunity_fingerprint NOT GLOB '*[^0-9a-f]*'),
+    opportunity_count INTEGER NOT NULL CHECK (typeof(opportunity_count)='integer' AND opportunity_count >= 0),
+    learned_revision INTEGER NOT NULL CHECK (typeof(learned_revision)='integer' AND learned_revision >= 0),
+    learned_fingerprint TEXT NOT NULL CHECK (length(learned_fingerprint)=64 AND learned_fingerprint NOT GLOB '*[^0-9a-f]*'),
+    scorer_version TEXT NOT NULL CHECK (length(scorer_version) BETWEEN 1 AND 64),
+    normalizer_version TEXT NOT NULL CHECK (length(normalizer_version) BETWEEN 1 AND 64),
+    generation_format_version TEXT NOT NULL CHECK (length(generation_format_version) BETWEEN 1 AND 64),
+    item_count INTEGER NOT NULL CHECK (typeof(item_count)='integer' AND item_count >= 0),
+    items_fingerprint TEXT NOT NULL CHECK (length(items_fingerprint)=64 AND items_fingerprint NOT GLOB '*[^0-9a-f]*'),
+    completed_at TEXT NOT NULL CHECK (length(completed_at)>0),
+    UNIQUE(target_revision, learned_mode)
+);
+CREATE TABLE review_ranking_items (
+    generation_id INTEGER NOT NULL CHECK (typeof(generation_id)='integer') REFERENCES review_ranking_generations(id) ON DELETE CASCADE,
+    opportunity_key TEXT NOT NULL,
+    group_id TEXT,
+    representative_job_id INTEGER NOT NULL CHECK (typeof(representative_job_id)='integer') REFERENCES jobs(id) ON DELETE RESTRICT,
+    opportunity_fingerprint TEXT NOT NULL CHECK (length(opportunity_fingerprint)=64 AND opportunity_fingerprint NOT GLOB '*[^0-9a-f]*'),
+    rank_ordinal INTEGER NOT NULL CHECK (typeof(rank_ordinal)='integer' AND rank_ordinal >= 1),
+    raw_score INTEGER NOT NULL CHECK (typeof(raw_score)='integer'),
+    public_match_score INTEGER NOT NULL CHECK (typeof(public_match_score)='integer' AND public_match_score BETWEEN 0 AND 100),
+    CHECK (
+        (group_id IS NULL AND opportunity_key = 'job:' || representative_job_id)
+        OR
+        (group_id IS NOT NULL AND opportunity_key = 'group:' || group_id)
+    ),
+    PRIMARY KEY (generation_id, opportunity_key),
+    UNIQUE (generation_id, rank_ordinal)
+);
+CREATE INDEX idx_review_ranking_items_order ON review_ranking_items(generation_id, rank_ordinal);
+CREATE INDEX idx_review_ranking_items_rep ON review_ranking_items(representative_job_id);
+CREATE TABLE review_ranking_current (
+    learned_mode INTEGER PRIMARY KEY CHECK (typeof(learned_mode)='integer' AND learned_mode IN (0,1)),
+    generation_id INTEGER NOT NULL CHECK (typeof(generation_id)='integer') REFERENCES review_ranking_generations(id) ON DELETE RESTRICT,
+    bound_target_revision INTEGER NOT NULL CHECK (typeof(bound_target_revision)='integer' AND bound_target_revision >= 0),
+    bound_at TEXT NOT NULL CHECK (length(bound_at)>0)
+);
+CREATE INDEX idx_review_ranking_generations_mode ON review_ranking_generations(learned_mode, target_revision DESC, id DESC);
 """
 
 
@@ -424,6 +501,8 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
             explicit_configured INTEGER NOT NULL DEFAULT 0
                 CHECK (explicit_configured IN (0,1)),
             explicit_updated_at TEXT,
+            explicit_ranking_revision INTEGER NOT NULL DEFAULT 0 CHECK (typeof(explicit_ranking_revision)='integer' AND explicit_ranking_revision >= 0),
+            explicit_ranking_fingerprint TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000' CHECK (length(explicit_ranking_fingerprint)=64),
             learning_reset_at TEXT,
             learning_reset_review_event_id INTEGER NOT NULL DEFAULT 0
                 CHECK (learning_reset_review_event_id >= 0),
@@ -661,6 +740,8 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
         """
     )
     connection.executescript(V13_DDL)
+    # Bootstrap is v14; migration uses the same normative DDL in a transaction.
+    connection.executescript(V14_DDL)
 
     # Existing v8 databases need the additive event column; preparation tables
     # above are intentionally created with IF NOT EXISTS for safe retries.
@@ -685,12 +766,47 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
     )
 
     connection.execute(
+        "UPDATE preference_state SET explicit_ranking_fingerprint = ?", ("0" * 64,)
+    )
+
+    connection.execute(
         """
         INSERT INTO schema_metadata(key, value)
         VALUES ('schema_version', ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
         """,
         (str(SCHEMA_VERSION),),
+    )
+    from careeros.database.review_ranking import (
+        EMPTY_LEARNED_FINGERPRINT,
+        REVIEW_RANKING_GENERATION_FORMAT_VERSION,
+        REVIEW_RANKING_NORMALIZER_VERSION,
+        REVIEW_RANKING_SCORER_VERSION,
+        corpus_fingerprint,
+    )
+    from careeros.preferences.models import (
+        ExplicitPreferenceProfile,
+        explicit_ranking_authority_fingerprint,
+    )
+
+    empty_explicit = explicit_ranking_authority_fingerprint(ExplicitPreferenceProfile())
+    empty_learned = EMPTY_LEARNED_FINGERPRINT
+    empty_opportunities = corpus_fingerprint(())
+    connection.execute(
+        "UPDATE preference_state SET explicit_ranking_fingerprint=? WHERE singleton=1",
+        (empty_explicit,),
+    )
+    connection.execute(
+        "INSERT INTO review_ranking_authority(singleton,target_revision,explicit_revision,explicit_fingerprint,opportunity_revision,opportunity_fingerprint,opportunity_count,learned_revision,learned_fingerprint,scorer_version,normalizer_version,generation_format_version,required_mode_mask,state,updated_at) VALUES (1,0,0,?,0,?,0,0,?,?,?, ?,3,'rebuild_required',?)",
+        (
+            empty_explicit,
+            empty_opportunities,
+            empty_learned,
+            REVIEW_RANKING_SCORER_VERSION,
+            REVIEW_RANKING_NORMALIZER_VERSION,
+            REVIEW_RANKING_GENERATION_FORMAT_VERSION,
+            datetime.now(UTC).isoformat(),
+        ),
     )
 
     connection.commit()

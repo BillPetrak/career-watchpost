@@ -28,6 +28,13 @@ PREFERENCE_TABLES = (
 
 
 def downgrade_to_v10(connection: sqlite3.Connection) -> None:
+    for table in (
+        "review_ranking_current",
+        "review_ranking_items",
+        "review_ranking_generations",
+        "review_ranking_authority",
+    ):
+        connection.execute(f"DROP TABLE {table}")
     for table in reversed(V13_TABLES):
         connection.execute(f"DROP TABLE {table}")
     for table in PREFERENCE_TABLES:
@@ -173,7 +180,7 @@ def test_v8_to_v11_failure_rolls_back_every_boundary(tmp_path, monkeypatch):
 
 
 def test_dispatcher_has_every_frozen_boundary():
-    assert set(core.MIGRATIONS) == {8, 9, 10, 11, 12}
+    assert set(core.MIGRATIONS) == {8, 9, 10, 11, 12, 13}
 
 
 def test_target_validation_precedes_metadata_and_failure_rolls_back(

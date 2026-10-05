@@ -185,6 +185,7 @@ paths), and saved-search ``description`` values are never exposed over HTTP.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.resources
 import json
@@ -555,9 +556,21 @@ from careeros.settings import database_path, materials_root
 from careeros.source_config import SourceConfigError
 from careeros.source_stats.service import compute_source_stats, empty_source_stats
 from careeros.sources import resolve_source_catalog
-from careeros.today.service import build_today
+from careeros.today.service import ReviewRankingUnavailable, build_today
 
 _MATERIAL_UPLOAD_SLOT = threading.Lock()
+
+
+def _wake_review_ranking(request: Request, *, audit: bool = False) -> None:
+    """Wake the lifespan-owned rebuild coordinator after a committed write."""
+    loop = getattr(request.app.state, "review_ranking_loop", None)
+    event = getattr(request.app.state, "review_ranking_wake", None)
+    audit_event = getattr(request.app.state, "review_ranking_audit", None)
+    if loop is None or event is None:
+        return
+    if audit and audit_event is not None:
+        loop.call_soon_threadsafe(audit_event.set)
+    loop.call_soon_threadsafe(event.set)
 
 
 class RequirementCreate(BaseModel):
@@ -1056,14 +1069,30 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> Any:
+        from careeros.ranking.worker import run_ranking_worker
         from careeros.server import validate_startup_database
         from careeros.settings import database_path
 
-        validate_startup_database(
-            selected_database if selected_database is not None else database_path(),
-            selected_materials_root,
+        selected_path = (
+            selected_database if selected_database is not None else database_path()
         )
-        yield
+        validate_startup_database(selected_path, selected_materials_root)
+        wake = asyncio.Event()
+        stop = asyncio.Event()
+        audit = asyncio.Event()
+        _app.state.review_ranking_loop = asyncio.get_running_loop()
+        _app.state.review_ranking_wake = wake
+        _app.state.review_ranking_stop = stop
+        _app.state.review_ranking_audit = audit
+        worker = asyncio.create_task(
+            run_ranking_worker(selected_path, wake, stop, audit=audit)
+        )
+        try:
+            yield
+        finally:
+            stop.set()
+            wake.set()
+            await worker
 
     app = FastAPI(
         title="CareerOS API",
@@ -1443,26 +1472,31 @@ def create_app(
 
     @app.put("/preferences/explicit", response_model=PreferenceResponse)
     def put_explicit_preferences(
+        request: Request,
         connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
         payload: ExplicitPreferenceRequest,
     ) -> PreferenceResponse:
         """Replace the complete stored explicit profile, including empty."""
         try:
             replace_explicit_profile(connection, _to_explicit_profile(payload))
+            _wake_review_ranking(request)
             return _preference_response(inspect_preferences(connection))
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
 
     @app.delete("/preferences/explicit", response_model=PreferenceResponse)
     def delete_explicit_preferences(
+        request: Request,
         connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
     ) -> PreferenceResponse:
         """Clear stored explicit authority without touching learned state."""
         clear_explicit_profile(connection)
+        _wake_review_ranking(request)
         return _preference_response(inspect_preferences(connection))
 
     @app.put("/preferences/learned/{key}", response_model=PreferenceResponse)
     def put_learned_preference(
+        request: Request,
         connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
         key: str,
         payload: LearnedPreferenceSuppressionRequest,
@@ -1473,6 +1507,7 @@ def create_app(
                 suppress_learned_preference(connection, key)
             else:
                 restore_learned_preference(connection, key)
+            _wake_review_ranking(request)
         except ValueError as error:
             status = 404 if str(error) == "unknown learned preference key" else 422
             raise HTTPException(status_code=status, detail=str(error)) from None
@@ -1480,10 +1515,12 @@ def create_app(
 
     @app.delete("/preferences/learned", response_model=PreferenceResponse)
     def delete_learned_preferences(
+        request: Request,
         connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
     ) -> PreferenceResponse:
         """Reset all learned evidence and suppressions transactionally."""
         reset_learned_preferences(connection)
+        _wake_review_ranking(request)
         return _preference_response(inspect_preferences(connection))
 
     @app.get("/ui")
@@ -1885,16 +1922,25 @@ def create_app(
 
     @app.get("/today", response_model=TodayResponse)
     def today_endpoint(
+        request: Request,
         connection: Annotated[sqlite3.Connection | None, Depends(read_only_connection)],
         limit: Annotated[int, Query(ge=1, le=20)] = 10,
         use_learned_preferences: bool = True,
     ) -> TodayResponse:
         """Return one bounded, coherent UTC Action Center snapshot."""
-        snapshot = build_today(
-            connection,
-            limit=limit,
-            use_learned_preferences=use_learned_preferences,
-        )
+        try:
+            snapshot = build_today(
+                connection,
+                limit=limit,
+                use_learned_preferences=use_learned_preferences,
+            )
+        except ReviewRankingUnavailable:
+            _wake_review_ranking(request, audit=True)
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "review_ranking_rebuilding"},
+                headers={"Retry-After": "5"},
+            ) from None
         return TodayResponse(
             as_of=snapshot.as_of,
             timezone="UTC",
@@ -2072,6 +2118,7 @@ def create_app(
 
     @app.put("/applications/{job_id}", response_model=ApplicationItem)
     def set_application_status_endpoint(
+        request: Request,
         connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
         job_id: int,
         payload: ApplicationStatusRequest,
@@ -2097,6 +2144,7 @@ def create_app(
                 job_id=job_id,
                 status=payload.status,
             )
+            _wake_review_ranking(request)
         except ApplicationUnknownJobError:
             raise HTTPException(
                 status_code=404, detail=_no_job_found_message(job_id)
@@ -2502,6 +2550,7 @@ def create_app(
 
     @app.put("/review-decisions/{job_id}", response_model=ReviewDecisionItem)
     def set_review_decision(
+        request: Request,
         connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
         job_id: int,
         payload: ReviewDecisionRequest,
@@ -2522,6 +2571,7 @@ def create_app(
         """
         try:
             set_decision(connection, job_id=job_id, decision=payload.decision)
+            _wake_review_ranking(request)
         except ReviewValidationError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
         except UnknownJobError:
@@ -2551,6 +2601,7 @@ def create_app(
         "/review-decisions/{job_id}", response_model=ClearReviewDecisionResponse
     )
     def clear_review_decision(
+        request: Request,
         connection: Annotated[sqlite3.Connection, Depends(writable_connection)],
         job_id: int,
     ) -> ClearReviewDecisionResponse:
@@ -2572,6 +2623,7 @@ def create_app(
         """
         try:
             result = clear_decision(connection, job_id=job_id)
+            _wake_review_ranking(request)
         except UnknownJobError:
             raise HTTPException(
                 status_code=404, detail=_no_job_found_message(job_id)

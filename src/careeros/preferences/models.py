@@ -42,6 +42,9 @@ MAX_EXPLICIT_VALUES = 100
 MAX_EXPLICIT_VALUE_LENGTH = 100
 MAX_REMOTE_PREFERENCE_LENGTH = 50
 
+EXPLICIT_RANKING_AUTHORITY_VERSION = "careeros-explicit-ranking-authority-v1"
+LEARNED_RANKING_AUTHORITY_VERSION = "careeros-learned-ranking-authority-v1"
+
 ExplicitAuthoritySource = Literal["supplied", "stored", "default"]
 
 
@@ -118,6 +121,8 @@ class PreferenceState:
     learning_reset_at: str | None
     learning_reset_review_event_id: int
     created_at: str
+    explicit_ranking_revision: int = 0
+    explicit_ranking_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -188,3 +193,42 @@ def preference_key(dimension: str, normalized_value: str) -> str:
         "utf-8"
     )
     return hashlib.sha256(blob).hexdigest()[:32]
+
+
+def explicit_ranking_authority_fingerprint(
+    profile: ExplicitPreferenceProfile,
+) -> str:
+    """Fingerprint the exact nine effective scorer fields, preserving order."""
+    values = tuple(
+        getattr(profile, dimension) for dimension in EXPLICIT_PREFERENCE_DIMENSIONS
+    )
+    blob = json.dumps(
+        (EXPLICIT_RANKING_AUTHORITY_VERSION, values),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def learned_ranking_authority_fingerprint(
+    learned: tuple[LearnedPreference, ...],
+) -> str:
+    """Fingerprint only active, unsuppressed, polarity-bearing preferences."""
+    effective = sorted(
+        (
+            item.preference_key,
+            item.dimension,
+            item.normalized_value,
+            item.display_value,
+            item.polarity,
+            item.strength_level,
+        )
+        for item in learned
+        if item.active and not item.suppressed and item.polarity is not None
+    )
+    blob = json.dumps(
+        (LEARNED_RANKING_AUTHORITY_VERSION, effective),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()

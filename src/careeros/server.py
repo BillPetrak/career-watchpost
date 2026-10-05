@@ -14,9 +14,9 @@ def validate_startup_database(
     try:
         state = _check(database)
     except (OSError, ValueError, sqlite3.Error) as exc:
-        raise ValueError("CareerOS requires a current schema v13 database") from exc
+        raise ValueError("CareerOS requires a current schema v14 database") from exc
     if state != "current":
-        raise ValueError("CareerOS requires a current schema v13 database")
+        raise ValueError("CareerOS requires a current schema v14 database")
     # Validate every selected root state, including an unbound database. This
     # remains read-only: absent/empty roots are admissible only while unbound,
     # and populated or unsafe roots are never adopted at startup.

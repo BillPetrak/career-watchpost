@@ -90,6 +90,23 @@ def inspection_dict(inspection: PreferenceInspection) -> dict[str, Any]:
     }
 
 
+def _ranking_status(connection: sqlite3.Connection) -> dict[str, Any]:
+    """Return bounded ranking readiness metadata without private authority values."""
+    try:
+        from careeros.database.review_ranking import fully_prepared, get_authority
+
+        authority = get_authority(connection)
+    except (ImportError, sqlite3.Error, ValueError):
+        return {"state": "unavailable", "ready": False}
+    return {
+        "state": authority.state,
+        "ready": fully_prepared(connection),
+        "pending_modes": authority.required_mode_mask,
+        "target_revision": authority.target_revision,
+        "retry_not_before": authority.retry_not_before,
+    }
+
+
 def _render_text(inspection: PreferenceInspection) -> None:
     explicit = inspection.explicit
     profile = explicit.profile
@@ -156,6 +173,7 @@ def _show(arguments: argparse.Namespace) -> int:
     try:
         with connect_read_only(arguments.database) as connection:
             inspection = inspect_preferences(connection)
+            ranking_status = _ranking_status(connection)
     except (OSError, sqlite3.Error, ValueError) as error:
         print(
             f"Preference inspection failed: {type(error).__name__}: {error}",
@@ -163,11 +181,20 @@ def _show(arguments: argparse.Namespace) -> int:
         )
         return 1
     if arguments.format == "json":
+        # Preserve the established machine-readable preference contract. The
+        # human-facing text form carries bounded ranking readiness below.
         print(
             json.dumps(inspection_dict(inspection), ensure_ascii=False, sort_keys=True)
         )
     else:
         _render_text(inspection)
+        print()
+        print("Review ranking")
+        print("--------------")
+        print(f"State:                 {ranking_status['state']}")
+        print(
+            f"Ready:                 {'yes' if ranking_status['ready'] else 'pending'}"
+        )
     return 0
 
 
@@ -198,6 +225,8 @@ def _write(arguments: argparse.Namespace) -> int:
                 else:
                     reset_learned_preferences(connection)
                     print("Learned preferences reset.")
+                if not _ranking_status(connection)["ready"]:
+                    print("Review ranking rebuild pending.")
     except CollectionLockConflict as error:
         print(_lock_conflict_message(error), file=sys.stderr)
         return EXIT_TEMP_FAILURE

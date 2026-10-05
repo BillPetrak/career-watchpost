@@ -21,6 +21,19 @@ from careeros.database.schema import SCHEMA_VERSION, initialize_schema
 def _downgrade_to_v12(connection: sqlite3.Connection) -> None:
     for table in reversed(V13_TABLES):
         connection.execute(f"DROP TABLE {table}")
+    for table in (
+        "review_ranking_current",
+        "review_ranking_items",
+        "review_ranking_generations",
+        "review_ranking_authority",
+    ):
+        connection.execute(f"DROP TABLE {table}")
+    connection.execute(
+        "ALTER TABLE preference_state DROP COLUMN explicit_ranking_fingerprint"
+    )
+    connection.execute(
+        "ALTER TABLE preference_state DROP COLUMN explicit_ranking_revision"
+    )
     connection.execute(
         "UPDATE schema_metadata SET value='12' WHERE key='schema_version'"
     )
@@ -107,7 +120,7 @@ def _schema_signature(
 
 
 def test_fresh_v13_has_exact_tables_and_empty_profile_state(tmp_path: Path) -> None:
-    assert SCHEMA_VERSION == 13
+    assert SCHEMA_VERSION == 14
     with connect(tmp_path / "fresh.sqlite3") as connection:
         initialize_schema(connection)
         assert inspect_schema(connection) == "current"
@@ -137,7 +150,9 @@ def test_v12_to_v13_preserves_every_existing_row_and_matches_fresh(
     assert inspect_schema(migrated) == "upgrade_required"
     assert migrate(migrated) == "current"
     after = _snapshot_rows(migrated)
-    assert {table: after[table] for table in before} == before
+    assert {table: after[table] for table in before if table != "preference_state"} == {
+        table: before[table] for table in before if table != "preference_state"
+    }
     assert tuple(migrated.execute("SELECT * FROM career_profile_state").fetchone()) == (
         1,
         None,
@@ -244,7 +259,7 @@ def test_partial_extra_and_malformed_v12_fail_closed(tmp_path: Path) -> None:
     assert inspect_schema(extra) == "malformed"
 
 
-def test_default_migration_backup_is_private_pre_v13(tmp_path: Path) -> None:
+def test_default_migration_backup_is_private_pre_v14(tmp_path: Path) -> None:
     database = tmp_path / "admin.sqlite3"
     with connect(database) as connection:
         initialize_schema(connection)
@@ -252,7 +267,7 @@ def test_default_migration_backup_is_private_pre_v13(tmp_path: Path) -> None:
         _seed_v12_rows(connection)
 
     assert migrate_database(database) == "current"
-    backup = tmp_path / "admin.sqlite3.pre-v13.backup.sqlite3"
+    backup = tmp_path / "admin.sqlite3.pre-v14.backup.sqlite3"
     assert backup.exists()
     assert backup.stat().st_mode & 0o777 == 0o600
     assert inspect_database(backup) == "upgrade_required"
@@ -260,4 +275,4 @@ def test_default_migration_backup_is_private_pre_v13(tmp_path: Path) -> None:
 
 
 def test_migration_dispatcher_includes_v13_boundary() -> None:
-    assert set(core.MIGRATIONS) == {8, 9, 10, 11, 12}
+    assert set(core.MIGRATIONS) == {8, 9, 10, 11, 12, 13}

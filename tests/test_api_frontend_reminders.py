@@ -655,7 +655,7 @@ def test_no_filesystem_or_config_access() -> None:
 
 
 def test_schema_version_stays_10() -> None:
-    assert SCHEMA_VERSION == 13
+    assert SCHEMA_VERSION == 14
 
 
 def test_real_default_database_untouched(

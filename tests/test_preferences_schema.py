@@ -21,6 +21,13 @@ def _columns(connection: sqlite3.Connection, table: str) -> list[str]:
 
 
 def _downgrade_to_v11(connection: sqlite3.Connection) -> None:
+    for table in (
+        "review_ranking_current",
+        "review_ranking_items",
+        "review_ranking_generations",
+        "review_ranking_authority",
+    ):
+        connection.execute(f"DROP TABLE {table}")
     for table in reversed(V13_TABLES):
         connection.execute(f"DROP TABLE {table}")
     for table in (
@@ -40,7 +47,7 @@ def test_fresh_v12_schema_is_exact_and_current(tmp_path) -> None:
     connection = connect(tmp_path / "fresh.sqlite3")
     initialize_schema(connection)
 
-    assert SCHEMA_VERSION == 13
+    assert SCHEMA_VERSION == 14
     assert inspect_schema(connection) == "current"
     tables = {
         str(row[0])
@@ -53,6 +60,8 @@ def test_fresh_v12_schema_is_exact_and_current(tmp_path) -> None:
         "singleton",
         "explicit_configured",
         "explicit_updated_at",
+        "explicit_ranking_revision",
+        "explicit_ranking_fingerprint",
         "learning_reset_at",
         "learning_reset_review_event_id",
         "created_at",
@@ -78,14 +87,15 @@ def test_fresh_v12_schema_is_exact_and_current(tmp_path) -> None:
         "suppressed_at",
     ]
     state = tuple(connection.execute("SELECT * FROM preference_state").fetchone())
-    assert state[:5] == (
+    assert state[:4] == (
         1,
         0,
         None,
-        None,
         0,
     )
-    assert isinstance(state[5], str) and state[5]
+    assert isinstance(state[4], str) and len(state[4]) == 64
+    assert state[5:7] == (None, 0)
+    assert isinstance(state[7], str) and state[7]
     assert (
         connection.execute("SELECT COUNT(*) FROM explicit_preferences").fetchone()[0]
         == 0

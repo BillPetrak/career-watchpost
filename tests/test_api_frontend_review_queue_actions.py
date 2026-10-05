@@ -809,7 +809,7 @@ def test_invalid_decision_is_422_and_leaves_state_untouched(
 
 
 def test_schema_version_stays_10() -> None:
-    assert SCHEMA_VERSION == 13
+    assert SCHEMA_VERSION == 14
 
 
 def test_no_careeros_cli_import() -> None:
@@ -869,7 +869,7 @@ def test_database_file_never_created_by_asset_or_mutation_routes(
 ) -> None:
     path = tmp_path / "missing.sqlite3"
     _set_database(monkeypatch, path)
-    with pytest.raises(ValueError, match="current schema v13"):
+    with pytest.raises(ValueError, match="current schema v14"):
         with TestClient(app):
             pass
     assert not path.exists()

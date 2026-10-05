@@ -37,6 +37,8 @@ from careeros.database.admin import (
 from careeros.database.admin import (
     restore as restore_database,
 )
+from careeros.locking import CollectionLockConflict, collection_lock
+from careeros.ranking.rebuild import rebuild_database
 from careeros.server import serve
 from careeros.systemd import run_command as run_systemd_command
 
@@ -68,7 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     acknowledge=arguments.acknowledge_data_loss_risk,
                 )
                 print(
-                    "Database migrated to schema v13. Any generated pre-migration backup contains SQLite only; preserve the matching materials root separately."
+                    "Database migrated to schema v14. Any generated pre-migration backup contains SQLite only; preserve the matching materials root separately."
                 )
             elif arguments.database_command == "restore":
                 if not arguments.confirm_replace:
@@ -78,7 +80,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(
                     "Managed material files were not restored; use the matching materials root."
                 )
+            elif arguments.database_command == "rebuild-ranking":
+                with collection_lock(
+                    arguments.database, command="database rebuild-ranking"
+                ):
+                    result = rebuild_database(arguments.database)
+                if result is None:
+                    from careeros.database.connection import connect_read_only
+                    from careeros.database.review_ranking import fully_prepared
+
+                    with connect_read_only(arguments.database) as connection:
+                        ready = fully_prepared(connection)
+                    print(
+                        "Ranking already ready."
+                        if ready
+                        else "Ranking rebuild is already in progress or waiting for retry."
+                    )
+                else:
+                    print(
+                        "Ranking rebuild complete "
+                        f"(target {result.target_revision}; generations {', '.join(str(item) for item in result.generation_ids)})."
+                    )
             return 0
+        except CollectionLockConflict as error:
+            print(f"Database operation unavailable: {error}", file=sys.stderr)
+            return 75
         except (OSError, sqlite3.Error, ValueError) as error:
             print(
                 f"Database operation failed: {type(error).__name__}: {error}",

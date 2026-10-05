@@ -14,8 +14,10 @@ from careeros.collection_policies import SourcePolicy
 from careeros.collectors.models import CollectedJob
 from careeros.database.connection import connect
 from careeros.database.jobs import save_jobs
+from careeros.database.review_ranking import fully_prepared, get_authority
 from careeros.database.runs import insert_run
 from careeros.database.schema import initialize_schema
+from careeros.ranking.rebuild import rebuild_once
 
 _NOW = datetime(2026, 9, 18, 12, tzinfo=UTC)
 
@@ -64,6 +66,70 @@ def test_grouping_failure_rolls_back_jobs_and_records_failure(
         ).fetchone()
         assert run["finished_at"] is not None
         assert run["succeeded"] == 0
+
+
+def test_collection_commit_atomically_supersedes_ready_ranking(tmp_path: Path) -> None:
+    database = tmp_path / "authority.sqlite3"
+    with connect(database) as connection:
+        initialize_schema(connection)
+        assert rebuild_once(connection) is not None
+        original_target = get_authority(connection).target_revision
+        assert fully_prepared(connection)
+
+    results = list(
+        collect_all(
+            limit=1,
+            database_path=database,
+            collectors={"jobicy": _collector},
+        )
+    )
+
+    assert results[0].succeeded is True
+    with connect(database) as connection:
+        authority = get_authority(connection)
+        assert authority.target_revision == original_target + 1
+        assert authority.opportunity_count == 1
+        assert authority.state == "rebuild_required"
+        assert not fully_prepared(connection)
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM review_ranking_current"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_authority_refresh_failure_rolls_back_jobs_groups_and_ranking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "authority-rollback.sqlite3"
+    with connect(database) as connection:
+        initialize_schema(connection)
+        assert rebuild_once(connection) is not None
+        original = get_authority(connection)
+        assert fully_prepared(connection)
+
+    def fail_authority(connection: sqlite3.Connection) -> bool:
+        raise sqlite3.OperationalError("fault after regroup")
+
+    monkeypatch.setattr(collecting, "refresh_opportunity_authority", fail_authority)
+    results = list(
+        collect_all(
+            limit=1,
+            database_path=database,
+            collectors={"jobicy": _collector},
+        )
+    )
+
+    assert results[0].succeeded is False
+    with connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM jobs").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT count(*) FROM job_group_members").fetchone()[0]
+            == 0
+        )
+        assert get_authority(connection) == original
+        assert fully_prepared(connection)
 
 
 def test_process_crash_leaves_only_marker_then_restart_converges(

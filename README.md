@@ -32,7 +32,7 @@ provisional polling policies are documented in `AGENTS.md`.
 
 ## Product 1 v1.05 Career Profile
 
-Schema v13 stores immutable extraction and sanitization artifacts,
+The schema-v13 boundary introduced immutable extraction and sanitization artifacts,
 deterministic Career Fact aggregates, append-only human review history, and
 complete immutable Career Profile snapshots guarded by optimistic revision
 compare-and-swap. Analysis is always explicit for one exact résumé Material
@@ -61,7 +61,7 @@ uv run careeros database migrate --database /path/to/careeros.sqlite3
 ```
 
 Back up first. The normal migration creates
-`/path/to/careeros.sqlite3.pre-v13.backup.sqlite3` unless `--backup` selects
+`/path/to/careeros.sqlite3.pre-v14.backup.sqlite3` unless `--backup` selects
 another destination or the acknowledged no-backup path is used. There is no
 in-place or supported down migration. Restore that database-only backup with
 `database restore`; it does **not** contain managed Material objects. Complete
@@ -191,7 +191,7 @@ python -m pip install '/path/to/careeros-1.1.1-py3-none-any.whl[api]'
 
 careeros --help
 python -m careeros --help
-careeros collect arbeitnow --limit 10  # new state only: create schema v13 + collect
+careeros collect arbeitnow --limit 10  # new state only: create schema v14 + collect
 careeros serve                         # then open http://127.0.0.1:8000/ui
 ```
 
@@ -890,6 +890,16 @@ authority. The **Use learned preferences** checkbox is enabled by default and
 changes only that request; turning it off neither changes stored preferences nor
 disables explicit preference matching. Today remains deterministic, local-first,
 and model-free.
+
+Schema 14 stores immutable Review-ranking generations and rebuild authority.
+The loopback server rebuilds them asynchronously; normal Today reads validate
+the complete persisted current-item set, use live Review/Application
+eligibility, and re-score only the selected preview. Missing, stale,
+rebuilding, or corrupt ranking fails closed with HTTP 503 and `Retry-After: 5`;
+it never serves stale ranking or falls back to request-time whole-corpus
+scoring. Administrators can run
+`careeros database rebuild-ranking --database PATH`. See
+`docs/today-materialized-ranking.md` for the persistence and recovery contract.
 
 Completing a Reminder is the only inline Today write. Application,
 Preparation, Package, and Review details and mutations stay in their

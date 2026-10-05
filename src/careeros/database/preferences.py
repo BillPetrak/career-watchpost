@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable
 
+from careeros.database.review_ranking import decode_ranking_integer
 from careeros.preferences.models import (
     ExplicitPreferenceValue,
     LearnedPreferenceSuppression,
@@ -22,7 +23,8 @@ def get_preference_state(connection: sqlite3.Connection) -> PreferenceState:
     row = connection.execute(
         """
         SELECT explicit_configured, explicit_updated_at, learning_reset_at,
-               learning_reset_review_event_id, created_at
+               learning_reset_review_event_id, created_at,
+               explicit_ranking_revision, explicit_ranking_fingerprint
         FROM preference_state
         WHERE singleton = 1
         """
@@ -35,7 +37,27 @@ def get_preference_state(connection: sqlite3.Connection) -> PreferenceState:
         learning_reset_at=row["learning_reset_at"],
         learning_reset_review_event_id=int(row["learning_reset_review_event_id"]),
         created_at=str(row["created_at"]),
+        explicit_ranking_revision=decode_ranking_integer(
+            row["explicit_ranking_revision"],
+            "explicit_ranking_revision",
+            minimum=0,
+        ),
+        explicit_ranking_fingerprint=str(row["explicit_ranking_fingerprint"]),
     )
+
+
+def set_explicit_ranking_authority(
+    connection: sqlite3.Connection, *, fingerprint: str, revision: int
+) -> None:
+    """Persist the effective explicit ranking identity without committing."""
+    cursor = connection.execute(
+        """UPDATE preference_state
+           SET explicit_ranking_revision=?, explicit_ranking_fingerprint=?
+           WHERE singleton=1""",
+        (revision, fingerprint),
+    )
+    if cursor.rowcount != 1:
+        raise ValueError("preference state singleton is missing")
 
 
 def list_explicit_preferences(

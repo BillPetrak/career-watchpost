@@ -5,7 +5,8 @@ from typing import cast
 import pytest
 
 from careeros.database.schema import initialize_schema
-from careeros.today.service import build_today
+from careeros.today.service import ReviewRankingUnavailable, build_today
+from tests.support import prepare_today_ranking
 
 
 def _db() -> sqlite3.Connection:
@@ -67,6 +68,11 @@ def _application(db: sqlite3.Connection, job_id: int, status: str) -> None:
     )
 
 
+def _today(db: sqlite3.Connection, **kwargs):
+    prepare_today_ranking(db)
+    return build_today(db, **kwargs)
+
+
 def test_reminder_boundaries_are_disjoint_and_ordered() -> None:
     db = _db()
     now = datetime(2026, 8, 27, 12, tzinfo=UTC)
@@ -82,7 +88,7 @@ def test_reminder_boundaries_are_disjoint_and_ordered() -> None:
             (due, now.isoformat(), now.isoformat()),
         )
     db.commit()
-    result = build_today(db, now=now, limit=20)
+    result = _today(db, now=now, limit=20)
     assert [item.reminder.due_at for item in result.overdue.items] == [
         "2026-08-27T11:59:59+00:00"
     ]
@@ -92,17 +98,9 @@ def test_reminder_boundaries_are_disjoint_and_ordered() -> None:
     ]
 
 
-def test_missing_connection_is_empty_without_side_effect() -> None:
-    result = build_today(None, now=datetime(2026, 8, 27, tzinfo=UTC))
-    assert result.overdue.total == result.due_today.total == result.unstarted.total == 0
-    assert (
-        result.application_overdue.total
-        == result.application_due_today.total
-        == result.application_work.total
-        == 0
-    )
-    assert result.review_next.candidate_total == result.review_next.total == 0
-    assert result.review_next.items == ()
+def test_missing_connection_fails_closed_without_side_effect() -> None:
+    with pytest.raises(ReviewRankingUnavailable):
+        build_today(None, now=datetime(2026, 8, 27, tzinfo=UTC))
 
 
 def test_naive_now_is_rejected() -> None:
@@ -116,7 +114,7 @@ def test_offset_aware_now_is_normalized_and_completed_are_excluded() -> None:
     _reminder(db, job_id, "2026-08-27T11:00:00+00:00")
     _reminder(db, job_id, "2026-08-27T12:00:00+00:00", completed=True)
     db.commit()
-    result = build_today(
+    result = _today(
         db, now=datetime(2026, 8, 27, 14, tzinfo=timezone(timedelta(hours=2))), limit=10
     )
     assert result.as_of == "2026-08-27T12:00:00+00:00"
@@ -131,7 +129,7 @@ def test_reminder_totals_precede_independent_section_limits() -> None:
     for hour in range(13, 18):
         _reminder(db, 1, f"2026-08-27T{hour}:00:00+00:00")
     db.commit()
-    result = build_today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC), limit=2)
+    result = _today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC), limit=2)
     assert result.overdue.total == 5
     assert result.due_today.total == 5
     assert len(result.overdue.items) == len(result.due_today.items) == 2
@@ -146,7 +144,7 @@ def test_active_context_is_concrete_and_terminal_or_sibling_is_ignored() -> None
     _reminder(db, 1, "2026-08-27T13:00:00+00:00")
     _reminder(db, sibling, "2026-08-27T13:00:00+00:00")
     db.commit()
-    result = build_today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
+    result = _today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
     assert [item.active_application_status for item in result.due_today.items] == [
         "applied",
         None,
@@ -160,7 +158,7 @@ def test_shortlist_resolves_lowest_decided_owner_and_conflict() -> None:
     _decision(db, sibling, "dismiss", "2026-08-27T10:00:00+00:00")
     owner_id = _decision(db, 1, "shortlist", "2026-08-27T11:00:00+00:00")
     db.commit()
-    result = build_today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
+    result = _today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
     assert result.unstarted.total == 1
     item = result.unstarted.items[0]
     assert item.decision_job_id == 1
@@ -181,7 +179,7 @@ def test_any_group_member_application_excludes_shortlist(
     _decision(db, 1, "shortlist", "2026-08-27T11:00:00+00:00")
     _application(db, application_job, status)
     db.commit()
-    result = build_today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
+    result = _today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
     assert result.unstarted.total == 0
 
 
@@ -191,7 +189,7 @@ def test_unrelated_application_does_not_exclude_and_singleton_works() -> None:
     _decision(db, 1, "shortlist", "2026-08-27T11:00:00+00:00")
     _application(db, unrelated, "applied")
     db.commit()
-    result = build_today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
+    result = _today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
     assert result.unstarted.total == 1
     assert result.unstarted.items[0].group.group_id is None
 
@@ -202,7 +200,7 @@ def test_shortlist_order_uses_update_then_decision_id_then_representative() -> N
     _decision(db, ids[1], "shortlist", "2026-08-27T11:00:00+00:00")
     _decision(db, 1, "shortlist", "2026-08-27T11:00:00+00:00")
     db.commit()
-    result = build_today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
+    result = _today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
     assert [item.group.representative.id for item in result.unstarted.items] == [
         1,
         ids[1],
@@ -216,10 +214,13 @@ def test_query_count_is_constant_and_bounded() -> None:
         _reminder(db, job_id, "2026-08-27T13:00:00+00:00")
         _decision(db, job_id, "shortlist", "2026-08-27T11:00:00+00:00")
     db.commit()
+    prepare_today_ranking(db)
     statements: list[str] = []
     db.set_trace_callback(statements.append)
     build_today(db, now=datetime(2026, 8, 27, 12, tzinfo=UTC), limit=2)
     db.set_trace_callback(None)
-    assert len(statements) <= 20
+    # Complete current-item fingerprint validation adds exactly one bounded
+    # generation-item query without making query count depend on corpus size.
+    assert len(statements) <= 22
     assert not any("review_events" in statement for statement in statements)
     assert not any("application_events" in statement for statement in statements)
