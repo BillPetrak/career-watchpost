@@ -2,15 +2,17 @@
 
 CareerOS is a privacy-first career intelligence platform.
 
-**Product 1 v1.1.1 is the R1-C immutable Career Profile assembly-provenance
-patch to the v1.1 source-expansion release.** Package version `1.1.1` retains
+**Product 1 v1.2 adds durable/materialized Today review ranking after the
+v1.1.1 R1-C immutable Career Profile assembly-provenance patch.** Package
+version `1.2.0` retains
 the seven released built-in sources as the exact zero-configuration defaults
 and the four optional credential-free, owner-curated sources configured through
 private `sources.yaml`: Lever, Greenhouse, Workable, and SmartRecruiters, in
 that fixed order. Product 1 v1.05's local résumé intelligence and immutable
-Career Profile workflow remain intact..See `docs/v1.1-release-qualification.md` for the
-v1.1 release boundary and `docs/v1.1.1-release-qualification.md` for the patch
-boundary and qualification evidence.
+Career Profile workflow remain intact..See `docs/v1.2.0-release-qualification.md` for
+the current release boundary and qualification record; the v1.1 and v1.1.1
+historical records remain at `docs/v1.1-release-qualification.md` and
+`docs/v1.1.1-release-qualification.md`.
 
 ## Product 1 v1.1 source expansion
 
@@ -187,7 +189,7 @@ environment and install the wheel with the API dependencies:
 ```bash
 python3.11 -m venv ~/.venvs/careeros
 source ~/.venvs/careeros/bin/activate
-python -m pip install '/path/to/careeros-1.1.1-py3-none-any.whl[api]'
+python -m pip install '/path/to/careeros-1.2.0-py3-none-any.whl[api]'
 
 careeros --help
 python -m careeros --help
