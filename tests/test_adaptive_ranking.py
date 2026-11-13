@@ -488,6 +488,7 @@ def _surface_job(
 
 def _write_empty_profile(path: Path) -> None:
     path.write_text("{}\n", encoding="utf-8")
+    path.chmod(0o600)
 
 
 def _seed_positive_surface(tmp_path: Path) -> tuple[Path, Path, int]:

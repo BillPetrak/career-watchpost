@@ -8,6 +8,7 @@ from pathlib import Path
 
 from careeros.cli.common import load_profile_or_error
 from careeros.presentation import enum_label
+from careeros.profile_storage import UnsafeProfileFileError, write_profile_text
 from careeros.ranking.scorer import CandidateProfile
 from careeros.settings import default_profile_path
 
@@ -101,17 +102,14 @@ def run_profile_init(profile_path: Path | None, *, force: bool) -> int:
         )
         return 2
 
-    if path.exists() and not force:
-        print(f"Profile already exists: {path}", file=sys.stderr)
-        print("Use --force to overwrite it.", file=sys.stderr)
-        return 1
-
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(template, encoding="utf-8")
-    except OSError as error:
+        write_profile_text(path, template, force=force)
+    except FileExistsError:
+        print("Profile already exists; use --force to overwrite it.", file=sys.stderr)
+        return 1
+    except (OSError, UnsafeProfileFileError) as error:
         print(
-            f"Failed to create profile: {type(error).__name__}: {error}",
+            f"Failed to create profile: {error}",
             file=sys.stderr,
         )
         return 1

@@ -1,20 +1,24 @@
 """Tests for the JSON and YAML candidate profile loader."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 import yaml
 
+import careeros.profile_storage as profile_storage
 from careeros.ranking.profile import load_profile
 
 
 def _write_profile(path: Path, data: object) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
+    path.chmod(0o600)
 
 
 def _write_yaml_profile(path: Path, data: object) -> None:
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    path.chmod(0o600)
 
 
 def test_valid_minimal_profile(tmp_path: Path) -> None:
@@ -59,6 +63,54 @@ def test_accepts_str_path(tmp_path: Path) -> None:
     profile = load_profile(str(profile_path))
 
     assert profile.desired_titles == ("Engineer",)
+
+
+@pytest.mark.parametrize("mode", (0o644, 0o664))
+def test_rejects_permissive_modes(tmp_path: Path, mode: int) -> None:
+    profile_path = tmp_path / "profile.json"
+    _write_profile(profile_path, {})
+    profile_path.chmod(mode)
+    with pytest.raises(ValueError, match="0600"):
+        load_profile(profile_path)
+
+
+def test_rejects_symlink_hardlink_directory_and_fifo(tmp_path: Path) -> None:
+    profile_path = tmp_path / "profile.json"
+    _write_profile(profile_path, {})
+    link = tmp_path / "link.json"
+    link.symlink_to(profile_path)
+    with pytest.raises(ValueError):
+        load_profile(link)
+    hardlink = tmp_path / "hard.json"
+    os.link(profile_path, hardlink)
+    with pytest.raises(ValueError, match="one link"):
+        load_profile(hardlink)
+    directory = tmp_path / "directory.json"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="regular"):
+        load_profile(directory)
+    fifo = tmp_path / "profile-fifo.json"
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError, match="regular"):
+        load_profile(fifo)
+
+
+def test_missing_profile_read_does_not_create_state(tmp_path: Path) -> None:
+    profile_path = tmp_path / "missing" / "profile.json"
+    with pytest.raises(FileNotFoundError):
+        load_profile(profile_path)
+    assert not profile_path.parent.exists()
+
+
+def test_rejects_foreign_owner_without_chown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_path = tmp_path / "profile.json"
+    _write_profile(profile_path, {})
+    real_euid = os.geteuid()
+    monkeypatch.setattr(profile_storage.os, "geteuid", lambda: real_euid + 1)
+    with pytest.raises(ValueError, match="owned"):
+        load_profile(profile_path)
 
 
 def test_missing_optional_fields_default(tmp_path: Path) -> None:
@@ -161,6 +213,7 @@ def test_rejects_boolean_remote_preference(tmp_path: Path) -> None:
 def test_malformed_json(tmp_path: Path) -> None:
     profile_path = tmp_path / "profile.json"
     profile_path.write_text("{broken json", encoding="utf-8")
+    profile_path.chmod(0o600)
 
     with pytest.raises(json.JSONDecodeError):
         load_profile(profile_path)
@@ -169,6 +222,7 @@ def test_malformed_json(tmp_path: Path) -> None:
 def test_empty_file(tmp_path: Path) -> None:
     profile_path = tmp_path / "profile.json"
     profile_path.write_text("", encoding="utf-8")
+    profile_path.chmod(0o600)
 
     with pytest.raises(json.JSONDecodeError):
         load_profile(profile_path)
@@ -177,6 +231,7 @@ def test_empty_file(tmp_path: Path) -> None:
 def test_whitespace_only_file(tmp_path: Path) -> None:
     profile_path = tmp_path / "profile.json"
     profile_path.write_text("   \n\n  ", encoding="utf-8")
+    profile_path.chmod(0o600)
 
     with pytest.raises(json.JSONDecodeError):
         load_profile(profile_path)
@@ -283,6 +338,7 @@ def test_yaml_rejects_non_list_field(tmp_path: Path) -> None:
 def test_yaml_rejects_malformed(tmp_path: Path) -> None:
     profile_path = tmp_path / "profile.yaml"
     profile_path.write_text("desired_titles: [unclosed\n", encoding="utf-8")
+    profile_path.chmod(0o600)
 
     with pytest.raises(ValueError, match="Invalid YAML"):
         load_profile(profile_path)
@@ -291,6 +347,7 @@ def test_yaml_rejects_malformed(tmp_path: Path) -> None:
 def test_yaml_empty_file(tmp_path: Path) -> None:
     profile_path = tmp_path / "profile.yaml"
     profile_path.write_text("", encoding="utf-8")
+    profile_path.chmod(0o600)
 
     with pytest.raises(ValueError, match="YAML mapping"):
         load_profile(profile_path)
@@ -318,6 +375,7 @@ def test_yaml_scalar_root(tmp_path: Path) -> None:
 def test_unsupported_extension_rejected(tmp_path: Path) -> None:
     profile_path = tmp_path / "profile.txt"
     profile_path.write_text('{"desired_titles": ["Engineer"]}', encoding="utf-8")
+    profile_path.chmod(0o600)
 
     with pytest.raises(ValueError, match="Unsupported profile file extension"):
         load_profile(profile_path)

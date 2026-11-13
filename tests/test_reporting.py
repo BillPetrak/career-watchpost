@@ -103,6 +103,7 @@ def _track(
 def _write_profile(tmp_path: Path) -> Path:
     profile_path = tmp_path / "profile.json"
     profile_path.write_text(_PROFILE_JSON, encoding="utf-8")
+    profile_path.chmod(0o600)
     return profile_path
 
 

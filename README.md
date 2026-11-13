@@ -88,9 +88,20 @@ You can inspect evidence counts and bounded example opportunities, suppress or
 restore one learned preference, or reset only learned state while preserving
 explicit preferences and review history:
 
+For the command examples below, first create a private demonstration profile.
+The committed fictional examples are public reference fixtures and are
+intentionally not accepted directly by profile-loading commands:
+
+```bash
+PRIVATE_PROFILE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/careeros"
+PRIVATE_PROFILE="$PRIVATE_PROFILE_DIR/candidate_profile.example.yaml"
+uv run careeros profile init "$PRIVATE_PROFILE"
+export PRIVATE_PROFILE
+```
+
 ```bash
 uv run careeros preference show --format text
-uv run careeros preference explicit replace config/candidate_profile.example.yaml
+uv run careeros preference explicit replace "$PRIVATE_PROFILE"
 uv run careeros preference explicit clear
 uv run careeros preference suppress KEY
 uv run careeros preference restore KEY
@@ -593,7 +604,7 @@ job). Every eligible opportunity is scored with the shared ranking engine and
 the queue is ordered best-first:
 
 ```bash
-uv run careeros review next --profile config/candidate_profile.example.json
+uv run careeros review next --profile "$PRIVATE_PROFILE"
 uv run careeros review next --profile ... --state shortlist --min-score 60
 uv run careeros review next --profile ... --include-tracked
 uv run careeros review next --profile ... --no-grouped --format json
@@ -637,8 +648,17 @@ Supported fields:
 
 The default profile path is
 `${XDG_CONFIG_HOME:-~/.config}/careeros/candidate_profile.yaml`. This file is
-**private** and must never be committed. It holds your real job-search
-preferences, unlike the committed fictional examples
+**private** and must never be committed. CareerOS accepts a profile only when
+it is an owner-controlled regular file with mode `0600` and exactly one hard
+link; symlinks, hardlinks, directories, special files, unsafe ownership, and
+group/world-readable or writable modes are rejected. The containing private
+directory created by `profile init` is also owner-only (`0700`). Read-only
+commands never create or repair a missing or unsafe profile. These checks apply
+to every CLI consumer of the file-backed profile (ranking, report, review,
+saved-search, and export commands); the computation-only HTTP APIs continue to
+accept their inline JSON profile and do not read this file.
+
+It holds your real job-search preferences, unlike the committed fictional examples
 `config/candidate_profile.example.json` and
 `config/candidate_profile.example.yaml`.
 
@@ -646,7 +666,7 @@ Initialize your private profile safely (refuses to overwrite an existing file):
 
 ```bash
 uv run careeros profile init                    # create the XDG private profile
-uv run careeros profile init --force            # overwrite an existing profile
+uv run careeros profile init --force            # atomically replace a safe existing profile
 uv run careeros profile init ~/profile.yaml     # create anywhere else (.json also works)
 ```
 
@@ -654,16 +674,20 @@ Then validate or inspect it:
 
 ```bash
 uv run careeros profile validate                # validate the private profile
-uv run careeros profile validate config/candidate_profile.example.json
+uv run careeros profile validate "$PRIVATE_PROFILE"
 uv run careeros profile show                    # show the private profile
-uv run careeros profile show config/candidate_profile.example.yaml
+uv run careeros profile show "$PRIVATE_PROFILE"
 ```
 
 Exit codes: `0` success, `1` missing/invalid profile (and `init` refusing an
 existing file), `2` usage errors (unsupported file extension). `init` writes a
 starter profile with every field commented or empty; `show` and `validate`
 default to the private path and `--force` is required to overwrite an existing
-file.
+file. `--force` refuses an unsafe existing target and never follows a link or
+silently changes permissions. If an older profile has permissive permissions,
+preserve its bytes and repair it manually after independently checking the
+path, for example `chmod 600 /path/to/profile.yaml`; CareerOS does not
+automatically chmod, delete, or replace unsafe existing files.
 
 ## Saved searches
 
@@ -679,7 +703,7 @@ uv run careeros saved-search create engineer "Engineer" --mode search --remote
 
 # Capture a ranking workflow (rank mode requires --profile)
 uv run careeros saved-search create top-roles "Engineer" --mode rank \
-  --profile config/candidate_profile.example.json --min-score 70
+  --profile "$PRIVATE_PROFILE" --min-score 70
 
 uv run careeros saved-search list                       # list workflows
 uv run careeros saved-search show engineer              # view a definition
@@ -710,7 +734,7 @@ runs fine while a collection is in progress, and it never writes — not even a
 ```bash
 uv run careeros report                                   # text (default)
 uv run careeros report --format json                     # same data as JSON
-uv run careeros report --profile config/candidate_profile.example.json
+uv run careeros report --profile "$PRIVATE_PROFILE"
 uv run careeros report --saved-search top-roles          # rank workflow drives the ranking
 uv run careeros report --limit 5 --grouped               # cap + collapse duplicates
 ```
@@ -767,9 +791,9 @@ database path yields a valid empty export without creating the file.
 uv run careeros export jobs                                          # JSON to stdout
 uv run careeros export jobs --grouped --format csv                   # grouped CSV
 uv run careeros export ranked --query engineer \
-  --profile config/candidate_profile.example.json                    # scored ranking
+  --profile "$PRIVATE_PROFILE"                                      # scored ranking
 uv run careeros export review \
-  --profile config/candidate_profile.example.json                    # review queue
+  --profile "$PRIVATE_PROFILE"                                      # review queue
 uv run careeros export source-stats --format jsonl                   # per-source stats
 uv run careeros export collection-history --output runs.csv          # to a file
 ```

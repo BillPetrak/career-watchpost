@@ -83,6 +83,7 @@ def _seed(
         if profile:
             profile_path = tmp_path / "profile.json"
             profile_path.write_text(_PROFILE_JSON, encoding="utf-8")
+            profile_path.chmod(0o600)
         if saved_search is not None:
             create_search(
                 connection,
@@ -247,6 +248,7 @@ def test_cli_report_profile_flag_overrides_saved_search(
     database_path = _seed(tmp_path, saved_search="top-roles")
     override = tmp_path / "override.json"
     override.write_text(_PROFILE_JSON, encoding="utf-8")
+    override.chmod(0o600)
     exit_code = cli.main(
         [
             "report",

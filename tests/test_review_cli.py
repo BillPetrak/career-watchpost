@@ -55,6 +55,7 @@ def _seed_jobs(connection, *, count: int = 1) -> int:
 
 def _write_profile(path: Path, data: object) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
+    path.chmod(0o600)
 
 
 def _table_rows(db_path: Path, table: str) -> list[tuple]:

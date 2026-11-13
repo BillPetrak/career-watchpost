@@ -78,6 +78,7 @@ def _write_profile(path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    path.chmod(0o600)
 
 
 def _rows(db_path: Path, table: str) -> list[dict]:

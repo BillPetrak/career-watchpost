@@ -70,6 +70,7 @@ def _write_profile(path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    path.chmod(0o600)
 
 
 def _make_db(tmp_path: Path) -> Path:

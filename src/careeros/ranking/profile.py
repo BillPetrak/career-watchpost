@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from careeros.profile_storage import read_profile_text
 from careeros.ranking.scorer import CandidateProfile
 
 _YAML_SUFFIXES = {".yaml", ".yml"}
@@ -29,7 +30,7 @@ def _load_data(path: Path) -> dict[str, Any]:
         )
 
     try:
-        text = path.read_text(encoding="utf-8")
+        text = read_profile_text(path)
     except FileNotFoundError:
         raise
     except OSError as e:

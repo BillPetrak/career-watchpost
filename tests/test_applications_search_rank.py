@@ -104,6 +104,7 @@ def _write_profile(path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    path.chmod(0o600)
 
 
 def test_default_search_has_no_application_line(tmp_path: Path, capsys) -> None:

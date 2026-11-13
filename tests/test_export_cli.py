@@ -33,6 +33,15 @@ PROFILE = (
     Path(__file__).resolve().parents[1] / "config" / "candidate_profile.example.json"
 )
 
+
+def _private_profile(tmp_path: Path) -> Path:
+    """Copy the committed example into a disposable owner-only profile."""
+    path = tmp_path / "profile.json"
+    path.write_bytes(PROFILE.read_bytes())
+    path.chmod(0o600)
+    return path
+
+
 JOB_COLUMNS = [
     "id",
     "source",
@@ -448,7 +457,7 @@ def test_ranked_flat_export(tmp_path: Path, capsys) -> None:
                 "--query",
                 "engineer",
                 "--profile",
-                str(PROFILE),
+                str(_private_profile(tmp_path)),
                 "--database",
                 str(database_path),
             ]
@@ -482,7 +491,7 @@ def test_ranked_min_score_filter(tmp_path: Path, capsys) -> None:
                 "--query",
                 "engineer",
                 "--profile",
-                str(PROFILE),
+                str(_private_profile(tmp_path)),
                 "--min-score",
                 "30",
                 "--database",
@@ -506,7 +515,7 @@ def test_ranked_grouped_export(tmp_path: Path, capsys) -> None:
                 "--query",
                 "engineer",
                 "--profile",
-                str(PROFILE),
+                str(_private_profile(tmp_path)),
                 "--grouped",
                 "--database",
                 str(database_path),
@@ -534,7 +543,7 @@ def test_review_export_default_unreviewed(tmp_path: Path, capsys) -> None:
                 "export",
                 "review",
                 "--profile",
-                str(PROFILE),
+                str(_private_profile(tmp_path)),
                 "--database",
                 str(database_path),
             ]
@@ -557,7 +566,7 @@ def test_review_export_state_any_includes_decisions(tmp_path: Path, capsys) -> N
                 "export",
                 "review",
                 "--profile",
-                str(PROFILE),
+                str(_private_profile(tmp_path)),
                 "--state",
                 "any",
                 "--database",
@@ -585,7 +594,7 @@ def test_review_export_excludes_tracked_by_default(tmp_path: Path, capsys) -> No
                 "export",
                 "review",
                 "--profile",
-                str(PROFILE),
+                str(_private_profile(tmp_path)),
                 "--state",
                 "any",
                 "--database",
@@ -605,7 +614,7 @@ def test_review_export_excludes_tracked_by_default(tmp_path: Path, capsys) -> No
                 "export",
                 "review",
                 "--profile",
-                str(PROFILE),
+                str(_private_profile(tmp_path)),
                 "--state",
                 "any",
                 "--include-tracked",
@@ -628,7 +637,7 @@ def test_review_export_no_grouped(tmp_path: Path, capsys) -> None:
                 "export",
                 "review",
                 "--profile",
-                str(PROFILE),
+                str(_private_profile(tmp_path)),
                 "--no-grouped",
                 "--database",
                 str(database_path),

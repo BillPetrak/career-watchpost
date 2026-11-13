@@ -94,6 +94,7 @@ def _write_profile(path: Path) -> None:
         ' "excluded_terms": []}',
         encoding="utf-8",
     )
+    path.chmod(0o600)
 
 
 def test_search_candidates_flat_matches_stored_definition(tmp_path: Path) -> None:

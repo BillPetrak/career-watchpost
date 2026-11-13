@@ -363,6 +363,7 @@ def _seed_cli(connection) -> None:
 def _profile_path(tmp_path: Path) -> Path:
     path = tmp_path / "profile.json"
     path.write_text(json.dumps({"skills": ["Python"]}), encoding="utf-8")
+    path.chmod(0o600)
     return path
 
 

@@ -494,6 +494,7 @@ def test_deterministic_repeated_calls() -> None:
 def test_rejects_non_list_required_skills(tmp_path: Path) -> None:
     path = tmp_path / "profile.json"
     path.write_text(json.dumps({"required_skills": "Python"}), encoding="utf-8")
+    path.chmod(0o600)
     with pytest.raises(ValueError, match="must be a list"):
         load_profile(path)
 
@@ -501,6 +502,7 @@ def test_rejects_non_list_required_skills(tmp_path: Path) -> None:
 def test_rejects_non_string_seniority(tmp_path: Path) -> None:
     path = tmp_path / "profile.json"
     path.write_text(json.dumps({"preferred_seniority": [1, 2]}), encoding="utf-8")
+    path.chmod(0o600)
     with pytest.raises(ValueError, match="must contain only strings"):
         load_profile(path)
 
@@ -508,9 +510,12 @@ def test_rejects_non_string_seniority(tmp_path: Path) -> None:
 # --- (17) backward compatibility with the example profile ------------------------
 
 
-def test_example_profile_loads_and_scores() -> None:
+def test_example_profile_loads_and_scores(tmp_path: Path) -> None:
     example = PROJECT_ROOT / "config" / "candidate_profile.example.json"
-    profile = load_profile(example)
+    private_example = tmp_path / "example-profile.json"
+    private_example.write_bytes(example.read_bytes())
+    private_example.chmod(0o600)
+    profile = load_profile(private_example)
 
     job = _make_job(
         title="Senior Data Scientist",

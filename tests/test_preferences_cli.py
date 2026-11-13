@@ -68,6 +68,7 @@ def test_show_text_and_json_distinguish_absent_and_configured_empty(
 
     empty = tmp_path / "empty.json"
     empty.write_text("{}", encoding="utf-8")
+    empty.chmod(0o600)
     assert (
         cli.main(
             [
@@ -123,6 +124,7 @@ def test_replace_round_trip_clear_suppress_restore_and_reset(
         ),
         encoding="utf-8",
     )
+    profile.chmod(0o600)
     assert (
         cli.main(
             ["preference", "explicit", "replace", str(profile), "--database", str(path)]

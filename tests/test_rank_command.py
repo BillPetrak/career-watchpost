@@ -13,6 +13,7 @@ from careeros.database.schema import initialize_schema
 
 def _write_profile(path: Path, data: object) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
+    path.chmod(0o600)
 
 
 def _seed_jobs(connection) -> None:
@@ -302,6 +303,7 @@ def test_missing_profile(tmp_path: Path) -> None:
 def test_malformed_profile(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     profile_path = tmp_path / "profile.json"
     profile_path.write_text("{broken", encoding="utf-8")
+    profile_path.chmod(0o600)
     db_path = tmp_path / "careeros.sqlite3"
 
     with connect(db_path) as conn:

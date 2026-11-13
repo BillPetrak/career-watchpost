@@ -90,6 +90,7 @@ def _make_db(tmp_path: Path, grouped: bool = False) -> Path:
 
 def _write_profile(path: Path, data: dict[str, object]) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
+    path.chmod(0o600)
 
 
 def _profile_data() -> dict[str, object]:
@@ -212,10 +213,13 @@ def test_source_filter_still_behaves(tmp_path: Path, capsys) -> None:
 def test_example_profile_rank(tmp_path: Path, capsys) -> None:
     db_path = _make_db(tmp_path)
     example = PROJECT_ROOT / "config" / "candidate_profile.example.json"
+    private_example = tmp_path / "example-profile.json"
+    private_example.write_bytes(example.read_bytes())
+    private_example.chmod(0o600)
 
     from careeros.cli import run_rank
 
-    exit_code = run_rank("Python", example, db_path)
+    exit_code = run_rank("Python", private_example, db_path)
     captured = capsys.readouterr()
 
     assert exit_code == 0
@@ -258,6 +262,7 @@ def test_malformed_profile_returns_error(tmp_path: Path, capsys) -> None:
     db_path = _make_db(tmp_path)
     profile_path = tmp_path / "bad.json"
     profile_path.write_text('{"required_skills": 42}', encoding="utf-8")
+    profile_path.chmod(0o600)
 
     from careeros.cli import run_rank
 

@@ -359,6 +359,7 @@ def test_load_profile_or_error_valid(tmp_path: Path) -> None:
 
     profile_path = tmp_path / "profile.json"
     profile_path.write_text('{"desired_titles": ["Engineer"]}', encoding="utf-8")
+    profile_path.chmod(0o600)
 
     profile = load_profile_or_error(profile_path)
 
@@ -386,6 +387,7 @@ def test_load_profile_or_error_malformed(
 
     profile_path = tmp_path / "profile.json"
     profile_path.write_text("{broken", encoding="utf-8")
+    profile_path.chmod(0o600)
 
     result = load_profile_or_error(profile_path)
     captured = capsys.readouterr()
