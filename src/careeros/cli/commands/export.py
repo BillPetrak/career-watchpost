@@ -10,7 +10,7 @@ from careeros.database.connection import connect_read_only
 from careeros.export.models import ExportError, ExportFormat, ExportRequest
 from careeros.export.serializers import render_export
 from careeros.export.service import build_records
-from careeros.export.writer import open_output, stdout_stream, write_export
+from careeros.export.writer import stdout_stream, write_export, write_file_export
 
 
 def run_export(
@@ -79,14 +79,12 @@ def run_export(
     text = render_export(result, export_format)
     if arguments.output is not None:
         try:
-            stream = open_output(arguments.output, overwrite=arguments.overwrite)
+            return write_file_export(
+                arguments.output, text, overwrite=arguments.overwrite
+            )
         except ExportError as error:
             print(str(error), file=sys.stderr)
             return 1
-        try:
-            return write_export(text, stream)
-        finally:
-            stream.close()
 
     return write_export(text, stdout_stream())
 

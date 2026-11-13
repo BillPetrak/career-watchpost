@@ -20,7 +20,7 @@ from careeros.export.service import (
     build_records,
     effective_limit,
 )
-from careeros.export.writer import open_output, write_export
+from careeros.export.writer import write_export, write_file_export
 
 __all__: tuple[str, ...] = (
     "MAX_EXPORT_RECORDS",
@@ -30,7 +30,7 @@ __all__: tuple[str, ...] = (
     "ExportResult",
     "build_records",
     "effective_limit",
-    "open_output",
     "render_export",
     "write_export",
+    "write_file_export",
 )
