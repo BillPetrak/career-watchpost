@@ -93,8 +93,8 @@ The committed fictional examples are public reference fixtures and are
 intentionally not accepted directly by profile-loading commands:
 
 ```bash
-PRIVATE_PROFILE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/careeros"
-PRIVATE_PROFILE="$PRIVATE_PROFILE_DIR/candidate_profile.example.yaml"
+PRIVATE_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/careeros-profile.XXXXXX")"
+PRIVATE_PROFILE="$PRIVATE_PROFILE_DIR/candidate_profile.yaml"
 uv run careeros profile init "$PRIVATE_PROFILE"
 export PRIVATE_PROFILE
 ```
@@ -660,22 +660,23 @@ accept their inline JSON profile and do not read this file.
 
 It holds your real job-search preferences, unlike the committed fictional examples
 `config/candidate_profile.example.json` and
-`config/candidate_profile.example.yaml`.
+`config/candidate_profile.example.yaml`. Those fixtures are documentation and
+test references, not executable profile inputs: use the private workflow above
+or a disposable profile in a newly created private directory.
 
 Initialize your private profile safely (refuses to overwrite an existing file):
 
 ```bash
-uv run careeros profile init                    # create the XDG private profile
-uv run careeros profile init --force            # atomically replace a safe existing profile
-uv run careeros profile init ~/profile.yaml     # create anywhere else (.json also works)
+# For a disposable profile outside the repository:
+PRIVATE_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/careeros-profile.XXXXXX")"
+PRIVATE_PROFILE="$PRIVATE_PROFILE_DIR/candidate_profile.yaml"
+uv run careeros profile init "$PRIVATE_PROFILE"
 ```
 
 Then validate or inspect it:
 
 ```bash
-uv run careeros profile validate                # validate the private profile
 uv run careeros profile validate "$PRIVATE_PROFILE"
-uv run careeros profile show                    # show the private profile
 uv run careeros profile show "$PRIVATE_PROFILE"
 ```
 
@@ -684,10 +685,20 @@ existing file), `2` usage errors (unsupported file extension). `init` writes a
 starter profile with every field commented or empty; `show` and `validate`
 default to the private path and `--force` is required to overwrite an existing
 file. `--force` refuses an unsafe existing target and never follows a link or
-silently changes permissions. If an older profile has permissive permissions,
-preserve its bytes and repair it manually after independently checking the
-path, for example `chmod 600 /path/to/profile.yaml`; CareerOS does not
-automatically chmod, delete, or replace unsafe existing files.
+silently changes permissions.
+
+Every file-backed Matching Profile must be a regular file owned by the
+effective user, mode `0600`, with exactly one hard link. Symlinks, hard links,
+special files, unsafe ownership, and group/world-readable or writable modes are
+rejected. The immediate destination parent directory used for writing must be
+effective-user owned with no group/world-write permission; intermediate path
+components must be real directories, and symlinked components are rejected. If
+an existing profile is
+rejected, first independently verify the exact path, owner, file type, links,
+and destination parent; only then may the owner choose a manual remediation
+such as `chmod 600 /verified/path/profile.yaml`, or use a newly created private
+path. Never blindly chmod an unknown-owner file. CareerOS does not automatically
+chmod, delete, or replace unsafe existing files.
 
 ## Saved searches
 
@@ -795,7 +806,10 @@ uv run careeros export ranked --query engineer \
 uv run careeros export review \
   --profile "$PRIVATE_PROFILE"                                      # review queue
 uv run careeros export source-stats --format jsonl                   # per-source stats
-uv run careeros export collection-history --output runs.csv          # to a file
+# Write to a newly named file in an already-created private directory:
+EXPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/careeros-export.XXXXXX")"
+uv run careeros export collection-history \
+  --output "$EXPORT_DIR/runs.csv"
 ```
 
 Subcommands and their key flags:
@@ -836,6 +850,29 @@ Ranked and review exports carry `score`, `match_score`, `reasons`, and
 commands), and flat job/ranked records include the canonical `group_id` when the
 job belongs to a group. Exporting into a closed pipe (e.g. `| head`) exits 0.
 Exit codes: `0` success, `1` output/profile/database failure, `2` usage errors.
+
+File output is private by construction: `--output` creates a regular `0600`
+file only in an existing directory owned by the effective user and not
+group/world-writable. An existing destination must also be effective-user
+owned, regular, mode `0600`, and single-link; unsafe destinations (including
+symlinks and hard links) are rejected. Without `--overwrite`, an existing file
+is never replaced. With `--overwrite`, CareerOS writes and fsyncs a same-
+directory `0600` temporary file and atomically publishes it after rechecking the
+destination (old or complete-new content, never partial content). A crash can
+leave a `.careeros-export-*.tmp` residue, which the owner may remove after
+independently verifying it. During first-time publication, a crash or cleanup
+failure may leave that temporary and destination sharing an inode, so the
+destination fails single-link validation until owner-verified cleanup. After
+publication, directory durability is best-effort; a sudden failure cannot prove
+whether the directory entry survived. Serialize concurrent writers using the
+same UID and destination.
+
+Exports also support stdout (the default), and a broken pipe such as
+`careeros export jobs | head` exits successfully. Shell redirection (`>`)
+bypasses CareerOS's private-file checks, so use `--output` for file exports. If
+a destination or parent is unsafe, use a new owner-controlled private
+directory/file after independent verification; do not blindly chmod or replace
+a file whose owner or path has not been verified.
 
 ## Scheduled collection
 

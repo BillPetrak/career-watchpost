@@ -70,11 +70,11 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros search engineer --limit 10` | Search stored jobs |
 | `uv run careeros search engineer --remote --location Berlin` | Search with filters |
 | `uv run careeros search engineer --grouped` | Search, collapsing cross-source duplicates into one result per group |
-| `uv run careeros rank engineer --profile config/candidate_profile.example.json` | Rank stored jobs against profile |
-| `uv run careeros rank engineer --profile config/candidate_profile.example.json --grouped` | Rank jobs, one scored result per duplicate group |
-| `uv run careeros rank engineer --profile config/candidate_profile.example.json --format json` | Rank results as JSON with a `score_components` breakdown per result |
-| `uv run careeros rank engineer --profile config/candidate_profile.example.json --no-feedback` | Rank without review-feedback adjustments |
-| `uv run careeros rank engineer --profile config/candidate_profile.example.json --no-adaptive` | Rank without persistent learned-preference adjustments |
+| `uv run careeros rank engineer --profile "$PRIVATE_PROFILE"` | Rank stored jobs against a private profile created by the workflow below |
+| `uv run careeros rank engineer --profile "$PRIVATE_PROFILE" --grouped` | Rank jobs, one scored result per duplicate group |
+| `uv run careeros rank engineer --profile "$PRIVATE_PROFILE" --format json` | Rank results as JSON with a `score_components` breakdown per result |
+| `uv run careeros rank engineer --profile "$PRIVATE_PROFILE" --no-feedback` | Rank without review-feedback adjustments |
+| `uv run careeros rank engineer --profile "$PRIVATE_PROFILE" --no-adaptive` | Rank without persistent learned-preference adjustments |
 | `uv run careeros profile init [PATH] [--force]` | Create a starter candidate profile (default: private XDG config path; refuses to overwrite without `--force`) |
 | `uv run careeros profile validate [PATH]` | Validate a JSON/YAML candidate profile (default: private path) |
 | `uv run careeros profile show [PATH]` | Show a candidate profile readably (default: private path) |
@@ -107,7 +107,7 @@ uv run careeros diagnose      # verify environment
 | `uv run careeros search engineer --untracked` | Search, showing only jobs with no application record |
 | `uv run careeros search engineer --exclude-status applied --exclude-status rejected` | Search, hiding selected application statuses |
 | `uv run careeros search engineer --status interview` | Search, showing only jobs in the selected status |
-| `uv run careeros rank engineer --profile config/candidate_profile.example.json --untracked` | Rank only untracked jobs |
+| `uv run careeros rank engineer --profile "$PRIVATE_PROFILE" --untracked` | Rank only untracked jobs |
 | `uv run careeros reminder add JOB_ID KIND DUE_AT [--message TEXT] [--database PATH]` | Add a local follow-up reminder for a stored job (write; locks the DB) |
 | `uv run careeros reminder list [--open\|--overdue\|--due\|--upcoming\|--completed] [--job ID] [--kind KIND] [--after TS] [--before TS] [--limit N] [--database PATH]` | List reminders, soonest first (read-only) |
 | `uv run careeros reminder show REMINDER_ID [--database PATH]` | Show one reminder in detail (read-only) |
@@ -715,12 +715,12 @@ top-level fields are silently ignored. All fields are optional:
 `preferred_employment_types`, `preferred_seniority`.
 
 ```bash
-uv run careeros profile init                       # create the private XDG profile
-uv run careeros profile init --force               # overwrite an existing profile
-uv run careeros profile init /tmp/me.json          # JSON starter at an explicit path
-uv run careeros profile validate                   # validate the private profile
-uv run careeros profile validate config/candidate_profile.example.yaml
-uv run careeros profile show config/candidate_profile.example.json
+# Disposable profile outside the repository, in a fresh 0700 directory:
+PRIVATE_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/careeros-profile.XXXXXX")"
+PRIVATE_PROFILE="$PRIVATE_PROFILE_DIR/candidate_profile.yaml"
+uv run careeros profile init "$PRIVATE_PROFILE"
+uv run careeros profile validate "$PRIVATE_PROFILE"
+uv run careeros profile show "$PRIVATE_PROFILE"
 ```
 
 The default path is the **private**
@@ -728,13 +728,30 @@ The default path is the **private**
 never be committed; `init` refuses to overwrite an existing file unless
 `--force` is passed. The committed fictional examples
 `config/candidate_profile.example.json` and
-`config/candidate_profile.example.yaml` are safe to use in docs, tests, and
-smoke runs — never the private path. `init` writes a commented starter whose
-format follows the target file extension (unsupported extensions exit 2).
+`config/candidate_profile.example.yaml` are public reference fixtures for
+documentation and test data; they are not CLI smoke inputs or executable
+profile-loading inputs. CLI smoke runs should use the private/disposable
+initialized profile above. `init`
+writes a commented starter whose format follows the target file extension
+(unsupported extensions exit 2).
 `show` and `validate` default to the private path when none is given. All three
 are file-only commands: they never touch the database and never acquire the
 collection lock. Exit codes: `0` success, `1` missing/invalid profile or an
 existing `init` target, `2` usage errors (unsupported extension).
+
+Every file-backed Matching Profile must be an effective-user-owned regular file
+with mode `0600` and exactly one hard link. Symlinks, hard links, special files,
+unsafe ownership, and group/world-readable or writable modes are rejected. The
+immediate destination parent directory must be effective-user-owned and without
+group/world-write permission. Intermediate path components must be real
+directories; symlinked components are rejected. Read-only consumers do not
+create or repair missing or unsafe profiles. After independently verifying the
+exact path, owner, file type, links, and destination parent, the owner may
+manually remediate a known file (for example
+`chmod 600 /verified/path/profile.yaml`) or choose a new private path; never
+blindly chmod an unknown-owner file. This file-backed
+Matching Profile is separate from the immutable Career Profile workspace and
+from stored Matching Preferences.
 
 ## Saved searches
 
@@ -792,7 +809,7 @@ renderers, which share the same report model).
 ```bash
 uv run careeros report                                                     # text
 uv run careeros report --format json                                       # same data as JSON
-uv run careeros report --profile config/candidate_profile.example.json     # rank untracked jobs
+uv run careeros report --profile "$PRIVATE_PROFILE"                        # rank untracked jobs
 uv run careeros report --saved-search top-roles                            # rank workflow drives scoring
 uv run careeros report --grouped                                           # collapse duplicates
 uv run careeros report --limit 5                                           # cap action items + recommendations
@@ -891,6 +908,25 @@ N` defaults to 20 and `0` means "no cap"; every value is hard-bounded by
 `MAX_EXPORT_RECORDS = 1_000_000` (`src/careeros/export/models.py`). A broken
 pipe (e.g. `careeros export jobs | head`) is not an error: the process exits 0.
 
+`--output PATH` creates private file output only in an existing directory owned
+by the effective user and lacking group/world-write permission. New and existing
+destinations must be regular, effective-user-owned, mode `0600`, single-link
+files; symlinks, hard links, special files, unsafe owners, and an unsafe
+immediate parent are rejected. Intermediate path components must be real
+directories; symlinked components are rejected. Existing files require `--overwrite`. Publication uses a flushed
+and fsynced same-directory `0600` temporary followed by atomic replacement (old
+or complete-new content, never a partial destination). A crash can leave a
+`.careeros-export-*.tmp` residue. During first-time link publication, a crash
+or cleanup failure may also leave the temporary and destination sharing an
+inode; the destination then fails single-link validation until the owner
+independently verifies and cleans up the residue. After publication, directory
+durability is best-effort, so a sudden failure cannot establish whether the
+directory entry survived. Same-UID writers targeting one destination should be
+serialized. Use stdout when a file is not needed; shell redirection with `>`
+bypasses these protections. Remediate only after independent path/owner checks,
+or choose a new owner-controlled private path rather than blindly changing
+permissions.
+
 Shared flags: `--format {json,jsonl,csv}` (default `json`), `--limit N`,
 `--output PATH` (default stdout; refuses to overwrite without `--overwrite`),
 `--overwrite`, and `--database`. Per-command flags:
@@ -926,8 +962,15 @@ Implementation: the CLI (`cli.run_export`) validates flags, builds an
 `ExportRequest`, opens the database only when the file exists (skipping the
 `connect()` parent-dir/file creation otherwise), and dispatches through
 `careeros.export.service.build_records` (per-command builders), then renders
-with `careeros.export.serializers.render_export` and writes via
-`careeros.export.writer.write_export` (broken-pipe policy). `build_records`
+with `careeros.export.serializers.render_export`. File destinations are written
+by `careeros.export.writer.write_file_export()`: it validates the effective-user
+owned, non-group/world-writable parent and a regular, owner-owned, `0600`,
+single-link destination, then publishes a same-directory `0600` temporary
+atomically. Existing files require `--overwrite`; stdout is unchanged. The
+stdout path uses `careeros.export.writer.write_export()`, which streams the
+rendered text and treats a broken pipe as successful while surfacing other
+write failures. There is no active `open_output()` helper.
+`build_records`
 accepts a `None` connection for the missing-file case; the shared
 `empty_source_stats` helper feeds the empty source-stats projection. Exit
 codes: `0` success, `1` output/profile/database failure, `2` usage errors
