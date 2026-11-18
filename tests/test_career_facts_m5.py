@@ -16,6 +16,7 @@ from careeros.database.resume_intelligence import (
 from careeros.database.schema import initialize_schema
 from careeros.resume_intelligence.career_facts import (
     DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+    DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
     FACT_SCHEMA_FINGERPRINT,
     FACT_TYPE_ORDER,
     INPUT_MAX_BYTES,
@@ -24,6 +25,7 @@ from careeros.resume_intelligence.career_facts import (
     CareerFactError,
     canonical_json,
     extract_deterministic_facts,
+    extract_deterministic_facts_v1,
     run_deterministic_facts,
 )
 from careeros.resume_intelligence.models import ResumeExtractionRun, ResumeTextSegment
@@ -549,3 +551,255 @@ def test_empty_extracted_artifact_is_successful_and_empty() -> None:
     assert run.outcome == "succeeded"
     assert candidates == ()
     assert evidence == ()
+
+
+def test_v2_list_decoration_pii_boundaries_and_language_layouts() -> None:
+    text = (
+        "Contact Details\nName: Fictional Owner\nEmail: owner@example.test\n"
+        "Phone: +30 210 123 4567\nSummary\nA sentence that is not a skill.\n"
+        "Skills:\n  o Python\n  O JAVA\n  o OpenGL\n  o Objective-C\n  o SQL Database\n"
+        "  owner@example.test\n  +30 210 123 4567\nProjects\nSelected Projects\n"
+        "  o Fictional API\nProfessional Experience\n"
+        "- Senior Engineer at Fictional Labs — 2020-01 - 2022\n"
+        "Languages\n  o English:\n      Proficient\n  o Hindi: Proficient\n"
+        "  - Greek\n  - English: Fluent\n  - Hindi - Advanced\n  Proficient\n"
+        "References\n  o Not a skill\n"
+    )
+    _run, candidates, evidence = extract_deterministic_facts(text, "v" * 32)
+    skills = {
+        json.loads(item.canonical_value_json)["name"]
+        for item in candidates
+        if item.fact_type == "skill"
+    }
+    languages = {
+        json.loads(item.canonical_value_json)["name"]
+        for item in candidates
+        if item.fact_type == "language"
+    }
+    assert {"Python", "JAVA", "OpenGL", "Objective-C", "SQL Database"}.issubset(skills)
+    assert not any(
+        "owner@example" in value or value.startswith("+") for value in skills
+    )
+    assert {"English", "Hindi", "Greek"}.issubset(languages)
+    assert "Proficient" not in languages
+    expected = {
+        "English",
+        "Hindi",
+        "Greek",
+        "Python",
+        "JAVA",
+        "OpenGL",
+        "Objective-C",
+        "SQL Database",
+    }
+    language_skill_ids = {
+        candidate.id
+        for candidate in candidates
+        if candidate.fact_type in {"skill", "language"}
+    }
+    assert all(
+        text.encode()[item.start_byte : item.end_byte].decode() in expected
+        for item in evidence
+        if item.candidate_id in language_skill_ids
+    )
+
+
+def test_v1_identity_and_v2_cache_are_distinct() -> None:
+    text = "Skills:\n- Python\nLanguages:\n- English: Fluent\n"
+    v1, old_candidates, _ = extract_deterministic_facts_v1(
+        text, "x" * 32, fact_run_id="1" * 32, created_at="old"
+    )
+    v2, new_candidates, _ = extract_deterministic_facts(
+        text, "x" * 32, fact_run_id="2" * 32, created_at="new"
+    )
+    assert v1.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT
+    assert v2.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_FINGERPRINT
+    assert v1.cache_fingerprint != v2.cache_fingerprint
+    assert {item.id for item in old_candidates}.isdisjoint(
+        {item.id for item in new_candidates}
+    )
+
+
+def test_pinned_historical_v1_fixture_uses_frozen_boundary_grammar() -> None:
+    text = "Skills:\n- Python\nProfessional Summary\n- Fictional prose\n"
+    run, candidates, _ = extract_deterministic_facts_v1(
+        text, "h" * 32, fact_run_id="1" * 32, created_at="old"
+    )
+    assert (
+        run.cache_fingerprint
+        == "d75de51be77d18e763bf750f693a8a578f06d9446f702286f54abbeaabda5a98"
+    )
+    assert [(item.id, item.canonical_value_json) for item in candidates] == [
+        ("a6724e1ac1bd3f8da63d169b1842ca3e", '{"name":"Fictional prose"}'),
+        ("cb0dca14bcca41dd5977b9ebebfb28a5", '{"name":"Professional Summary"}'),
+        ("a246a126b8ebab73a3e3d06a96b4819f", '{"name":"Python"}'),
+    ]
+
+
+def test_v2_wrapped_language_requires_immediate_descriptor() -> None:
+    text = (
+        "Languages:\n  o English:\n    Proficient\n"
+        "  o Hindi: Proficient\n\nProficient\n"
+    )
+    _run, candidates, _evidence = extract_deterministic_facts(text, "w" * 32)
+    assert {
+        json.loads(item.canonical_value_json)["name"]
+        for item in candidates
+        if item.fact_type == "language"
+    } == {"English", "Hindi"}
+
+    dangling = "Languages:\n  o CrossPage:\n\nProficient\n"
+    _run, candidates, _evidence = extract_deterministic_facts(dangling, "z" * 32)
+    assert candidates == ()
+
+
+def test_v2_omits_unstructured_multiword_skill_prose() -> None:
+    prose = "Skills:\nDesigned cloud systems\nProfessional Experience\n"
+    _run, candidates, _evidence = extract_deterministic_facts(prose, "p" * 32)
+    assert candidates == ()
+
+    structured = (
+        "Skills: SQL Database\n"
+        "- Multi Word Skill\n"
+        "  o Another Multi Word Skill\n"
+        "Python, Cloud Systems\n"
+    )
+    _run, candidates, _evidence = extract_deterministic_facts(structured, "q" * 32)
+    assert {
+        json.loads(item.canonical_value_json)["name"]
+        for item in candidates
+        if item.fact_type == "skill"
+    } == {
+        "SQL Database",
+        "Multi Word Skill",
+        "Another Multi Word Skill",
+        "Python",
+        "Cloud Systems",
+    }
+
+    unindented = "Skills:\no Python\nO JAVA\n  o Python\n"
+    _run, candidates, _evidence = extract_deterministic_facts(unindented, "r" * 32)
+    assert {
+        json.loads(item.canonical_value_json)["name"]
+        for item in candidates
+        if item.fact_type == "skill"
+    } == {"Python", "JAVA"}
+
+
+def test_v2_languages_accept_lexical_hyphens_and_bounded_cefr_annotations() -> None:
+    text = (
+        "Languages:\n"
+        "o English\n"
+        "- Serbo-Croatian\n"
+        "English: LRN Proficiency C2 (Distinction)\n"
+        "German: Goethe-Zertifikat B1 (Befriedigend)\n"
+        "C2\n"
+        "Distinction\n"
+    )
+    _run, candidates, _evidence = extract_deterministic_facts(text, "c" * 32)
+    assert {
+        json.loads(item.canonical_value_json)["name"]
+        for item in candidates
+        if item.fact_type == "language"
+    } == {"English", "Serbo-Croatian", "German"}
+
+    ambiguous = "Languages:\nEnglish -Fluent\nEnglish - Fluent\n"
+    _run, candidates, _evidence = extract_deterministic_facts(ambiguous, "d" * 32)
+    assert {
+        json.loads(item.canonical_value_json)["name"]
+        for item in candidates
+        if item.fact_type == "language"
+    } == {"English"}
+
+
+def test_v2_cefr_and_qualification_annotation_matrix() -> None:
+    text = (
+        "Languages:\n"
+        "o English: C2\n"
+        "- Hindi: B1\n"
+        "Greek: c1\n"
+        "English: LRN Proficiency C2 (Distinction)\n"
+        "Hindi: Goethe-Zertifikat B1 (Befriedigend)\n"
+        "English — Fluent\n"
+        "Hindi – Proficient\n"
+        "English - Advanced\n"
+        "C2\nB1\nProficient\nProficiency\nDistinction\nBefriedigend\n"
+    )
+    _run, candidates, evidence = extract_deterministic_facts(text, "m" * 32)
+    languages = {
+        json.loads(item.canonical_value_json)["name"]
+        for item in candidates
+        if item.fact_type == "language"
+    }
+    assert languages == {"English", "Hindi", "Greek"}
+    assert not any(item.fact_type == "certification" for item in candidates)
+    assert all(
+        text.encode()[item.start_byte : item.end_byte].decode() in languages
+        for item in evidence
+        if item.candidate_id
+        in {
+            candidate.id
+            for candidate in candidates
+            if candidate.fact_type == "language"
+        }
+    )
+
+
+def test_v2_wrapped_certificate_annotations_are_consumed() -> None:
+    text = (
+        "Languages:\n"
+        "o English:\n  LRN Proficiency C2\n"
+        "o German:\n  Goethe-Zertifikat B1\n"
+        "German — Goethe-Zertifikat B1 (Befriedigend)\n"
+        "English – LRN Proficiency C2 (Distinction)\n"
+        "Hindi - Goethe-Zertifikat B1 (Befriedigend)\n"
+    )
+    _run, candidates, evidence = extract_deterministic_facts(text, "n" * 32)
+    language_candidates = [item for item in candidates if item.fact_type == "language"]
+    assert {
+        json.loads(item.canonical_value_json)["name"] for item in language_candidates
+    } == {"English", "German", "Hindi"}
+    assert not any(item.fact_type == "certification" for item in candidates)
+    ids = {item.id for item in language_candidates}
+    assert all(
+        text.encode()[item.start_byte : item.end_byte].decode()
+        in {"English", "German", "Hindi"}
+        for item in evidence
+        if item.candidate_id in ids
+    )
+
+
+def test_v2_wrapped_annotation_never_crosses_next_language_entry() -> None:
+    for next_entry in ("o German: C2", "- German: C2", "German: C2"):
+        text = f"Languages:\no English:\n{next_entry}\n"
+        _run, candidates, _evidence = extract_deterministic_facts(text, "x" * 32)
+        assert {
+            json.loads(item.canonical_value_json)["name"]
+            for item in candidates
+            if item.fact_type == "language"
+        } == {"German"}
+
+    text = "Languages:\no English:\nLRN Proficiency C2 (Distinction)\n"
+    _run, candidates, _evidence = extract_deterministic_facts(text, "y" * 32)
+    assert {
+        json.loads(item.canonical_value_json)["name"]
+        for item in candidates
+        if item.fact_type == "language"
+    } == {"English"}
+
+
+def test_v2_missing_or_unsupported_qualification_is_omitted() -> None:
+    text = (
+        "Languages:\n"
+        "LRN Proficiency C2 (Distinction)\n"
+        "Goethe-Zertifikat B1 (Befriedigend)\n"
+        "English: Unsupported Qualification\n"
+    )
+    _run, candidates, _evidence = extract_deterministic_facts(text, "u" * 32)
+    assert candidates == ()
+
+
+def test_v2_wrapped_arbitrary_cefr_text_is_not_associated() -> None:
+    text = "Languages:\no English:\nGerman C2\n"
+    _run, candidates, _evidence = extract_deterministic_facts(text, "v" * 32)
+    assert candidates == ()

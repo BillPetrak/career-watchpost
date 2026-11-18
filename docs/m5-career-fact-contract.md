@@ -1,4 +1,4 @@
-# Product 1 v1.05 M5 deterministic career-fact contract
+# Product 1 M5 deterministic career-fact contract
 
 This document is the frozen implementation authority for M5. M5 is a local,
 deterministic structural extractor over the exact successful M3 extracted
@@ -60,12 +60,19 @@ recognized labels are `Name|Full name|Preferred name|Candidate`,
 `-` on the same line, or on subsequent non-empty lines until the next
 recognized heading/section. Items are split only on comma, semicolon, vertical
 bar, `•`, or `·` (a leading list `-` or `*` is decoration, not a separator).
-Empty items are omitted. A language item containing parentheses, brackets, or
-a colon is ambiguous (often a proficiency annotation) and is omitted rather
-than partially interpreted.
+In v2, a line-start letter `o`/`O` followed by whitespace is recognized as a
+pseudo-bullet (including when PDF extraction loses indentation); an initial
+`O` without following whitespace is preserved.
+Empty items are omitted. New headings terminate the preceding list. Supported
+boundaries include Contact/Contact Details, Summary/Professional Summary,
+Projects/Selected Projects, Experience/Professional Experience, Work
+History/Employment History, References, Awards, Publications, Interests, and
+Volunteering.
 
-Experience/employment headings are exactly `Experience|Employment|Work
-experience`; education is exactly `Education`. Only records prefixed by `-`
+Experience/employment headings are `Experience|Employment|Work experience`,
+`Professional Experience`, `Work History`, and `Employment History`; education
+is exactly `Education`. v1 replays retain only the original three employment
+headings; v2 recognizes the expanded vocabulary. Only records prefixed by `-`
 or `•` are considered. Their title/company or degree/institution pair must be
 separated by one explicit `at`, `|`, `–`, or `—` delimiter. Complete date
 tokens are exactly `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`; an optional range uses
@@ -100,8 +107,22 @@ only add evidence.
 * `skill`: `{"name": "..."}` from a `Skills`, `Technical skills`, or
   `Core skills` heading/list line. Items are separated only by commas,
   semicolons, bullets, or vertical bars; blank/ambiguous items are omitted.
+  In v2, an unstructured multiword continuation line is conservatively omitted
+  as possible prose; explicit bullets, separators, and inline heading values
+  remain supported.
 * `language`: `{"name": "..."}` from a `Languages` heading/list line using
-  the same explicit separators. Proficiency is never inferred or persisted.
+  the same explicit separators. v2 accepts inline `English: Fluent`,
+  `English — Fluent`, and `English - Fluent`, and a supported proficiency word
+  on the immediately following continuation line for a structurally identified
+  entry. The persisted value and evidence contain only the language label;
+  proficiency metadata is omitted. Supported descriptors are Native, Fluent,
+  Proficient, Professional, Conversational, Basic, Beginner, Intermediate, and
+  Advanced (case-insensitive). A standalone descriptor or ambiguous association
+  is omitted. v2 also accepts bounded certificate/qualification annotations
+  containing CEFR A1/A2/B1/B2/C1/C2, with optional parenthesized
+  `Distinction` or `Befriedigend`; the annotation is omitted from the persisted
+  name-only value and never creates a certificate fact. ASCII hyphens remain
+  lexical unless used as a delimiter with surrounding whitespace.
 * `employment`: `{"title":"...","company":"...","start_date":"...",
   "end_date":"..."}` from an explicitly labelled `Experience`,
   `Employment`, or `Work experience` block. A record requires one unambiguous
@@ -146,9 +167,19 @@ The frozen constants are:
 
 `FACT_SCHEMA_FINGERPRINT = "f49c008962f1591f498708825f664d13434600a0a079c0557bc075e0217f9e3f"`
 
-`DETERMINISTIC_EXTRACTOR_VERSION = "careeros-m5-deterministic-career-facts-v1"`
+The original v1 extractor is frozen. Historical artifacts remain immutable and
+replay validation dispatches by the stored fingerprint. New runs use v2 and
+have distinct cache and candidate identities; unknown fingerprints fail
+closed. Schema 14, the FACT schema fingerprint, identity envelope version 1,
+and M6/M7 shapes are unchanged.
 
-`DETERMINISTIC_EXTRACTOR_FINGERPRINT = "0882205196f757b28c54d6d7ce27824cf052b7b65c9642009def87b062be3e04"`
+`DETERMINISTIC_EXTRACTOR_V1_VERSION = "careeros-m5-deterministic-career-facts-v1"`
+
+`DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT = "0882205196f757b28c54d6d7ce27824cf052b7b65c9642009def87b062be3e04"`
+
+`DETERMINISTIC_EXTRACTOR_VERSION = "careeros-m5-deterministic-career-facts-v2"`
+
+`DETERMINISTIC_EXTRACTOR_FINGERPRINT = "2554da25ff6810da3cb4cc30ee9ac538a34fdfd1c92778676411db064c34026a"`
 
 The candidate identity object is exactly:
 
@@ -211,3 +242,13 @@ and name/phone equality checks; M5 requests the bounded detector once and does
 not widen or reinterpret it. Every M5 per-type limit is checked before any
 candidate or evidence object is constructed, and an over-limit field fails the
 whole aggregate.
+
+M5 v2 excludes skill/language entries overlapping detector-supported email or
+phone findings. This is a structural gate, not comprehensive PII detection:
+categories outside the existing detector remain governed by section boundaries
+and conservative grammar. Ambiguous entries are omitted rather than guessed.
+Confidence remains exactly `1.0`: it records a deterministic structural match,
+not probability, ownership, or verification. Evidence always retains exact
+UTF-8 byte coordinates and SHA-256 slice integrity, including when multibyte
+text precedes the fact. v1 and v2 cache identities cannot collide because the
+extractor fingerprint is part of the cache identity.

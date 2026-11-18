@@ -26,10 +26,14 @@ FACT_SCHEMA_VERSION = "careeros-career-fact-schema-v1"
 FACT_SCHEMA_FINGERPRINT = (
     "f49c008962f1591f498708825f664d13434600a0a079c0557bc075e0217f9e3f"
 )
-DETERMINISTIC_EXTRACTOR_VERSION = "careeros-m5-deterministic-career-facts-v1"
-DETERMINISTIC_EXTRACTOR_FINGERPRINT = (
+DETERMINISTIC_EXTRACTOR_V1_VERSION = "careeros-m5-deterministic-career-facts-v1"
+DETERMINISTIC_EXTRACTOR_VERSION = "careeros-m5-deterministic-career-facts-v2"
+DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT = (
     "0882205196f757b28c54d6d7ce27824cf052b7b65c9642009def87b062be3e04"
 )
+DETERMINISTIC_EXTRACTOR_FINGERPRINT = hashlib.sha256(
+    b"careeros-m5-deterministic-career-facts-v2"
+).hexdigest()
 INPUT_MAX_BYTES = 4 * 1024 * 1024
 MAX_FIELD_BYTES = 512
 MAX_NORMALIZED_KEY_LENGTH = 512
@@ -108,8 +112,57 @@ _PORTFOLIO_LABEL = re.compile(
     r"(?im)^\s*(?:portfolio|website|personal\s+site|github)\s*[:=-]\s*([^\r\n]+)"
 )
 _SECTION = re.compile(
+    r"(?im)^\s*(experience|employment|work\s+experience|professional\s+experience|"
+    r"work\s+history|employment\s+history|education)\s*:?\s*$"
+)
+_SECTION_V1 = re.compile(
     r"(?im)^\s*(experience|employment|work\s+experience|education)\s*:?\s*$"
 )
+_BOUNDARY_HEADING = re.compile(
+    r"(?i)^\s*(?:contact(?:\s+details)?|summary|professional\s+summary|"
+    r"projects?|selected\s+projects|professional\s+experience|work\s+history|"
+    r"employment\s+history|references|awards?|publications?|interests?|"
+    r"volunteering|volunteer(?:ing)?)\s*:?\s*$"
+)
+_PROFICIENCY = re.compile(
+    r"(?i)^(?:native|fluent|proficient|professional|conversational|basic|"
+    r"beginner|intermediate|advanced)(?:\s+(?:working|level|fluency))?\.?$"
+)
+_CEFR = re.compile(r"(?i)\b(?:A1|A2|B1|B2|C1|C2)\b")
+
+
+def _v2_annotation(value: str) -> bool:
+    clean = value.strip()
+    if _PROFICIENCY.fullmatch(clean):
+        return True
+    if re.fullmatch(r"(?i)(?:A1|A2|B1|B2|C1|C2)", clean):
+        return True
+    if not _CEFR.search(clean):
+        return False
+    return bool(
+        re.fullmatch(
+            r"(?i)[^()\n]+\b(?:A1|A2|B1|B2|C1|C2)\b(?:\s*\((?:Distinction|Befriedigend)\))?",
+            clean,
+        )
+    )
+
+
+def _v2_annotation_continuation(value: str) -> bool:
+    clean = value.strip()
+    if re.match(r"(?:[-*•·]|[oO]\s+)", clean):
+        return False
+    if re.search(r"\s+(?:\u2014|\u2013|-)\s+|:", clean):
+        return False
+    if _PROFICIENCY.fullmatch(clean) or re.fullmatch(
+        r"(?i)(?:A1|A2|B1|B2|C1|C2)", clean
+    ):
+        return True
+    if not re.search(
+        r"(?i)\b(?:proficiency|zertifikat|certificate|qualification|esol)\b",
+        clean,
+    ):
+        return False
+    return _v2_annotation(clean)
 
 
 class CareerFactError(ValueError):
@@ -252,6 +305,22 @@ def _is_recognized_heading(line: str) -> bool:
             _EMAIL_LABEL,
             _PHONE_LABEL,
             _PORTFOLIO_LABEL,
+            _BOUNDARY_HEADING,
+        )
+    )
+
+
+def _is_recognized_heading_v1(line: str) -> bool:
+    return any(
+        pattern.fullmatch(line) is not None
+        for pattern in (
+            _LIST_HEADING,
+            _SECTION_V1,
+            _ANY_LABEL,
+            _NAME_LABEL,
+            _EMAIL_LABEL,
+            _PHONE_LABEL,
+            _PORTFOLIO_LABEL,
         )
     )
 
@@ -313,7 +382,7 @@ def _label_occurrences(
     return occurrences
 
 
-def _list_occurrences(text: str, offsets: array[int]) -> list[_Occurrence]:
+def _list_occurrences_v1(text: str, offsets: array[int]) -> list[_Occurrence]:
     out: list[_Occurrence] = []
     lines = list(_line_spans(text))
     for index, (line, start, _end) in enumerate(lines):
@@ -331,7 +400,7 @@ def _list_occurrences(text: str, offsets: array[int]) -> list[_Occurrence]:
         if first.strip():
             item_lines.append((first, first_start))
         for next_line, next_start, _ in lines[index + 1 :]:
-            if _is_recognized_heading(next_line):
+            if _is_recognized_heading_v1(next_line):
                 break
             if not next_line.strip():
                 break
@@ -346,20 +415,205 @@ def _list_occurrences(text: str, offsets: array[int]) -> list[_Occurrence]:
     return out
 
 
-def _composite_occurrences(text: str, offsets: array[int]) -> list[_Occurrence]:
+def _decorated_item(
+    value: str, start: int, *, allow_letter_bullet: bool = False
+) -> tuple[str, int, int]:
+    """Remove only unmistakable list decoration, retaining O-prefixed names."""
+    clean, p0, p1 = _trim_span(value, start)
+    match = re.match(r"[oO](?=\s+)", clean) if allow_letter_bullet else None
+    if match:
+        clean, p0, p1 = _trim_span(clean[match.end() :], p0 + match.end())
+    elif clean.startswith(("-", "*", "•", "·")):
+        clean, p0, p1 = _trim_span(clean[1:], p0 + 1)
+    return clean, p0, p1
+
+
+def _overlaps_pii(
+    start: int, end: int, findings: tuple[Any, ...], offsets: array[int]
+) -> bool:
+    return any(
+        finding.category in {"email", "phone"}
+        and finding.raw_start_byte < offsets[end]
+        and offsets[start] < finding.raw_end_byte
+        for finding in findings
+    )
+
+
+def _language_item(
+    value: str, start: int, *, allow_letter_bullet: bool = False
+) -> tuple[str, int, int] | None:
+    clean, p0, p1 = _decorated_item(
+        value, start, allow_letter_bullet=allow_letter_bullet
+    )
+    if any(marker in clean for marker in "[]"):
+        return None
+    # A descriptor alone is never a language.
+    if _PROFICIENCY.fullmatch(clean) or re.fullmatch(
+        r"(?i)(?:A1|A2|B1|B2|C1|C2|Proficiency|Distinction|Befriedigend)", clean
+    ):
+        return None
+    # Split only explicit proficiency delimiters. A colon is also accepted.
+    match = re.match(r"^(.+?)\s*(?::|\u2014|\u2013|\s+-\s+)\s*(.+?)\s*$", clean)
+    if match and _v2_annotation(match.group(2)):
+        name = match.group(1).strip()
+        name_offset = p0 + len(match.group(1)) - len(match.group(1).lstrip())
+        return name, name_offset, name_offset + len(name)
+    if match:
+        return None
+    if _v2_annotation(clean):
+        return None
+    if re.search(r"\s+-\S|\S-\s+", clean):
+        return None
+    return clean, p0, p1
+
+
+def _list_occurrences_v2(
+    text: str, offsets: array[int], findings: tuple[Any, ...]
+) -> list[_Occurrence]:
+    out: list[_Occurrence] = []
+    lines = list(_line_spans(text))
+    for index, (line, start, _end) in enumerate(lines):
+        heading_match = _LIST_HEADING.fullmatch(line)
+        if heading_match is None:
+            continue
+        heading = _HEADINGS[_k(heading_match.group("heading"))]
+        if heading == "certification":
+            continue
+        entries: list[tuple[str, int]] = []
+        first = heading_match.group("value") or ""
+        if first.strip():
+            entries.append((first, start + heading_match.start("value")))
+        cursor = index + 1
+        while cursor < len(lines):
+            next_line, next_start, _ = lines[cursor]
+            if heading == "language":
+                is_boundary = (
+                    _LIST_HEADING.fullmatch(next_line) is not None
+                    or _SECTION.fullmatch(next_line) is not None
+                    or _BOUNDARY_HEADING.fullmatch(next_line) is not None
+                )
+                if _ANY_LABEL.fullmatch(next_line) is not None:
+                    label_value = next_line.split(":", 1)[-1].strip()
+                    is_language_annotation = _v2_annotation(label_value)
+                    is_boundary = is_boundary or not is_language_annotation
+            else:
+                is_boundary = _is_recognized_heading(next_line)
+            if not next_line.strip() or is_boundary:
+                break
+            entries.append((next_line, next_start))
+            cursor += 1
+        if heading == "language":
+            for entry_index, (entry, entry_start) in enumerate(entries):
+                letter_bullet = bool(re.match(r"\s*[oO]\s+", entry))
+                annotation_delimiter = bool(
+                    re.search(r"\s+(?:\u2014|\u2013|-)\s+", entry)
+                    or (":" in entry and "(" not in entry.split(":", 1)[0])
+                )
+                delimiter_match = re.search(r"\s+(?:\u2014|\u2013|-)\s+|:", entry)
+                left_has_parenthesis = bool(
+                    delimiter_match and "(" in entry[: delimiter_match.start()]
+                )
+                if (
+                    "(" in entry and (not annotation_delimiter or left_has_parenthesis)
+                ) or "[" in entry:
+                    continue
+                # Comma-separated shared descriptor is unambiguous.
+                shared = re.match(r"^\s*(.+?),\s*(.+?)\s*:\s*(.+?)\s*$", entry)
+                if shared and _v2_annotation(shared.group(3)):
+                    names = [shared.group(1), *shared.group(2).split(",")]
+                    parts = []
+                    search_at = 0
+                    for name in names:
+                        clean_name = name.strip()
+                        local = entry.find(clean_name, search_at)
+                        parts.append(
+                            (
+                                clean_name,
+                                entry_start + local,
+                                entry_start + local + len(clean_name),
+                            )
+                        )
+                        search_at = local + len(clean_name)
+                else:
+                    parts = _split_list_items(entry, entry_start)
+                for raw, p0, _p1 in parts:
+                    if raw.rstrip().endswith(":"):
+                        following = (
+                            entries[entry_index + 1][0].strip()
+                            if entry_index + 1 < len(entries)
+                            else ""
+                        )
+                        if not _v2_annotation_continuation(following):
+                            continue
+                        raw = raw.rstrip()[:-1].rstrip()
+                    item = _language_item(raw, p0, allow_letter_bullet=letter_bullet)
+                    if item is None:
+                        continue
+                    name, n0, n1 = item
+                    if not name or _overlaps_pii(n0, n1, findings, offsets):
+                        continue
+                    out.append(
+                        _Occurrence(
+                            "language", {"name": name}, ((offsets[n0], offsets[n1]),)
+                        )
+                    )
+                # A following indented descriptor belongs to the prior bullet;
+                # it is consumed structurally and never emitted.
+            continue
+        inline_value = bool(first.strip())
+        for entry, entry_start in entries:
+            letter_bullet = bool(re.match(r"\s*[oO]\s+", entry))
+            explicit_item_structure = bool(
+                re.match(r"\s*(?:[-*•·])", entry)
+                or re.match(r"\s*[oO]\s+", entry)
+                or re.search(r"[,;|•·]", entry)
+            )
+            for raw, p0, _p1 in _split_list_items(entry, entry_start):
+                clean, n0, n1 = _decorated_item(
+                    raw, p0, allow_letter_bullet=letter_bullet
+                )
+                if not clean or _overlaps_pii(n0, n1, findings, offsets):
+                    continue
+                # Keep genuine multiword names, but omit obvious prose.
+                if (
+                    not explicit_item_structure
+                    and not inline_value
+                    and len(clean.split()) > 1
+                ):
+                    continue
+                if len(clean.split()) > 10 or clean.endswith((".", ";")):
+                    continue
+                out.append(
+                    _Occurrence("skill", {"name": clean}, ((offsets[n0], offsets[n1]),))
+                )
+            inline_value = False
+    return out
+
+
+def _composite_occurrences(
+    text: str, offsets: array[int], *, v1: bool = False
+) -> list[_Occurrence]:
     out: list[_Occurrence] = []
     lines = list(_line_spans(text))
     section: str | None = None
     for line, start, _end in lines:
-        match = _SECTION.match(line)
+        match = (_SECTION_V1 if v1 else _SECTION).match(line)
         if match:
             section = (
                 "employment"
-                if _k(match.group(1)) in {"experience", "employment", "work experience"}
+                if _k(match.group(1))
+                in {
+                    "experience",
+                    "employment",
+                    "work experience",
+                    "professional experience",
+                    "work history",
+                    "employment history",
+                }
                 else "education"
             )
             continue
-        if _is_recognized_heading(line):
+        if (_is_recognized_heading_v1 if v1 else _is_recognized_heading)(line):
             section = None
             continue
         if (
@@ -412,7 +666,9 @@ def _composite_occurrences(text: str, offsets: array[int]) -> list[_Occurrence]:
     return out
 
 
-def _certification_occurrences(text: str, offsets: array[int]) -> list[_Occurrence]:
+def _certification_occurrences(
+    text: str, offsets: array[int], *, v1: bool = False
+) -> list[_Occurrence]:
     lines = list(_line_spans(text))
     out: list[_Occurrence] = []
     for index, (line, line_start, _end) in enumerate(lines):
@@ -427,7 +683,9 @@ def _certification_occurrences(text: str, offsets: array[int]) -> list[_Occurren
         if first.strip():
             item_lines.append((first, line_start + heading_match.start("value")))
         for next_line, next_start, _ in lines[index + 1 :]:
-            if not next_line.strip() or _is_recognized_heading(next_line):
+            if not next_line.strip() or (
+                _is_recognized_heading_v1 if v1 else _is_recognized_heading
+            )(next_line):
                 break
             item_lines.append((next_line, next_start))
         for item, item_start in item_lines:
@@ -614,10 +872,11 @@ def _candidate_id(
     semantic: dict[str, Any],
     input_size: int,
     input_sha256: str,
+    extractor_fingerprint: str = DETERMINISTIC_EXTRACTOR_FINGERPRINT,
 ) -> str:
     identity = {
         "extraction_run_id": extraction_run_id,
-        "extractor_fingerprint": DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+        "extractor_fingerprint": extractor_fingerprint,
         "fact_type": fact_type,
         "input_byte_size": input_size,
         "input_sha256": input_sha256,
@@ -636,6 +895,7 @@ def extract_deterministic_facts(
     *,
     fact_run_id: str | None = None,
     created_at: str | None = None,
+    extractor_fingerprint: str = DETERMINISTIC_EXTRACTOR_FINGERPRINT,
 ) -> tuple[
     CareerFactRun, tuple[CareerFactCandidate, ...], tuple[CareerFactEvidence, ...]
 ]:
@@ -653,7 +913,7 @@ def extract_deterministic_facts(
         "input_byte_size": len(artifact),
         "input_kind": "extracted",
         "mode": "deterministic",
-        "extractor_fingerprint": DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+        "extractor_fingerprint": extractor_fingerprint,
         "schema_fingerprint": FACT_SCHEMA_FINGERPRINT,
         "version": 1,
     }
@@ -669,7 +929,7 @@ def extract_deterministic_facts(
         input_sha,
         len(artifact),
         None,
-        DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+        extractor_fingerprint,
         FACT_SCHEMA_FINGERPRINT,
         None,
         None,
@@ -681,12 +941,22 @@ def extract_deterministic_facts(
         findings = detect_pii(raw_text)
     except (TypeError, ValueError) as exc:
         raise CareerFactError("M5 structural detector failed closed") from exc
+    if extractor_fingerprint not in {
+        DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+        DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+    }:
+        raise CareerFactError("unknown M5 extractor fingerprint")
+    legacy = extractor_fingerprint == DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT
     occurrences = (
         _label_occurrences(raw_text, offsets, findings)
-        + _list_occurrences(raw_text, offsets)
-        + _composite_occurrences(raw_text, offsets)
+        + (
+            _list_occurrences_v1(raw_text, offsets)
+            if legacy
+            else _list_occurrences_v2(raw_text, offsets, findings)
+        )
+        + _composite_occurrences(raw_text, offsets, v1=legacy)
     )
-    occurrences.extend(_certification_occurrences(raw_text, offsets))
+    occurrences.extend(_certification_occurrences(raw_text, offsets, v1=legacy))
     grouped: dict[tuple[str, str], list[_Occurrence]] = {}
     for occurrence in occurrences:
         _validate_display_fields(occurrence)
@@ -704,7 +974,13 @@ def extract_deterministic_facts(
         items.sort(key=lambda item: min(item.spans))
         semantic = _canonical_semantic(fact_type, items[0].value)
         candidate_id = _candidate_id(
-            extraction_run_id, fact_type, key, semantic, len(artifact), input_sha
+            extraction_run_id,
+            fact_type,
+            key,
+            semantic,
+            len(artifact),
+            input_sha,
+            extractor_fingerprint,
         )
         display_value = {
             key: value for key, value in items[0].value.items() if value is not None
@@ -753,6 +1029,27 @@ def extract_deterministic_facts(
 
 deterministic_extract = extract_deterministic_facts
 extract_career_facts = extract_deterministic_facts
+
+
+def extract_deterministic_facts_v1(
+    raw_text: str,
+    extraction_run_id: str,
+    *,
+    fact_run_id: str | None = None,
+    created_at: str | None = None,
+) -> tuple[
+    CareerFactRun, tuple[CareerFactCandidate, ...], tuple[CareerFactEvidence, ...]
+]:
+    return extract_deterministic_facts(
+        raw_text,
+        extraction_run_id,
+        fact_run_id=fact_run_id,
+        created_at=created_at,
+        extractor_fingerprint=DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+    )
+
+
+extract_deterministic_facts_v2 = extract_deterministic_facts
 
 
 def run_deterministic_facts(
@@ -896,9 +1193,13 @@ __all__ = [
     "FACT_SCHEMA_FINGERPRINT",
     "DETERMINISTIC_EXTRACTOR_VERSION",
     "DETERMINISTIC_EXTRACTOR_FINGERPRINT",
+    "DETERMINISTIC_EXTRACTOR_V1_VERSION",
+    "DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT",
     "CareerFactError",
     "canonical_json",
     "extract_deterministic_facts",
+    "extract_deterministic_facts_v1",
+    "extract_deterministic_facts_v2",
     "deterministic_extract",
     "extract_career_facts",
     "run_deterministic_facts",

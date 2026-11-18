@@ -2,6 +2,8 @@
 
 from .career_facts import (
     DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+    DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+    DETERMINISTIC_EXTRACTOR_V1_VERSION,
     DETERMINISTIC_EXTRACTOR_VERSION,
     FACT_SCHEMA_FINGERPRINT,
     FACT_SCHEMA_VERSION,
@@ -10,6 +12,8 @@ from .career_facts import (
     deterministic_extract,
     extract_career_facts,
     extract_deterministic_facts,
+    extract_deterministic_facts_v1,
+    extract_deterministic_facts_v2,
     run_deterministic_facts,
     validate_candidate_value,
 )
@@ -91,11 +95,15 @@ __all__ = [
     "FACT_SCHEMA_FINGERPRINT",
     "DETERMINISTIC_EXTRACTOR_VERSION",
     "DETERMINISTIC_EXTRACTOR_FINGERPRINT",
+    "DETERMINISTIC_EXTRACTOR_V1_VERSION",
+    "DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT",
     "CareerFactError",
     "canonical_json",
     "deterministic_extract",
     "extract_career_facts",
     "extract_deterministic_facts",
+    "extract_deterministic_facts_v1",
+    "extract_deterministic_facts_v2",
     "run_deterministic_facts",
     "validate_candidate_value",
 ]

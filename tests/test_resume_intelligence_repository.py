@@ -33,7 +33,11 @@ from careeros.database.resume_intelligence import (
     validate_recognized_fact_authority,
 )
 from careeros.database.schema import initialize_schema
-from careeros.resume_intelligence.career_facts import extract_deterministic_facts
+from careeros.resume_intelligence.career_facts import (
+    DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+    extract_deterministic_facts,
+    extract_deterministic_facts_v1,
+)
 from careeros.resume_intelligence.models import (
     CareerFactCandidate,
     CareerFactEvidence,
@@ -107,6 +111,33 @@ def test_extraction_success_cache_and_rollback(db) -> None:
             db, extraction("c" * 32, "other"), [segment("wrong".ljust(32, "c"))]
         )
     assert db.execute("SELECT count(*) FROM resume_extraction_runs").fetchone()[0] == 1
+
+
+def test_v1_fact_authority_replays_with_frozen_fingerprint(db) -> None:
+    source = extraction()
+    persist_extraction(db, source, [segment(source.id)])
+    run, candidates, evidence = extract_deterministic_facts_v1(
+        source.raw_text or "", source.id, fact_run_id="f" * 32, created_at="2026-01-01"
+    )
+    persist_fact_run(db, run, candidates, evidence)
+    assert run.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT
+    assert validate_recognized_fact_authority(db, run.id).run == run
+
+
+def test_unknown_fact_fingerprint_fails_closed(db) -> None:
+    source = extraction()
+    persist_extraction(db, source, [segment(source.id)])
+    run, candidates, evidence = extract_deterministic_facts_v1(
+        source.raw_text or "", source.id, fact_run_id="e" * 32, created_at="2026-01-01"
+    )
+    persist_fact_run(db, run, candidates, evidence)
+    db.execute(
+        "UPDATE career_fact_runs SET extractor_fingerprint='unknown' WHERE id=?",
+        (run.id,),
+    )
+    db.commit()
+    with pytest.raises(ResumeValidationError, match="not recognized M5 authority"):
+        validate_recognized_fact_authority(db, run.id)
 
 
 def test_sanitization_map_findings_reviews_and_rollback(db) -> None:

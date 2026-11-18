@@ -21,6 +21,7 @@ from typing import Any, NoReturn, cast
 
 from careeros.resume_intelligence.career_facts import (
     DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+    DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
     FACT_SCHEMA_FINGERPRINT,
     FACT_TYPES,
     TYPE_LIMITS,
@@ -115,6 +116,11 @@ def validate_recognized_fact_authority(
         evidence_total_limit=evidence_total_limit,
         require_recognized=True,
     )
+    if authority.run.extractor_fingerprint not in {
+        DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+        DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+    }:
+        raise ResumeValidationError("fact run is not recognized M5 authority")
     expected_run, expected_candidates, expected_evidence = extract_deterministic_facts(
         c.execute(
             "SELECT raw_text FROM resume_extraction_runs WHERE id=?",
@@ -123,6 +129,7 @@ def validate_recognized_fact_authority(
         authority.extraction_run_id,
         fact_run_id=authority.run.id,
         created_at=authority.run.created_at,
+        extractor_fingerprint=authority.run.extractor_fingerprint,
     )
     expected_candidates = tuple(sorted(expected_candidates, key=lambda item: item.id))
     expected_evidence = tuple(
@@ -1479,7 +1486,11 @@ def load_fact_authority(
             run.mode != "deterministic"
             or run.input_kind != "extracted"
             or run.sanitization_run_id is not None
-            or run.extractor_fingerprint != DETERMINISTIC_EXTRACTOR_FINGERPRINT
+            or run.extractor_fingerprint
+            not in {
+                DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+                DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+            }
             or run.schema_fingerprint != FACT_SCHEMA_FINGERPRINT
             or run.input_sha256 != raw_sha
             or run.input_byte_size != len(raw)
