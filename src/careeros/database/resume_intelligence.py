@@ -22,6 +22,7 @@ from typing import Any, NoReturn, cast
 from careeros.resume_intelligence.career_facts import (
     DETERMINISTIC_EXTRACTOR_FINGERPRINT,
     DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+    DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT,
     FACT_SCHEMA_FINGERPRINT,
     FACT_TYPES,
     TYPE_LIMITS,
@@ -118,6 +119,7 @@ def validate_recognized_fact_authority(
     )
     if authority.run.extractor_fingerprint not in {
         DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+        DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT,
         DETERMINISTIC_EXTRACTOR_FINGERPRINT,
     }:
         raise ResumeValidationError("fact run is not recognized M5 authority")
@@ -1489,6 +1491,7 @@ def load_fact_authority(
             or run.extractor_fingerprint
             not in {
                 DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+                DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT,
                 DETERMINISTIC_EXTRACTOR_FINGERPRINT,
             }
             or run.schema_fingerprint != FACT_SCHEMA_FINGERPRINT

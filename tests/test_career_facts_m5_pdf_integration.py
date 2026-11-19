@@ -9,6 +9,9 @@ from careeros.database.resume_intelligence import validate_recognized_fact_autho
 from careeros.database.schema import initialize_schema
 from careeros.materials.service import create_material
 from careeros.materials.storage import stage_bytes
+from careeros.resume_intelligence.career_facts import (
+    DETERMINISTIC_EXTRACTOR_FINGERPRINT,
+)
 
 
 def positioned_pdf(pages: list[list[str]]) -> bytes:
@@ -59,6 +62,145 @@ def positioned_pdf(pages: list[list[str]]) -> bytes:
     )
     output.extend(trailer.encode())
     return bytes(output)
+
+
+def two_column_pdf() -> bytes:
+    """Build a positioned, fictional PDF with independent visual columns."""
+    left = [
+        (24, 280, "Résumé"),
+        (24, 264, "SKILLS"),
+        (24, 248, "o SQL Database"),
+        (40, 232, "  Management"),
+        (24, 216, "o Linux/Unix Command"),
+        (40, 200, "  line"),
+        (24, 184, "o Python"),
+        (24, 168, "o C++"),
+        (24, 152, "o JAVA"),
+    ]
+    right = [
+        (220, 280, "LANGUAGES"),
+        (220, 264, "o English:"),
+        (236, 248, "  Proficient"),
+        (220, 232, "o Hindi: Proficient"),
+    ]
+    commands = [b"BT /F1 11 Tf"]
+    for x, y, line in [*left, *right]:
+        escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        commands.append(f"1 0 0 1 {x} {y} Tm ({escaped}) Tj".encode("cp1252"))
+    stream = b" ".join(commands) + b" ET"
+    objects = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Count 1/Kids[4 0 R]>>",
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding/WinAnsiEncoding>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 400 400]/"
+        b"Resources<</Font<</F1 3 0 R>>>>/Contents 5 0 R>>",
+        b"<</Length "
+        + str(len(stream)).encode()
+        + b">>\nstream\n"
+        + stream
+        + b"\nendstream",
+    ]
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, value in enumerate(objects, 1):
+        offsets.append(len(output))
+        output.extend(f"{number} 0 obj\n".encode() + value + b"\nendobj\n")
+    xref = len(output)
+    output.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    output.extend(
+        b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets[1:])
+    )
+    output.extend(
+        f"trailer\n<</Size {len(objects) + 1}/Root 1 0 R>>\n"
+        f"startxref\n{xref}\n%%EOF\n".encode()
+    )
+    return bytes(output)
+
+
+def test_two_column_pdf_assembles_v3_wrapped_skills(tmp_path: Path) -> None:
+    db = connect(tmp_path / "two-column.sqlite3")
+    initialize_schema(db)
+    root = tmp_path / "materials"
+    content = two_column_pdf()
+    stage, size, sha = stage_bytes(root, [content])
+    detail = create_material(
+        db,
+        root,
+        name="Synthetic two-column résumé",
+        category="resume",
+        filename="two-column.pdf",
+        media_type="application/pdf",
+        stage=stage,
+        size=size,
+        sha256=sha,
+    )
+    result = analyze(
+        db, root, detail["material_id"], detail["current_version"]["version_id"]
+    )
+    assert result["outcome"] == "succeeded"
+    authority = validate_recognized_fact_authority(db, result["fact_run_id"])
+    assert authority.run.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_FINGERPRINT
+    assert (
+        db.execute(
+            "SELECT count(*) FROM resume_text_segments WHERE extraction_run_id=?",
+            (result["extraction_run_id"],),
+        ).fetchone()[0]
+        == 1
+    )
+    page = candidates(db, result["fact_run_id"])
+    skills = {
+        item["value"]["name"] for item in page["items"] if item["fact_type"] == "skill"
+    }
+    assert skills == {
+        "SQL Database Management",
+        "Linux/Unix Command line",
+        "Python",
+        "C++",
+        "JAVA",
+    }
+    assert {
+        item["value"]["name"]
+        for item in page["items"]
+        if item["fact_type"] == "language"
+    } == {"English", "Hindi"}
+    raw = (
+        db.execute(
+            "SELECT raw_text FROM resume_extraction_runs WHERE id=?",
+            (result["extraction_run_id"],),
+        )
+        .fetchone()[0]
+        .encode()
+    )
+    expected_fragments = {
+        "SQL Database Management": ["SQL Database", "Management"],
+        "Linux/Unix Command line": ["Linux/Unix Command", "line"],
+    }
+    for item in page["items"]:
+        name = item["value"].get("name")
+        if name not in expected_fragments:
+            continue
+        detail_view = candidate_detail(db, item["id"])
+        evidence = detail_view["evidence"]["items"]
+        assert len(evidence) == 2
+        assert [e["ordinal"] for e in evidence] == [0, 1]
+        assert [
+            raw[e["start_byte"] : e["end_byte"]].decode() for e in evidence
+        ] == expected_fragments[name]
+        assert all(e["source_label"] == "PDF page 1" for e in evidence)
+        stored_hashes = [
+            row["slice_sha256"]
+            for row in db.execute(
+                "SELECT slice_sha256 FROM career_fact_evidence "
+                "WHERE candidate_id=? ORDER BY ordinal",
+                (item["id"],),
+            ).fetchall()
+        ]
+        assert stored_hashes == [
+            hashlib.sha256(raw[e["start_byte"] : e["end_byte"]]).hexdigest()
+            for e in evidence
+        ]
+        assert evidence[0]["start_byte"] > len("Résumé".encode())
+    db.close()
 
 
 def test_positioned_pdf_runs_m3_m5_authority_and_m7_projection(tmp_path: Path) -> None:

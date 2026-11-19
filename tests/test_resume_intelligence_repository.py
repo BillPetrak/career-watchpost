@@ -34,9 +34,12 @@ from careeros.database.resume_intelligence import (
 )
 from careeros.database.schema import initialize_schema
 from careeros.resume_intelligence.career_facts import (
+    DETERMINISTIC_EXTRACTOR_FINGERPRINT,
     DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+    DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT,
     extract_deterministic_facts,
     extract_deterministic_facts_v1,
+    extract_deterministic_facts_v2,
 )
 from careeros.resume_intelligence.models import (
     CareerFactCandidate,
@@ -122,6 +125,55 @@ def test_v1_fact_authority_replays_with_frozen_fingerprint(db) -> None:
     persist_fact_run(db, run, candidates, evidence)
     assert run.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT
     assert validate_recognized_fact_authority(db, run.id).run == run
+
+
+def test_v2_and_v3_fact_authority_replay_with_distinct_identity(db) -> None:
+    raw = "Skills\no SQL Database\n  Management\no Python\n"
+    source = extraction()
+    source = ResumeExtractionRun(
+        source.id,
+        source.material_version_id,
+        source.source_name,
+        source.source_media_type,
+        len(raw.encode()),
+        digest(raw.encode()),
+        source.source_format,
+        source.detected_format,
+        source.outcome,
+        raw,
+        digest(raw.encode()),
+        1,
+        source.extractor_fingerprint,
+        source.cache_fingerprint,
+        source.created_at,
+    )
+    db.execute(
+        "UPDATE material_versions SET byte_size=?, sha256=? WHERE id=?",
+        (len(raw.encode()), digest(raw.encode()), source.material_version_id),
+    )
+    db.commit()
+    persist_extraction(
+        db,
+        source,
+        [
+            ResumeTextSegment(
+                source.id, 0, 0, len(raw.encode()), "page:1", digest(raw.encode())
+            )
+        ],
+    )
+    v2, v2_candidates, v2_evidence = extract_deterministic_facts_v2(
+        raw, source.id, fact_run_id="2" * 32, created_at="v2"
+    )
+    v3, v3_candidates, v3_evidence = extract_deterministic_facts(
+        raw, source.id, fact_run_id="3" * 32, created_at="v3"
+    )
+    persist_fact_run(db, v2, v2_candidates, v2_evidence)
+    persist_fact_run(db, v3, v3_candidates, v3_evidence)
+    assert v2.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT
+    assert v3.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_FINGERPRINT
+    assert v2.cache_fingerprint != v3.cache_fingerprint
+    assert validate_recognized_fact_authority(db, v2.id).run == v2
+    assert validate_recognized_fact_authority(db, v3.id).run == v3
 
 
 def test_unknown_fact_fingerprint_fails_closed(db) -> None:

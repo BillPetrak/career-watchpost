@@ -27,12 +27,16 @@ FACT_SCHEMA_FINGERPRINT = (
     "f49c008962f1591f498708825f664d13434600a0a079c0557bc075e0217f9e3f"
 )
 DETERMINISTIC_EXTRACTOR_V1_VERSION = "careeros-m5-deterministic-career-facts-v1"
-DETERMINISTIC_EXTRACTOR_VERSION = "careeros-m5-deterministic-career-facts-v2"
+DETERMINISTIC_EXTRACTOR_V2_VERSION = "careeros-m5-deterministic-career-facts-v2"
+DETERMINISTIC_EXTRACTOR_VERSION = "careeros-m5-deterministic-career-facts-v3"
 DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT = (
     "0882205196f757b28c54d6d7ce27824cf052b7b65c9642009def87b062be3e04"
 )
 DETERMINISTIC_EXTRACTOR_FINGERPRINT = hashlib.sha256(
-    b"careeros-m5-deterministic-career-facts-v2"
+    DETERMINISTIC_EXTRACTOR_VERSION.encode()
+).hexdigest()
+DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT = hashlib.sha256(
+    DETERMINISTIC_EXTRACTOR_V2_VERSION.encode()
 ).hexdigest()
 INPUT_MAX_BYTES = 4 * 1024 * 1024
 MAX_FIELD_BYTES = 512
@@ -468,7 +472,11 @@ def _language_item(
 
 
 def _list_occurrences_v2(
-    text: str, offsets: array[int], findings: tuple[Any, ...]
+    text: str,
+    offsets: array[int],
+    findings: tuple[Any, ...],
+    *,
+    assemble_wrapped_skills: bool = False,
 ) -> list[_Occurrence]:
     out: list[_Occurrence] = []
     lines = list(_line_spans(text))
@@ -561,14 +569,76 @@ def _list_occurrences_v2(
                 # it is consumed structurally and never emitted.
             continue
         inline_value = bool(first.strip())
-        for entry, entry_start in entries:
+        entry_index = 0
+        while entry_index < len(entries):
+            entry, entry_start = entries[entry_index]
             letter_bullet = bool(re.match(r"\s*[oO]\s+", entry))
             explicit_item_structure = bool(
                 re.match(r"\s*(?:[-*•·])", entry)
                 or re.match(r"\s*[oO]\s+", entry)
                 or re.search(r"[,;|•·]", entry)
             )
-            for raw, p0, _p1 in _split_list_items(entry, entry_start):
+            item_parts = _split_list_items(entry, entry_start)
+            wrapped = False
+            suppress_ambiguous = False
+            continuation: tuple[str, int, int] | None = None
+            bullet_match = re.match(r"^(?P<indent>\s*)(?:[-*•·]|[oO])\s+", entry)
+            bullet_indent = (
+                len(bullet_match.group("indent")) if bullet_match is not None else None
+            )
+            if (
+                assemble_wrapped_skills
+                and bullet_indent is not None
+                and len(item_parts) == 1
+            ):
+                next_index = entry_index + 1
+                if next_index < len(entries):
+                    next_entry, next_start = entries[next_index]
+                    next_indent = len(next_entry) - len(next_entry.lstrip())
+                    next_is_bullet = bool(
+                        re.match(r"\s*(?:[-*•·]|[oO])\s+", next_entry)
+                    )
+                    clean_next = next_entry.strip()
+                    continuation_start = next_start + (
+                        len(next_entry) - len(next_entry.lstrip())
+                    )
+                    continuation_end = next_start + len(next_entry.rstrip())
+                    safe_continuation = (
+                        not next_is_bullet
+                        and not _is_recognized_heading(next_entry)
+                        and next_indent > bullet_indent
+                        and bool(clean_next)
+                        and len(clean_next.split()) == 1
+                        and not re.search(r"[,;|•·:]", clean_next)
+                        and not clean_next.endswith((".", ";", "!", "?"))
+                        and not _overlaps_pii(
+                            continuation_start,
+                            continuation_end,
+                            findings,
+                            offsets,
+                        )
+                    )
+                    potential_continuation = (
+                        not next_is_bullet and next_indent > bullet_indent
+                    )
+                    enclosed = next_index + 1 == len(entries) or bool(
+                        re.match(r"\s*(?:[-*•·]|[oO])\s+", entries[next_index + 1][0])
+                    )
+                    if safe_continuation and enclosed:
+                        continuation = (
+                            clean_next,
+                            continuation_start,
+                            continuation_end,
+                        )
+                        wrapped = True
+                    elif potential_continuation:
+                        # A visually wrapped bullet that cannot be interpreted
+                        # conservatively is omitted as one unit.  Do not leak
+                        # either fragment as an independent skill.
+                        suppress_ambiguous = True
+            for raw, p0, _p1 in item_parts:
+                if suppress_ambiguous:
+                    break
                 clean, n0, n1 = _decorated_item(
                     raw, p0, allow_letter_bullet=letter_bullet
                 )
@@ -583,9 +653,27 @@ def _list_occurrences_v2(
                     continue
                 if len(clean.split()) > 10 or clean.endswith((".", ";")):
                     continue
-                out.append(
-                    _Occurrence("skill", {"name": clean}, ((offsets[n0], offsets[n1]),))
-                )
+                spans = [(offsets[n0], offsets[n1])]
+                if wrapped and continuation is not None:
+                    continuation_text, continuation_start, continuation_end = (
+                        continuation
+                    )
+                    clean = f"{clean} {continuation_text}"
+                    spans.append(
+                        (offsets[continuation_start], offsets[continuation_end])
+                    )
+                out.append(_Occurrence("skill", {"name": clean}, tuple(spans)))
+            advance = 2 if (wrapped or suppress_ambiguous) else 1
+            if suppress_ambiguous and bullet_indent is not None:
+                while entry_index + advance < len(entries):
+                    following = entries[entry_index + advance][0]
+                    following_indent = len(following) - len(following.lstrip())
+                    if following_indent <= bullet_indent:
+                        break
+                    if re.match(r"\s*(?:[-*•·]|[oO])\s+", following):
+                        break
+                    advance += 1
+            entry_index += advance
             inline_value = False
     return out
 
@@ -943,16 +1031,23 @@ def extract_deterministic_facts(
         raise CareerFactError("M5 structural detector failed closed") from exc
     if extractor_fingerprint not in {
         DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+        DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT,
         DETERMINISTIC_EXTRACTOR_FINGERPRINT,
     }:
         raise CareerFactError("unknown M5 extractor fingerprint")
     legacy = extractor_fingerprint == DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT
+    current_v3 = extractor_fingerprint == DETERMINISTIC_EXTRACTOR_FINGERPRINT
     occurrences = (
         _label_occurrences(raw_text, offsets, findings)
         + (
             _list_occurrences_v1(raw_text, offsets)
             if legacy
-            else _list_occurrences_v2(raw_text, offsets, findings)
+            else _list_occurrences_v2(
+                raw_text,
+                offsets,
+                findings,
+                assemble_wrapped_skills=current_v3,
+            )
         )
         + _composite_occurrences(raw_text, offsets, v1=legacy)
     )
@@ -1049,7 +1144,22 @@ def extract_deterministic_facts_v1(
     )
 
 
-extract_deterministic_facts_v2 = extract_deterministic_facts
+def extract_deterministic_facts_v2(
+    raw_text: str,
+    extraction_run_id: str,
+    *,
+    fact_run_id: str | None = None,
+    created_at: str | None = None,
+) -> tuple[
+    CareerFactRun, tuple[CareerFactCandidate, ...], tuple[CareerFactEvidence, ...]
+]:
+    return extract_deterministic_facts(
+        raw_text,
+        extraction_run_id,
+        fact_run_id=fact_run_id,
+        created_at=created_at,
+        extractor_fingerprint=DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT,
+    )
 
 
 def run_deterministic_facts(
@@ -1193,6 +1303,8 @@ __all__ = [
     "FACT_SCHEMA_FINGERPRINT",
     "DETERMINISTIC_EXTRACTOR_VERSION",
     "DETERMINISTIC_EXTRACTOR_FINGERPRINT",
+    "DETERMINISTIC_EXTRACTOR_V2_VERSION",
+    "DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT",
     "DETERMINISTIC_EXTRACTOR_V1_VERSION",
     "DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT",
     "CareerFactError",

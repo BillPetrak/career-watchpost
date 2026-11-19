@@ -109,7 +109,13 @@ only add evidence.
   semicolons, bullets, or vertical bars; blank/ambiguous items are omitted.
   In v2, an unstructured multiword continuation line is conservatively omitted
   as possible prose; explicit bullets, separators, and inline heading values
-  remain supported.
+  remain supported. v3 preserves those formats and additionally joins an
+  explicit bullet head with one immediately following, strictly more-indented
+  physical line only when the same-page section grammar encloses the unit and
+  no boundary, PII overlap, separator, or sentence-like prose is present.
+  Ambiguous wrapped units are omitted as a whole. Joined values use one ASCII
+  space and retain two separate exact evidence spans; arbitrary PDF column
+  geometry is not reconstructed by M5 text parsing.
 * `language`: `{"name": "..."}` from a `Languages` heading/list line using
   the same explicit separators. v2 accepts inline `English: Fluent`,
   `English — Fluent`, and `English - Fluent`, and a supported proficiency word
@@ -167,9 +173,9 @@ The frozen constants are:
 
 `FACT_SCHEMA_FINGERPRINT = "f49c008962f1591f498708825f664d13434600a0a079c0557bc075e0217f9e3f"`
 
-The original v1 extractor is frozen. Historical artifacts remain immutable and
-replay validation dispatches by the stored fingerprint. New runs use v2 and
-have distinct cache and candidate identities; unknown fingerprints fail
+The original v1 and accepted v2 extractors are frozen. Historical artifacts
+remain immutable and replay validation dispatches by the stored fingerprint.
+New runs use v3 and have distinct cache and candidate identities; unknown fingerprints fail
 closed. Schema 14, the FACT schema fingerprint, identity envelope version 1,
 and M6/M7 shapes are unchanged.
 
@@ -177,9 +183,13 @@ and M6/M7 shapes are unchanged.
 
 `DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT = "0882205196f757b28c54d6d7ce27824cf052b7b65c9642009def87b062be3e04"`
 
-`DETERMINISTIC_EXTRACTOR_VERSION = "careeros-m5-deterministic-career-facts-v2"`
+`DETERMINISTIC_EXTRACTOR_V2_VERSION = "careeros-m5-deterministic-career-facts-v2"`
 
-`DETERMINISTIC_EXTRACTOR_FINGERPRINT = "2554da25ff6810da3cb4cc30ee9ac538a34fdfd1c92778676411db064c34026a"`
+`DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT = "2554da25ff6810da3cb4cc30ee9ac538a34fdfd1c92778676411db064c34026a"`
+
+`DETERMINISTIC_EXTRACTOR_VERSION = "careeros-m5-deterministic-career-facts-v3"`
+
+`DETERMINISTIC_EXTRACTOR_FINGERPRINT = "5e65aff161d525034e5c6f1d0fa91696cee4729977f8fb2ec218ca0ab1b13c0e"`
 
 The candidate identity object is exactly:
 
@@ -243,7 +253,7 @@ not widen or reinterpret it. Every M5 per-type limit is checked before any
 candidate or evidence object is constructed, and an over-limit field fails the
 whole aggregate.
 
-M5 v2 excludes skill/language entries overlapping detector-supported email or
+M5 v2 and v3 exclude skill/language entries overlapping detector-supported email or
 phone findings. This is a structural gate, not comprehensive PII detection:
 categories outside the existing detector remain governed by section boundaries
 and conservative grammar. Ambiguous entries are omitted rather than guessed.
@@ -251,4 +261,5 @@ Confidence remains exactly `1.0`: it records a deterministic structural match,
 not probability, ownership, or verification. Evidence always retains exact
 UTF-8 byte coordinates and SHA-256 slice integrity, including when multibyte
 text precedes the fact. v1 and v2 cache identities cannot collide because the
-extractor fingerprint is part of the cache identity.
+extractor fingerprint is part of the cache identity; v1, v2, and v3 identities
+cannot collide.

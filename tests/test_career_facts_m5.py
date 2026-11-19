@@ -17,6 +17,7 @@ from careeros.database.schema import initialize_schema
 from careeros.resume_intelligence.career_facts import (
     DETERMINISTIC_EXTRACTOR_FINGERPRINT,
     DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT,
+    DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT,
     FACT_SCHEMA_FINGERPRINT,
     FACT_TYPE_ORDER,
     INPUT_MAX_BYTES,
@@ -26,6 +27,7 @@ from careeros.resume_intelligence.career_facts import (
     canonical_json,
     extract_deterministic_facts,
     extract_deterministic_facts_v1,
+    extract_deterministic_facts_v2,
     run_deterministic_facts,
 )
 from careeros.resume_intelligence.models import ResumeExtractionRun, ResumeTextSegment
@@ -609,15 +611,54 @@ def test_v1_identity_and_v2_cache_are_distinct() -> None:
     v1, old_candidates, _ = extract_deterministic_facts_v1(
         text, "x" * 32, fact_run_id="1" * 32, created_at="old"
     )
-    v2, new_candidates, _ = extract_deterministic_facts(
+    v2, v2_candidates, _ = extract_deterministic_facts_v2(
         text, "x" * 32, fact_run_id="2" * 32, created_at="new"
     )
-    assert v1.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT
-    assert v2.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_FINGERPRINT
-    assert v1.cache_fingerprint != v2.cache_fingerprint
-    assert {item.id for item in old_candidates}.isdisjoint(
-        {item.id for item in new_candidates}
+    v3, v3_candidates, _ = extract_deterministic_facts(
+        text, "x" * 32, fact_run_id="3" * 32, created_at="current"
     )
+    assert v1.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_V1_FINGERPRINT
+    assert v2.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT
+    assert v3.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_FINGERPRINT
+    assert len({v1.cache_fingerprint, v2.cache_fingerprint, v3.cache_fingerprint}) == 3
+    assert {item.id for item in old_candidates}.isdisjoint(
+        {item.id for item in v2_candidates}
+    )
+    assert {item.id for item in v2_candidates}.isdisjoint(
+        {item.id for item in v3_candidates}
+    )
+
+
+def test_v2_multiline_fixture_is_frozen_and_separate_from_v3() -> None:
+    text = "Skills\no SQL Database\n  Management\no Python\n"
+    v2, v2_candidates, _ = extract_deterministic_facts_v2(
+        text,
+        "m5v3-frozen-v2-extraction",
+        fact_run_id="2" * 32,
+        created_at="frozen",
+    )
+    v3, v3_candidates, _ = extract_deterministic_facts(
+        text,
+        "m5v3-frozen-v2-extraction",
+        fact_run_id="3" * 32,
+        created_at="current",
+    )
+    assert v2.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_V2_FINGERPRINT
+    assert v3.extractor_fingerprint == DETERMINISTIC_EXTRACTOR_FINGERPRINT
+    assert v2.cache_fingerprint != v3.cache_fingerprint
+    assert {item.id for item in v2_candidates}.isdisjoint(
+        {item.id for item in v3_candidates}
+    )
+    assert {
+        json.loads(item.canonical_value_json)["name"]
+        for item in v2_candidates
+        if item.fact_type == "skill"
+    } == {"SQL Database", "Management", "Python"}
+    assert {
+        json.loads(item.canonical_value_json)["name"]
+        for item in v3_candidates
+        if item.fact_type == "skill"
+    } == {"SQL Database Management", "Python"}
 
 
 def test_pinned_historical_v1_fixture_uses_frozen_boundary_grammar() -> None:
@@ -803,3 +844,107 @@ def test_v2_wrapped_arbitrary_cefr_text_is_not_associated() -> None:
     text = "Languages:\no English:\nGerman C2\n"
     _run, candidates, _evidence = extract_deterministic_facts(text, "v" * 32)
     assert candidates == ()
+
+
+def test_v3_assembles_only_explicit_bullet_skill_continuations() -> None:
+    text = (
+        "Résumé Ω\n"
+        "Skills\n"
+        "o SQL Database\n"
+        "  Management\n"
+        "o Linux/Unix Command\n"
+        "  line\n"
+        "o Python\n"
+        "o C++\n"
+        "o JAVA\n"
+        "Languages\n"
+        "o English:\n"
+        "  Proficient\n"
+        "o Hindi: Proficient\n"
+    )
+    _run, candidates, evidence = extract_deterministic_facts(text, "v3" * 16)
+    skills = {
+        json.loads(candidate.canonical_value_json)["name"]
+        for candidate in candidates
+        if candidate.fact_type == "skill"
+    }
+    assert skills == {
+        "SQL Database Management",
+        "Linux/Unix Command line",
+        "Python",
+        "C++",
+        "JAVA",
+    }
+    assert not {"SQL Database", "Management", "Linux/Unix Command", "line"} & skills
+    raw = text.encode()
+    expected_fragments = {
+        "SQL Database Management": ["SQL Database", "Management"],
+        "Linux/Unix Command line": ["Linux/Unix Command", "line"],
+    }
+    for candidate in candidates:
+        if (
+            candidate.fact_type != "skill"
+            or " " not in json.loads(candidate.canonical_value_json)["name"]
+        ):
+            continue
+        spans = [item for item in evidence if item.candidate_id == candidate.id]
+        assert len(spans) == 2
+        name = json.loads(candidate.canonical_value_json)["name"]
+        assert [raw[item.start_byte : item.end_byte].decode() for item in spans] == (
+            expected_fragments[name]
+        )
+        assert [item.ordinal for item in spans] == [0, 1]
+        assert all(
+            item.slice_sha256
+            == hashlib.sha256(raw[item.start_byte : item.end_byte]).hexdigest()
+            for item in spans
+        )
+
+
+def test_v3_omits_ambiguous_wrapped_skill_as_one_unit() -> None:
+    text = "Skills\no Python\n  unsupported, prose\no C++\n"
+    _run, candidates, _evidence = extract_deterministic_facts(text, "a" * 32)
+    assert {
+        json.loads(candidate.canonical_value_json)["name"]
+        for candidate in candidates
+        if candidate.fact_type == "skill"
+    } == {"C++"}
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "joined"),
+    [
+        ("Skills\no SQL\no Database\n", {"SQL", "Database"}, None),
+        (
+            "Skills\no SQL\n\n  Management\n",
+            {"SQL"},
+            None,
+        ),
+        ("Skills\no SQL\nLanguages\n  Management\n", {"SQL"}, None),
+        (
+            "Skills\n  o SQL\n Management\n  o Python\n",
+            {"SQL", "Management", "Python"},
+            None,
+        ),
+        ("Skills\no Python\n  owner@example.test\no C++\n", {"C++"}, None),
+        ("Skills\no Python\n  Built systems well\no C++\n", {"C++"}, None),
+        ("Skills\no Python\n  Other Column\no C++\n", {"C++"}, None),
+        (
+            "Skills\no Python\n  Management\nPython, SQL\n",
+            {"Python", "SQL"},
+            None,
+        ),
+    ],
+)
+def test_v3_wrapped_skill_boundary_matrix(
+    text: str, expected: set[str], joined: str | None
+) -> None:
+    _run, candidates, _evidence = extract_deterministic_facts(text, "m" * 32)
+    skills = {
+        json.loads(candidate.canonical_value_json)["name"]
+        for candidate in candidates
+        if candidate.fact_type == "skill"
+    }
+    assert skills == expected
+    if joined is not None:
+        assert joined in skills
