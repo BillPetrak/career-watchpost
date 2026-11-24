@@ -2,16 +2,19 @@
 
 CareerOS is a privacy-first career intelligence platform.
 
-**Product 1 v1.2 adds durable/materialized Today review ranking after the
-v1.1.1 R1-C immutable Career Profile assembly-provenance patch.** Package
-version `1.2.0` retains
+**The Product 1 v1.2.1 release candidate is the private-file-hardening and
+deterministic Career Fact correction patch after the v1.2.0
+durable/materialized Today review-ranking release.** Candidate package version
+`1.2.1` retains
 the seven released built-in sources as the exact zero-configuration defaults
 and the four optional credential-free, owner-curated sources configured through
 private `sources.yaml`: Lever, Greenhouse, Workable, and SmartRecruiters, in
 that fixed order. Product 1 v1.05's local résumé intelligence and immutable
-Career Profile workflow remain intact..See `docs/v1.2.0-release-qualification.md` for
-the current release boundary and qualification record; the v1.1 and v1.1.1
-historical records remain at `docs/v1.1-release-qualification.md` and
+Career Profile workflow remain intact..See
+`docs/v1.2.1-release-qualification.md` for the patch candidate boundary and
+pending qualification state. The released v1.2.0 qualification remains at
+`docs/v1.2.0-release-qualification.md`; the v1.1 and v1.1.1 historical records
+remain at `docs/v1.1-release-qualification.md` and
 `docs/v1.1.1-release-qualification.md`.
 
 ## Product 1 v1.1 source expansion
@@ -41,6 +44,11 @@ compare-and-swap. Analysis is always explicit for one exact résumé Material
 version; merely opening the CLI, API, or loopback web workspace never analyzes
 or selects a résumé. The supported inputs are text-based PDF and ordinary DOCX.
 OCR/image-only PDF, legacy DOC, and other formats are unsupported.
+M5 v3 can join one narrowly bounded wrapped skill only when an explicit bullet
+head is followed immediately by a strictly more-indented physical line on the
+same PDF page and all structural safety gates pass. It does not reconstruct
+arbitrary PDF multiline or column geometry; ambiguous wrapped content is
+omitted for human review rather than guessed.
 
 Use `careeros career-profile sources`, `analyze`, `candidates`, `candidate`,
 `review`, `show`, `history`, and `save`, or the private loopback
@@ -200,7 +208,7 @@ environment and install the wheel with the API dependencies:
 ```bash
 python3.11 -m venv ~/.venvs/careeros
 source ~/.venvs/careeros/bin/activate
-python -m pip install '/path/to/careeros-1.2.0-py3-none-any.whl[api]'
+python -m pip install '/path/to/careeros-1.2.1-py3-none-any.whl[api]'
 
 careeros --help
 python -m careeros --help
@@ -211,9 +219,12 @@ careeros serve                         # then open http://127.0.0.1:8000/ui
 This route installs an existing release artifact; it does not imply publication
 to PyPI. The server deliberately refuses a missing, uninitialized, or old-schema
 database. The collection command above is the supported first-run bootstrap for
-new private state; users with schema-v12 state must instead make the supported
-backup and run the explicit v12-to-v13 migration described above. The wheel
-and source checkout use the same stable XDG-compatible defaults:
+new private state. Existing state must be migrated explicitly with writers
+stopped and a supported backup retained. The current release boundary is
+schema 13 to schema 14; structurally valid earlier schemas pass through their
+historical migrations in order before the v13-to-v14 step. Malformed, unknown,
+and future schemas fail closed, and there is no supported down migration. The
+wheel and source checkout use the same stable XDG-compatible defaults:
 
 - database: `${XDG_DATA_HOME:-~/.local/share}/careeros/careeros.sqlite3`
 - managed Materials: `${XDG_DATA_HOME:-~/.local/share}/careeros/materials`

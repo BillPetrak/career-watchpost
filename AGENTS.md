@@ -1,14 +1,14 @@
 # CareerOS — Agent instructions
 
-Product 1 v1.2 is the durable/materialized Today review-ranking release after
-the v1.1.1 R1-C immutable Career Profile assembly-provenance patch. Its package
-version is `1.2.0` and its intended release tag is `v1.2.0`. The seven released
-built-in sources remain the zero-configuration defaults; owner-curated
-private configuration may add credential-free Lever, Greenhouse, Workable, and
+The Product 1 v1.2.1 release candidate is the private-file-hardening and
+deterministic Career Fact correction patch after the v1.2.0
+durable/materialized Today review-ranking release. Its proposed package version
+is `1.2.1` and its intended release tag is `v1.2.1`. The seven released built-in
+sources remain the zero-configuration defaults; owner-curated private
+configuration may add credential-free Lever, Greenhouse, Workable, and
 SmartRecruiters sources in that order. Product 1 v1.05's local résumé/CV
-extraction, sanitization, deterministic Career Facts, human review, and immutable
-Career Profile foundation/workspace
-remain intact.
+extraction, sanitization, deterministic Career Facts, human review, and
+immutable Career Profile foundation/workspace remain intact.
 
 R3, R4, and R5 remain closed absent a concrete regression. There is no R6. MCP
 and Superpowers remain deferred, no new sources belong in v1.0.
@@ -21,8 +21,10 @@ state. See `docs/v1.05-release-qualification.md` for the v1.05 boundary and
 `docs/v1.1-release-qualification.md` for the v1.1 release boundary and
 qualification record, and `docs/v1.1.1-release-qualification.md` for the R1-C
 patch boundary and qualification record, and
-`docs/v1.2.0-release-qualification.md` for the current Today-ranking release
-boundary and qualification record.
+`docs/v1.2.0-release-qualification.md` for the historical Today-ranking release
+boundary and qualification record. See
+`docs/v1.2.1-release-qualification.md` for the current patch candidate boundary
+and pending qualification state.
 
 Stable private defaults are XDG-based and independent of the checkout or
 installed environment: database
