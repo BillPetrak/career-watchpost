@@ -14,9 +14,11 @@ def validate_startup_database(
     try:
         state = _check(database)
     except (OSError, ValueError, sqlite3.Error) as exc:
-        raise ValueError("CareerOS requires a current schema v14 database") from exc
+        raise ValueError(
+            "Career WatchPost requires a current schema v14 database"
+        ) from exc
     if state != "current":
-        raise ValueError("CareerOS requires a current schema v14 database")
+        raise ValueError("Career WatchPost requires a current schema v14 database")
     # Validate every selected root state, including an unbound database. This
     # remains read-only: absent/empty roots are admissible only while unbound,
     # and populated or unsafe roots are never adopted at startup.
@@ -36,7 +38,9 @@ def validate_startup_database(
             allow_create=False,
         )
     except (OSError, sqlite3.Error, ValueError, StorageError) as exc:
-        raise ValueError("CareerOS requires a matching materials store") from exc
+        raise ValueError(
+            "Career WatchPost requires a matching materials store"
+        ) from exc
 
 
 def serve(
@@ -55,9 +59,9 @@ def serve(
 
     host = "::1" if ipv6 else "127.0.0.1"
     print(
-        f"CareerOS serving at http://[{host}]:{port}"
+        f"Career WatchPost serving at http://[{host}]:{port}"
         if ipv6
-        else f"CareerOS serving at http://{host}:{port}"
+        else f"Career WatchPost serving at http://{host}:{port}"
     )
     uvicorn.run(
         create_app(database, materials_root),

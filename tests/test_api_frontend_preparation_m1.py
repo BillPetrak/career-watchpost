@@ -31,7 +31,7 @@ def test_preparation_accessibility_privacy_and_deadline_safety() -> None:
     assert "fieldset" in source and "legend" in source
     assert "Confirm requirement" in source and "Clear item confirmation" in source
     assert '"Reapply unsent change"' in source
-    assert '"CareerOS records what you captured; it has NOT verified' in source
+    assert '"Career WatchPost records what you captured; it has NOT verified' in source
     assert "authoritative external source" in source
     assert '["open", "not_applicable"]' in source
     for forbidden in (

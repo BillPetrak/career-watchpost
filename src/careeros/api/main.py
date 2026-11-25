@@ -1095,9 +1095,9 @@ def create_app(
             await worker
 
     app = FastAPI(
-        title="CareerOS API",
+        title="Career WatchPost API",
         description=(
-            "REST access to stored CareerOS state. Reads and computations are "
+            "REST access to stored Career WatchPost state. Reads and computations are "
             "read-only; the mutation endpoints "
             "PUT /review-decisions/{job_id}, DELETE /review-decisions/{job_id}, "
             "PUT /applications/{job_id}, POST /reminders, "
@@ -1114,7 +1114,7 @@ def create_app(
             "jobs, never initializes the database, and never contacts external "
             "services."
         ),
-        version="1.2.1",
+        version="1.2.2",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,

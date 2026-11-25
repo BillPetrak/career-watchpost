@@ -332,7 +332,7 @@ def test_safe_rendering_privacy_and_attachment_only_contract() -> None:
     for forbidden_tag in ("<iframe", "<object", "<embed"):
         assert forbidden_tag not in html.lower()
     assert 'download.setAttribute("download", "");' in source
-    assert "Downloading creates an unmanaged copy outside CareerOS" in source
+    assert "Downloading creates an unmanaged copy outside Career WatchPost" in source
     assert "no document is shown in the page" in source
     assert 'href: "/material-versions/" + versionId + "/content"' in source
     assert 'href: "#materials"' not in source

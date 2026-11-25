@@ -429,7 +429,7 @@ def test_node_http_helpers_preserve_safe_package_conflicts_and_accept_204(
             await H.write(packageUrl + "/approval", { method: "PUT", headers: { Accept: "application/json" }, body: '{}' });
             throw new Error("network write should fail");
           } catch (error) {
-            assert(error.message === "Could not reach the CareerOS API. Check that it is running, then retry.", "network errors must remain generic");
+            assert(error.message === "Could not reach the Career WatchPost API. Check that it is running, then retry.", "network errors must remain generic");
           }
           global.fetch = async () => emptyResponse(204);
           const result = await H.write(packageUrl, { method: "DELETE", headers: { Accept: "application/json" }, body: '{"confirm":true}' });

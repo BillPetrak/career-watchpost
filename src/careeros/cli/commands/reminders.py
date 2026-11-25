@@ -431,7 +431,7 @@ def run_reminder_notify_due(
             "Delivered means notify-send (the desktop notification service) "
             "accepted the notification;"
         )
-        print("CareerOS cannot prove that a visible banner was rendered.")
+        print("Career WatchPost cannot prove that a visible banner was rendered.")
 
     return 0 if failed == 0 else 1
 

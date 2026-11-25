@@ -1,7 +1,7 @@
 "use strict";
 
 (function () {
-  // CareerOS local workspace.
+  // Career WatchPost local workspace.
   //
   // This file contains ONLY presentation and local navigation/loading state.
   // It calls the documented Home endpoint (GET /report), the Jobs listing
@@ -564,7 +564,7 @@
         body: JSON.stringify(body),
       });
     } catch (_networkError) {
-      throw new Error("Could not reach the CareerOS API. Check that it is running, then retry.");
+      throw new Error("Could not reach the Career WatchPost API. Check that it is running, then retry.");
     }
     if (!response.ok) {
       var error = await readHttpError(url, response);
@@ -586,7 +586,7 @@
     try {
       response = await fetch(url, options);
     } catch (_networkError) {
-      throw new Error("Could not reach the CareerOS API. Check that it is running, then retry.");
+      throw new Error("Could not reach the Career WatchPost API. Check that it is running, then retry.");
     }
     if (!response.ok) {
       var error = await readHttpError(url, response);
@@ -1008,7 +1008,7 @@
     form.appendChild(fieldset);
     form.appendChild(el("p", {
       className: "field-hint",
-      textContent: "The file is copied into private CareerOS-managed storage. Its contents are not previewed or analyzed.",
+      textContent: "The file is copied into private Career WatchPost-managed storage. Its contents are not previewed or analyzed.",
     }));
     var submit = el("button", { type: "submit", className: "primary-button", textContent: "Import material" });
     submit.id = "material-import-submit";
@@ -1038,7 +1038,7 @@
     var note = el("div", { className: "material-draft-note" });
     note.setAttribute("role", "status");
     note.appendChild(el("p", {
-      textContent: "The previous import outcome is ambiguous. CareerOS must check the authoritative first page before another import can be submitted.",
+      textContent: "The previous import outcome is ambiguous. Career WatchPost must check the authoritative first page before another import can be submitted.",
     }));
     var retry = el("button", {
       type: "button",
@@ -1427,7 +1427,7 @@
     section.appendChild(el("h3", { textContent: "Exact version history" }));
     section.appendChild(el("p", {
       className: "download-warning",
-      textContent: "Downloading creates an unmanaged copy outside CareerOS. Every download is an attachment; no document is shown in the page.",
+      textContent: "Downloading creates an unmanaged copy outside Career WatchPost. Every download is an attachment; no document is shown in the page.",
     }));
     var list = el("ol", { className: "material-version-list" });
     data.versions.forEach(function (version) {
@@ -1831,7 +1831,7 @@
   async function renderHome() {
     var status = document.getElementById("home-status");
     var content = document.getElementById("home-content");
-    setLoading(status, "Loading CareerOS dashboard…");
+    setLoading(status, "Loading Career WatchPost dashboard…");
     try {
       var data = await fetchJson("/report");
       if (!isObject(data) || !isObject(data.overview)) {
@@ -5406,7 +5406,7 @@
   }
 
   function preparationUnavailable(body) {
-    body.appendChild(el("p", { className: "empty-note", textContent: "Preparation is unavailable until you explicitly track this job in Application. CareerOS will not create application state automatically." }));
+    body.appendChild(el("p", { className: "empty-note", textContent: "Preparation is unavailable until you explicitly track this job in Application. Career WatchPost will not create application state automatically." }));
   }
 
   function prepLabel(value) {
@@ -5458,7 +5458,7 @@
     var reasons = Array.isArray(data.readiness["reasons"]) ? data.readiness["reasons"] : [];
     var blockers = reasons.filter(function (reason) { return isObject(reason) && reason.code !== "job_information_unavailable"; });
     readinessBox.appendChild(el("p", { className: "readiness-blockers", textContent: "Blocking requirements: " + blockers.length }));
-    var note = el("p", { className: "field-hint", textContent: "CareerOS records what you captured; it has NOT verified that the listing is complete." });
+    var note = el("p", { className: "field-hint", textContent: "Career WatchPost records what you captured; it has NOT verified that the listing is complete." });
     readinessBox.appendChild(note);
     if (reasons.some(function (r) { return isObject(r) && r.code === "job_information_unavailable"; })) readinessBox.appendChild(el("p", { className: "warning-note", textContent: "The listing description is unavailable. You may independently review an authoritative external source before capturing requirements." }));
     body.appendChild(readinessBox);
@@ -6556,7 +6556,7 @@
       if (draftRetry) draftRetry.focus();
     } catch (error) {
       if (!packageReconciliationAttemptCurrent(target, attempt)) return;
-      replaceSectionError(body, "Finalization outcome is unresolved. Retry only the authoritative status check; CareerOS will not repeat finalization automatically.", error, function () {
+      replaceSectionError(body, "Finalization outcome is unresolved. Retry only the authoritative status check; Career WatchPost will not repeat finalization automatically.", error, function () {
         reconcilePackageFinalization(body, job, target);
       });
       var unresolvedBox = body.querySelector(".error-box");

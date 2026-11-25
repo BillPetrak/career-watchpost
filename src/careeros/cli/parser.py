@@ -1,5 +1,5 @@
 # ruff: noqa: E501
-"""Argument-parser construction for the CareerOS CLI.
+"""Argument-parser construction for the Career WatchPost CLI.
 
 All parser definitions, defaults, choices, and help text live here. This module
 must never import command modules or the main dispatch module.
@@ -47,21 +47,21 @@ def _nonnegative(value: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CareerOS command-line parser."""
+    """Build the Career WatchPost command-line parser."""
     default_database = database_path()
     # Keep the established parser declarations compact while resolving the
     # environment-sensitive default once for this parser instance.
     DEFAULT_DATABASE_PATH = default_database
     parser = argparse.ArgumentParser(
         prog="careeros",
-        description="Local-first career intelligence tools.",
+        description="Career WatchPost local-first career intelligence tools.",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     add_systemd_parser(subparsers)
 
     database_parser = subparsers.add_parser(
-        "database", help="Safely administer a CareerOS database."
+        "database", help="Safely administer a Career WatchPost database."
     )
     database_commands = database_parser.add_subparsers(
         dest="database_command", required=True
@@ -147,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "diagnose",
-        help="Check the CareerOS development environment.",
+        help="Check the Career WatchPost development environment.",
     )
 
     collect_parser = subparsers.add_parser(

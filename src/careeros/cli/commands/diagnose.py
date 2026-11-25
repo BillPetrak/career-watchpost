@@ -104,11 +104,11 @@ def _guidance(
 
 
 def print_diagnostics() -> int:
-    """Print basic CareerOS environment and notification readiness."""
+    """Print basic Career WatchPost environment and notification readiness."""
     managed_database = database_path()
     database_directory = managed_database.parent
 
-    print("CareerOS diagnostics")
+    print("Career WatchPost diagnostics")
     print("--------------------")
     print(f"Database path:    {managed_database}")
     print(f"Python version:    {sys.version.split()[0]}")
