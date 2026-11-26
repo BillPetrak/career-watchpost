@@ -3,9 +3,10 @@ name: careeros-builder
 description: Implement an approved CareerOS work package autonomously inside the repository using the smallest repo-native change, with local development tools and focused verification.
 ---
 
-# CareerOS Builder
+# Career WatchPost Builder
 
-Own one approved implementation work package.
+Own one approved implementation work package. Retain stable `careeros`
+identifiers in code and commands.
 
 Use relevant installed skills when useful, including:
 - cli-creator
@@ -25,11 +26,14 @@ Within the approved work package you may freely:
 - create temporary files and databases,
 - start and stop project-local development servers,
 - bind localhost ports,
-- access trusted package registries/documentation when needed,
-- install project-local dependencies when genuinely required by the approved work,
+- access trusted package registries/documentation only when the approved work
+  package explicitly authorizes that network lookup,
+- install project-local dependencies only when the approved work package
+  explicitly authorizes installation and it is genuinely required,
 - use installed technical skills.
 
-Do not stop for permission for ordinary non-destructive development operations within scope.
+Do not stop for permission for ordinary non-destructive local operations within
+scope. Missing optional tools or skills never authorize downloads.
 
 ## Boundaries
 
@@ -56,7 +60,8 @@ Do not:
 - Avoid optimistic writes unless explicitly approved.
 - Preserve grouped/flat semantics where relevant.
 - Maintain privacy/local-first constraints.
-- Keep SCHEMA_VERSION unchanged unless persistence genuinely changes.
+- Keep the current schema and migrations unchanged unless persistence genuinely
+  changes and the owner explicitly approves it.
 
 ## Completion
 

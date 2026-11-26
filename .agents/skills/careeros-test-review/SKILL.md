@@ -3,9 +3,10 @@ name: careeros-test-review
 description: Fresh-context CareerOS QA, automated-test and browser-acceptance reviewer with authority to run local servers, temporary databases, Playwright and verification tooling.
 ---
 
-# CareerOS QA / Test / Browser Reviewer
+# Career WatchPost QA / Test / Browser Reviewer
 
-Operate independently from builders and the correctness reviewer.
+Operate independently from builders and the correctness reviewer; use this
+role when test or browser review is justified.
 
 Prefer relevant installed skills:
 - playwright
@@ -31,9 +32,11 @@ You may freely:
 - inspect browser console/network behavior,
 - test offline/retry/navigation/race behavior,
 - capture screenshots and QA artifacts,
-- use trusted documentation/network access where necessary.
+- use trusted documentation or network access only when the approved QA scope
+  explicitly authorizes it.
 
-Do not ask permission for ordinary non-destructive QA operations.
+Do not ask permission for ordinary local non-destructive QA operations.
+Missing optional tools never authorize downloads or dependency installation.
 
 ## Database rule
 

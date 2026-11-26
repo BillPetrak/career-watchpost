@@ -1,1040 +1,268 @@
-# Career WatchPost user and operations guide
-This guide retains the detailed CareerOS operational reference for the public Career WatchPost identity. The stable `careeros` technical namespace, private-state boundaries, migration rules, source policies, and historical qualification authorities remain unchanged.
+# User guide
 
-## Detailed operational reference
+Career WatchPost is a local application. It does not submit applications,
+send email, contact employers, or upload résumé data. The commands and paths
+use the stable `careeros` namespace.
 
-Career WatchPost is a privacy-first career workflow; its stable technical namespace remains CareerOS/`careeros`.
+## Requirements and installation
 
-**Career WatchPost v1.2.2 is qualified, owner accepted, and released as a
-source-only repository.** It retains the private-file-hardening and
-deterministic Career Fact correction baseline from Product 1 v1.2.1 and the
-seven released built-in sources as the exact zero-configuration defaults and
-the four optional credential-free, owner-curated sources configured through
-private `sources.yaml`: Lever, Greenhouse, Workable, and SmartRecruiters, in
-that fixed order. Product 1 v1.05's local résumé intelligence and immutable
-Career Profile workflow remain intact. See
-`docs/v1.2.1-release-qualification.md` for the accepted patch boundary and
-`docs/v1.2.2-release-qualification.md` for the accepted branding release. The
-released v1.2.0 qualification remains at
-`docs/v1.2.0-release-qualification.md`; the v1.1 and v1.1.1 historical records
-remain at `docs/v1.1-release-qualification.md` and
-`docs/v1.1.1-release-qualification.md`.
-
-## Product 1 v1.1 source expansion
-
-The built-in collection registry remains exactly Arbeitnow, Remote OK, We Work
-Remotely, Jobicy, Remotive, Working Nomads, and Himalayas. With no private
-source configuration and no historical configurable-source records, active
-collection and shared source surfaces expose exactly those seven sources.
-After configuration is removed, historical configurable sources remain visible
-where applicable for read-only observability and statistics, but are not active
-collection sources.
-
-An optional user-owned `0600` file at
-`${XDG_CONFIG_HOME:-~/.config}/careeros/sources.yaml` can enable explicitly
-configured Lever boards, Greenhouse board tokens, Workable accounts, and
-SmartRecruiters company identifiers. These integrations use credential-free
-public job endpoints, remain bounded and sequential, and do not discover
-accounts or submit applications. Their provider-specific request limits and
-provisional polling policies are documented in `AGENTS.md`.
-
-## Product 1 v1.05 Career Profile
-
-The schema-v13 boundary introduced immutable extraction and sanitization artifacts,
-deterministic Career Fact aggregates, append-only human review history, and
-complete immutable Career Profile snapshots guarded by optimistic revision
-compare-and-swap. Analysis is always explicit for one exact résumé Material
-version; merely opening the CLI, API, or loopback web workspace never analyzes
-or selects a résumé. The supported inputs are text-based PDF and ordinary DOCX.
-OCR/image-only PDF, legacy DOC, and other formats are unsupported.
-M5 v3 can join one narrowly bounded wrapped skill only when an explicit bullet
-head is followed immediately by a strictly more-indented physical line on the
-same PDF page and all structural safety gates pass. It does not reconstruct
-arbitrary PDF multiline or column geometry; ambiguous wrapped content is
-omitted for human review rather than guessed.
-
-Use `careeros career-profile sources`, `analyze`, `candidates`, `candidate`,
-`review`, `show`, `history`, and `save`, or the private loopback
-`#career-profile` workspace. Career Facts remain non-authoritative until a
-human approves or deliberately edits them; rejected facts remain in audit
-history. Every save is a deliberate complete snapshot, including valid empty
-and semantic no-op snapshots.
-
-The Career Profile is not the file-backed ranking Matching Profile managed by
-`careeros profile`, and it is not stored Matching Preferences managed by
-`careeros preference`. v1.05 does not feed Career Profile values into ranking.
-All extraction and review behavior is local and deterministic; no model,
-provider, telemetry, or external résumé service is called.
-
-Upgrade an existing supported database explicitly while CareerOS processes
-using it are stopped:
+Install Python 3.11 or newer and `uv`, then use a public HTTPS checkout:
 
 ```bash
+git clone https://github.com/BillPetrak/career-watchpost.git
+cd career-watchpost
+git checkout v1.2.2
+uv sync --extra development --extra api
+```
+
+The repository is source-only. Development dependencies add pytest, Ruff,
+mypy, and HTTP test helpers; the API extra adds FastAPI and Uvicorn.
+
+## Temporary learning session
+
+The examples through “Ending the temporary session” share one private Bash
+subshell. Start it from the installed checkout, then run the setup inside it:
+
+```bash
+bash --noprofile --norc
+```
+
+```bash
+umask 077
+DEMO_DIR="$(mktemp -d /tmp/careeros-demo.XXXXXX)" || exit
+chmod 700 "$DEMO_DIR" || exit
+unset CAREEROS_DATABASE CAREEROS_MATERIALS_ROOT CAREEROS_SOURCES_CONFIG
+export XDG_DATA_HOME="$DEMO_DIR/data" XDG_CONFIG_HOME="$DEMO_DIR/config"
+export CAREEROS_DATABASE="$XDG_DATA_HOME/careeros/careeros.sqlite3"
+export CAREEROS_MATERIALS_ROOT="$XDG_DATA_HOME/careeros/materials"
+DEMO_PROFILE="$XDG_CONFIG_HOME/careeros/candidate_profile.yaml"
+printf 'Temporary state: %s\n' "$DEMO_DIR"
+```
+
+This overrides inherited database and Materials selectors, unsets inherited
+optional-source selection, and replaces both XDG bases. The fresh default
+`sources.yaml` is absent, so no optional source is enabled. The Matching Profile
+also lives inside this new directory. Stay in this shell for every demonstration
+command below; do not paste individual commands into an unprepared shell.
+`--offline --no-sync` prevents uv dependency downloads or environment updates;
+it does not prevent application network requests.
+
+## Configuration
+
+Create and validate a candidate profile before ranking:
+
+```bash
+uv run --offline --no-sync careeros profile init "$DEMO_PROFILE"
+uv run --offline --no-sync careeros profile validate "$DEMO_PROFILE"
+```
+
+The optional `sources.yaml` enables explicitly selected Lever, Greenhouse,
+Workable, or SmartRecruiters public feeds. It must be a user-owned regular
+`0600` file. Provider policy and polling limits are in the [sources reference](reference/job-sources.md).
+
+[`.env.example`](../.env.example) documents supported environment selectors,
+all commented out. The application does not load `.env` files: deliberately
+export variables or supply them through the execution environment. The
+candidate-profile JSON and YAML examples in `config/` are fictional reference
+fixtures. File-backed profiles require an owned regular `0600` file with one
+hard link; use `profile init` rather than passing a public fixture directly.
+Edit only the temporary profile here, using fictional preferences.
+
+## Discovery, search, and Review
+
+First read the [provider-use boundaries](reference/job-sources.md#provider-rights).
+Only run the following live Arbeitnow request after confirming authority for
+your intended use. It initializes the new schema-14 database; it does not
+recreate the [fictional screenshot tour](portfolio-demo.md). `collect all`,
+`collect due`, and collection timers may attempt every registered source;
+avoid them where any source's collection authority is unresolved.
+
+```bash
+uv run --offline --no-sync careeros collect arbeitnow --limit 10
+uv run --offline --no-sync careeros collect status
+uv run --offline --no-sync careeros collect history --limit 20
+```
+
+Search and rank are read-only. `--grouped` collapses conservative cross-source
+duplicates; tracking filters operate on applications anchored to concrete job
+IDs. Ranking uses the file-backed Matching Profile plus explicit and learned
+Matching Preferences. Career Profile snapshots are not silently copied into
+that ranking profile.
+
+```bash
+uv run --offline --no-sync careeros search engineer --grouped --untracked
+uv run --offline --no-sync careeros rank engineer --profile "$DEMO_PROFILE" --format json
+uv run --offline --no-sync careeros review next --profile "$DEMO_PROFILE"
+```
+
+Review decisions, feedback, and preferences are local workflow data. Learned
+preferences require repeated deterministic evidence, can be suppressed or
+reset, and can be disabled with `--no-adaptive`; `--no-feedback` disables the
+separate direct review-feedback adjustment.
+
+## Applications and reminders
+
+Tracking is local only. Replace `JOB_ID` with a stored job ID returned by search
+and `DUE_AT` with your chosen full ISO-8601 timestamp including an offset
+(for example, `2026-12-01T10:00:00+00:00` is illustrative, not a deadline):
+
+```bash
+uv run --offline --no-sync careeros application set JOB_ID interested
+uv run --offline --no-sync careeros reminder add JOB_ID follow_up DUE_AT --message "Check status"
+uv run --offline --no-sync careeros reminder list --open
+```
+
+Reminder timestamps require an explicit offset. Writes use a per-database
+advisory lock; contention exits 75. Application and reminder history is
+append-only where specified and remains anchored to concrete job IDs, so
+regrouping cannot orphan it.
+
+## Materials and Career Profiles
+
+For this temporary walkthrough, use a fictional résumé you supply. Replace
+`FICTIONAL_RESUME.pdf` with its actual path and each uppercase ID with the exact
+ID reported by the preceding import, sources, analysis, or candidates command.
+Import, audit, and analyze all use the same isolated database and Materials root:
+
+```bash
+uv run --offline --no-sync careeros material import FICTIONAL_RESUME.pdf --name resume --category resume
+uv run --offline --no-sync careeros material audit
+uv run --offline --no-sync careeros career-profile sources
+uv run --offline --no-sync careeros career-profile analyze MATERIAL_ID VERSION_ID
+uv run --offline --no-sync careeros career-profile candidates FACT_RUN_ID
+uv run --offline --no-sync careeros career-profile review CANDIDATE_ID approved
+uv run --offline --no-sync careeros career-profile show
+```
+
+Extraction is bounded and fail-closed. Evidence coordinates and extraction
+identity are retained; ambiguous content is omitted for human review. Career
+Facts require deliberate review before inclusion in a saved profile. Approving
+candidates does not create a Career Profile version: `career-profile show`
+only reads the last saved snapshot, which may not exist yet. Complete the
+[deliberate web save](#saving-a-career-profile) below. Saving a complete profile
+snapshot uses optimistic revision checks and immutable history.
+
+## Web workspace and ending the temporary session
+
+After successful database initialization, start the server in this same shell:
+
+```bash
+uv run --offline --no-sync careeros serve
+```
+
+Open `http://127.0.0.1:8000/ui`. The server validates the selected database and
+matching Materials root; it refuses missing, uninitialized, old, malformed, or
+future-schema databases. Read-only commands do not create absent state.
+
+### A practical web workflow
+
+Use the navigation labels below while the server is running against this same
+isolated state:
+
+- **Today:** start with overdue reminders and application work, then inspect
+  shortlisted opportunities and the bounded Review next preview.
+- **Jobs:** search stored listings and open a job to inspect its details and
+  take local workflow actions. Collection remains a separate CLI operation.
+- **Matching Preferences:** edit your ranking preferences, preview their effect,
+  and deliberately save them with “Save draft as stored preferences.” Inspect,
+  suppress, restore, or reset learned evidence as needed.
+- **Review:** choose duplicate collapsing and learned-preference options, then
+  press “Generate review.” Inspect score explanations before choosing Shortlist,
+  Dismiss, or Review later; changing preferences does not rerun an existing view.
+- **Reviewed:** revisit prior decisions in the “Reviewed opportunities” workspace.
+  Change or clear decisions; shortlisting does not create an application.
+- **Applications:** inspect active/completed applications and update the status
+  of a concrete job independently of Review decisions.
+- **Reminders:** inspect open reminders grouped by urgency. This overview is
+  read-only; open the associated job to add, edit, complete, reopen, or delete
+  reminders.
+- **Materials:** import fictional résumé files for this walkthrough, inspect
+  immutable versions, and manage library metadata and retirement. Downloads
+  create unmanaged copies outside the library.
+- **Career Profile:** analyze an exact résumé version, inspect candidate evidence,
+  approve/correct/reject facts, and deliberately assemble a saved profile.
+
+### Saving a Career Profile
+
+After the CLI analysis/review above, or equivalent work in the web interface:
+
+1. Open **Career Profile → Career Facts**, find the résumé version and choose
+   “Review facts.” Use “Inspect evidence and review history” to check candidates
+   and review any that still need approval or correction.
+2. In the candidate list, choose “Add to assembly” for each approved or
+   approved-edited fact you intend to include.
+3. Open **Current Profile → Open memory-only assembly**. Review the complete
+   selection, including retained facts from an existing profile, ordering,
+   source choices, and privacy classifications.
+4. Press **Save Profile** and wait for “Profile version saved.” Confirm the
+   result under **Current Profile** and **Profile History**. The CLI
+   `career-profile show` now reads that saved version too.
+
+The assembly exists only in browser memory until saved. If another write causes
+a revision conflict, review the refreshed state and explicitly reapply/reconcile
+the preserved draft before saving again. Saving a Career Profile never populates
+the separate ranking Matching Profile or Matching Preferences.
+
+### Ending the temporary session
+
+After saving any intended changes, stop the server with Ctrl-C, then leave the
+temporary shell:
+
+```bash
+exit
+```
+
+Your parent shell's environment is unchanged. The printed temporary directory
+is not automatically deleted, but the OS may clear it. Keep its path if you
+want to inspect it again; a new `mktemp` session starts with fresh state.
+Do not use this temporary workflow for career data you need to retain.
+
+## Normal persistent local use
+
+For ongoing use, run from your normal shell after leaving the demonstration.
+Inspect your environment selectors deliberately: the parent shell may already
+select an existing workspace. With no explicit overrides, state is XDG-based
+and persists independently of the checkout, virtual environment, and session:
+
+| State | Default | Override |
+| --- | --- | --- |
+| SQLite database | `${XDG_DATA_HOME:-~/.local/share}/careeros/careeros.sqlite3` | `--database`, then `CAREEROS_DATABASE` |
+| Managed Materials | `${XDG_DATA_HOME:-~/.local/share}/careeros/materials` | `--materials-root`, then `CAREEROS_MATERIALS_ROOT` where supported |
+| Matching Profile | `${XDG_CONFIG_HOME:-~/.config}/careeros/candidate_profile.yaml` | explicit profile path; no dedicated environment selector |
+| Optional sources | `${XDG_CONFIG_HOME:-~/.config}/careeros/sources.yaml` | `--sources-config`, then `CAREEROS_SOURCES_CONFIG` |
+
+Use the same selected database, Materials root, and configuration on later runs.
+Keep private files outside the checkout and preserve their owner-only modes.
+For a new persistent workspace, after checking these selectors and the
+[provider conditions](reference/job-sources.md#provider-rights):
+
+```bash
+uv run --offline --no-sync careeros profile init
+uv run --offline --no-sync careeros collect arbeitnow --limit 10
+uv run --offline --no-sync careeros serve
+```
+
+This writes persistent state and the collection contacts the live feed.
+`profile init` refuses to overwrite an existing profile; existing users should
+validate their profile instead. Existing old databases need explicit migration
+before use. Back up SQLite, matching Materials, and private configuration as a
+set; reinstalling the application is not a backup and does not relocate them.
+
+## Troubleshooting and safe recovery
+
+Run `uv run --offline --no-sync careeros diagnose` against your intended
+environment first. The paths below are placeholders for that workspace and a
+private backup destination. For schema upgrades, stop writers and
+back up before the explicit migration:
+
+```bash
+uv run careeros database backup /safe/path/careeros.sqlite3.backup --database /path/to/careeros.sqlite3
 uv run careeros database migrate --database /path/to/careeros.sqlite3
 ```
 
-Back up first. The normal migration creates
-`/path/to/careeros.sqlite3.pre-v14.backup.sqlite3` unless `--backup` selects
-another destination or the acknowledged no-backup path is used. There is no
-in-place or supported down migration. Restore that database-only backup with
-`database restore`; it does **not** contain managed Material objects. Complete
-private recovery requires the SQLite database, its matching Materials root,
-and applicable private configuration/profile state. See
-`docs/v1.05-release-qualification.md` for resource bounds, limitations, and
-release evidence.
-
-## Adaptive matching preferences (R4)
-
-CareerOS schema v12 adds persistent **Matching Preferences** to the local
-SQLite database. Explicit preferences are the profile values you deliberately
-save; learned preferences are deterministic, structured signals derived from
-meaningful `shortlist` and `dismiss` review transitions. Existing reviews are
-not backfilled during upgrade, `review_later` is neutral, and review notes and
-raw job descriptions never become preference evidence.
-
-Learned preferences remain inactive until repeated evidence crosses the frozen
-threshold (two positive opportunities or three negative opportunities with a
-net difference of at least two). Canonical duplicate opportunities count once.
-You can inspect evidence counts and bounded example opportunities, suppress or
-restore one learned preference, or reset only learned state while preserving
-explicit preferences and review history:
-
-For the command examples below, first create a private demonstration profile.
-The committed fictional examples are public reference fixtures and are
-intentionally not accepted directly by profile-loading commands:
-
-```bash
-PRIVATE_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/careeros-profile.XXXXXX")"
-PRIVATE_PROFILE="$PRIVATE_PROFILE_DIR/candidate_profile.yaml"
-uv run careeros profile init "$PRIVATE_PROFILE"
-export PRIVATE_PROFILE
-```
-
-```bash
-uv run careeros preference show --format text
-uv run careeros preference explicit replace "$PRIVATE_PROFILE"
-uv run careeros preference explicit clear
-uv run careeros preference suppress KEY
-uv run careeros preference restore KEY
-uv run careeros preference reset-learned --confirm
-```
-
-The Matching Preferences web workspace provides the same explicit save/clear
-and learned inspection, suppression, restore, and reset controls. A deliberately
-saved empty explicit profile remains configured, creates no learned-dimension
-locks, and does not silently fall back to a private profile file.
-
-Active learned preferences apply a bounded adjustment to ranked surfaces,
-including rank, Review, rank-mode saved searches, ranked reports/exports, and
-their HTTP/web equivalents. Use `--no-adaptive` on supported CLI commands, or
-turn off **Use learned preferences** in the web UI, to disable only this learned
-layer. This is distinct from `--no-feedback`, which controls the pre-existing
-direct review-feedback adjustment on CLI/service paths. Ranked explanations
-show only the effective learned points actually applied; full evidence remains
-in the dedicated preference inspection surface.
-
-Preference learning, ranking, and explanations are local, deterministic, and
-model-free: they make no LLM call and have no recurring model cost. Chronological
-search, administrative/audit views, and the profile-less Home report do not
-become personalized feeds. Today uses preferences only for its bounded Review
-next section, with **Use learned preferences** controlling the learned layer for
-that invocation.
-
-## Private reusable Materials (R3 M2)
-
-CareerOS schema v11 includes a local Materials library for reusable private
-documents. Versions are immutable and globally reusable; no material belongs
-to a job or application. File bytes remain outside SQLite in a managed XDG
-root outside the Git checkout. The root is private and marker-bound to the
-database; backups of SQLite do not include these bytes.
-
-Use `careeros material list|show|import|add-version|update|retire|restore`
-for administration, `export-version` for an explicit verified copy, and
-`audit` for a read-only consistency check. Development and migration tests
-must use temporary databases and roots. CareerOS never implicitly migrates an
-old database or creates a Materials root during startup/read-only operations;
-production migration to v11 is a separate explicit decision.
-
-Schema v11 also adds job-specific Application Packages for tracked jobs. A
-logical package retains at most one mutable draft plus immutable finalized
-versions. Drafts snapshot the concrete job and Preparation requirements, bind
-Material requirements to exact library versions, and keep user-authored
-answers private to explicit version-detail responses. Approval binds to the
-current draft revision; finalization verifies current Preparation/job authority
-and selected Material bytes before atomically freezing that same version row.
-Package finalization never changes Application status, Review decisions,
-reminders, Preparation acknowledgements, jobs, or Material bytes.
-
-The HTTP lifecycle is available under
-`/applications/{job_id}/package` and `/application-package-versions/{id}`.
-Unsafe operations require `X-CareerOS-Write: 1`; semantic draft mutations use
-independent package and Preparation revision headers. Pipeline responses expose
-only answer-free lifecycle facts. There is no package CLI or generic export.
-
-## Design principles
-
-- Local-first storage
-- Privacy by design
-- Modular and replaceable components
-- Explainable deterministic, model-free ranking
-- Automated testing
-- Clear documentation
-
-## Architecture
-
-Career WatchPost owns its local data and business logic. Released provider
-interfaces are bounded collection adapters; model-assisted résumé extraction
-and hosted AI infrastructure are not implemented Product 1 capabilities.
-
-## Product 1 capabilities
-
-Current CLI capabilities include multi-source job collection (`collect
-<source>`, `collect all`), rate-aware scheduled collection (`collect due`) with
-persistent run history, read-only collection observability (`collect status`,
-`collect history`), plus `search`, `show`, `rank`, `group`,
-`saved-search`, `application`, `reminder` (including local `notify-due`/`
-notify-history` notifications), `review`, `preference`, `profile` (init/show/
-validate for JSON or YAML candidate profiles), `career-profile`, a read-only
-`report` (Career Snapshot), and `diagnose` (including notification readiness).
-Collection commands are mutually exclusive per database via an OS advisory
-lock, while the read-only commands remain available during collection; a lock
-conflict exits with code 75. See `AGENTS.md` for the full command reference.
-
-### Source installation and private runtime state
-
-CareerOS requires Python 3.11 or newer. This publication is source-only: no
-wheel or source-distribution release asset is available, and the privately
-qualified artifacts are not published. From a source checkout, select tag
-`v1.2.2` for the released application tree and install its dependencies:
-
-```bash
-git checkout v1.2.2
-uv sync --extra api
-uv run careeros --help
-uv run careeros collect arbeitnow --limit 10  # new state: schema v14 + collect
-uv run careeros serve                         # open http://127.0.0.1:8000/ui
-```
-
-The server deliberately refuses a missing, uninitialized, or old-schema
-database. The collection command above is the supported first-run bootstrap
-for new private state. Existing state must be migrated explicitly with writers
-stopped and a supported backup retained. The current release boundary is
-schema 13 to schema 14; structurally valid earlier schemas pass through their
-historical migrations in order before the v13-to-v14 step. Malformed, unknown,
-and future schemas fail closed, and there is no supported down migration. The
-source checkout uses the stable XDG-compatible defaults:
-
-- database: `${XDG_DATA_HOME:-~/.local/share}/careeros/careeros.sqlite3`
-- managed Materials: `${XDG_DATA_HOME:-~/.local/share}/careeros/materials`
-- private profile: `${XDG_CONFIG_HOME:-~/.config}/careeros/candidate_profile.yaml`
-
-`--database` is authoritative when supplied; otherwise
-`CAREEROS_DATABASE` overrides the database default. An explicit
-`--materials-root` is authoritative where supported; otherwise
-`CAREEROS_MATERIALS_ROOT` overrides the Materials default. Explicit profile
-paths always win. `~`, `XDG_DATA_HOME`, and `XDG_CONFIG_HOME` are expanded,
-and read-only operations do not create absent state. Recreating a virtual
-environment therefore does not move private state.
-
-CareerOS does not silently migrate the former checkout-local defaults. An
-existing user should stop writers, make a supported SQLite backup, copy the
-old database, matching Materials root, and private profile deliberately to the
-paths above (or keep using explicit environment/CLI overrides), then run
-`careeros material audit` against the selected database and Materials root.
-
-A local web dashboard (Home, Today, Jobs, Review, Reviewed, Applications,
-Reminders, Matching Preferences, Career Profile, and a per-job detail view) is served by the
-optional FastAPI slice at <http://127.0.0.1:8000/ui>. For contributors working
-from a source checkout, install development and API dependencies separately:
-
-```bash
-uv sync --extra development --extra api   # install the API extra
-uv run uvicorn careeros.api:app           # serve; then open /ui in a browser
-```
-
-Representative documented read endpoints include `GET /report`, `GET /today`,
-`GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/group`,
-`GET /applications?job_id={id}`, `GET /review-decisions?job_id={id}`,
-`GET /reviewed-opportunities`, and `GET /reminders?job_id={id}`. The UI also uses the
-computation-only `POST /report` (the Review view's inline candidate-profile
-form) and the workflow mutations: the Job Detail review-decision
-`PUT`/`DELETE /review-decisions/{id}`, application-status
-`PUT /applications/{id}`, and reminder `POST /reminders`,
-`PUT /reminders/{id}/complete` and `PUT /reminders/{id}/reopen`, plus a
-confirmed `DELETE /reminders/{id}` that always shows a native confirmation
-dialog before removing a reminder — and, in the Review view, per-card
-review-decision buttons (`Shortlist` / `Dismiss` / `Review later`) on every
-Review Queue card, which send the same `PUT /review-decisions/{id}`
-(representative job id in grouped mode) and let the refreshed server response
-alone remove the decided opportunity. After a successful card decision, the
-frontend refreshes only the authoritative `POST /review-queue` section using
-the same profile/grouping/limit fields; it does not rerun the full `POST
-/report`, and the last authoritative Recommendations response is preserved.
-The top-level Reviewed workspace loads reviewed opportunities without ranking,
-defaults to Shortlist, and provides Review later and Dismissed tabs, grouped or
-flat display, authoritative counts, pagination, decision changes, and clearing.
-Grouped actions target the server-returned concrete `decision_job_id`, not
-necessarily the displayed representative. Reviewed mutations refresh only
-`GET /reviewed-opportunities`; Shortlist remains evaluation intent and never
-creates or changes an application status.
-The Applications workspace is flat and concrete-job-owned: `GET
-/application-pipeline` returns server-authoritative status counts and a paginated
-page ordered by application `updated_at` then id. `interested`, `applied`,
-`interview`, and `offer` are active; `rejected` and `withdrawn` are completed.
-It reuses `PUT /applications/{id}` for status changes and refreshes only the
-pipeline read. Application state never rewrites Review decisions, reminders,
-or duplicate-group members; duplicate listings may therefore have independent
-application records and histories.
-Overlapping successful decisions are coalesced into one queue refresh followed
-by one dirty rerun when needed. The Job Detail application/review reads use
-the job-scoped list endpoints so the normal absent state ("Not tracked." /
-"Not reviewed.") is an empty 200 list rather than a canonical 404; the
-singular `GET /applications/{id}` and `GET /review-decisions/{id}` endpoints
-keep their authoritative 404 absent-state behavior for API clients. These
-mutations are local database writes, but they never rewrite Job rows or
-saved-search definitions and never contact employers or external services.
-
-Reminder notifications are the third, **independent** piece: a background
-systemd user timer (`careeros-reminder-notify.timer`) runs
-`careeros reminder notify-due --backend auto` and surfaces due reminders as
-local desktop pop-ups (via `notify-send`) even when no browser tab and no
-server is open. Installing it is opt-in and separate from the web UI/server:
-
-```bash
-careeros systemd install --units notify --enable   # install + enable the notify timer
-```
-
-`careeros diagnose` reports notification readiness (notify-send availability,
-which backend `auto` resolves to, and whether the notify timer is
-installed/enabled/active) with actionable guidance. Delivery is local only —
-CareerOS never uses web push, email, or any external service — and each
-reminder fires exactly once per scheduled time (rescheduling counts as a new
-occurrence, and a due time missed across a reboot still fires once).
-
-## Job sources
-
-### Private configurable sources (v1.1 M1)
-
-The released seven built-in sources remain the default when no configuration
-exists. Lever is an optional, credential-free source configured in the private
-file `${XDG_CONFIG_HOME:-~/.config}/careeros/sources.yaml`; the file must be
-owned by the current user with mode `0600`. CLI operations accept
-`--sources-config PATH`, then `CAREEROS_SOURCES_CONFIG`, then the XDG default.
-HTTP surfaces use the environment/XDG order. Reads do not create the file or
-its parent directory.
-
-Example (fictional/public-safe board data):
-
-```yaml
-version: 1
-sources:
-  lever:
-    enabled: true
-    boards:
-      - id: appfollow
-        instance: global
-        company: AppFollow
-```
-
-Lever can be explicitly disabled while retaining its board definitions. It is
-then visible in status/statistics as inactive but is never scheduled. Its
-six-hour polling interval is a provisional CareerOS policy, not a provider
-claim. No credentials or authenticated provider access are supported.
-
-### Greenhouse (v1.1 M2)
-
-Greenhouse is an optional, credential-free source using the public Job Board
-API. It uses the same private `sources.yaml` file and accepts up to eight
-strictly validated board tokens:
-
-```yaml
-version: 1
-sources:
-  greenhouse:
-    enabled: true
-    boards:
-      - token: example-company
-```
-
-For each configured board, CareerOS requests board metadata from
-`https://boards-api.greenhouse.io/v1/boards/{board_token}` and jobs with
-`https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs?content=true`.
-The metadata `name` is the authoritative company value. Job identity is the
-stable board-scoped `board_token:public_job_id`; changing a board token creates
-a new source identity. Greenhouse uses a provisional six-hour polling floor.
-
-Requests are sequential, bounded to two per attempted board (16 per
-invocation), with fixed divmod limit allocation across boards. There is no
-pagination, retry, backoff, concurrency, per-job request, authentication, or
-credential support. Each response retains the shared 16 MiB ceiling. A board
-failure is isolated and recorded in the provider outcome; healthy-board jobs
-are retained while the overall Greenhouse run is marked failed.
-
-### Workable (v1.1 M3)
-
-Workable is an optional, credential-free source for explicitly configured
-account subdomains. It uses the same private `sources.yaml` file and accepts
-up to eight accounts:
-
-```yaml
-version: 1
-sources:
-  workable:
-    enabled: true
-    boards:
-      - subdomain: example-account
-```
-
-Each account uses only Workable's documented public endpoint
-`https://www.workable.com/api/accounts/{subdomain}?details=true`. The public
-account `name` is authoritative for company, and the durable job identity is
-the percent-encoded pair `subdomain:shortcode`. Workable does not explicitly
-guarantee shortcode immutability; a changed shortcode is therefore a new
-identity. The six-hour polling floor is a provisional CareerOS policy.
-
-Requests are sequential, one per positive-quota account, with fixed divmod
-allocation of the provider-wide limit. There is no pagination, retry, backoff,
-concurrency, per-job request, credential, or account discovery. Each response
-uses the shared 16 MiB ceiling; an account failure is isolated while healthy
-account jobs are retained and the provider run is marked failed.
-
-### SmartRecruiters (v1.1 M4)
-
-SmartRecruiters is an optional, credential-free source for explicitly
-configured company identifiers. It uses the same private `sources.yaml` file
-and accepts up to eight companies:
-
-```yaml
-version: 1
-sources:
-  smartrecruiters:
-    enabled: true
-    companies:
-      - identifier: smartrecruiters
-```
-
-CareerOS uses only SmartRecruiters' public Posting API list and detail
-endpoints, with `destination=PUBLIC` on every list request. Company identifiers
-must match the defensive lowercase ASCII policy `[a-z0-9][a-z0-9-]{0,99}`.
-Requests are sequential, limited to one list page and at most one detail
-request per selected posting, with fixed provider-wide quota allocation and a
-provisional six-hour polling floor. No credentials, discovery, pagination,
-retry, backoff, concurrency, or application operations are supported.
-
-CareerOS collects from the following public job feeds, each fetched with a
-plain HTTPS request through the shared collector framework (stdlib `urllib`
-only, no API keys, no browser automation):
-
-| Source | Feed | Polling floor |
-|---|---|---|
-| Arbeitnow | `https://www.arbeitnow.com/api/job-board-api` (JSON) | 6 hours (provisional) |
-| Remote OK | `https://remoteok.com/api` (JSON) | 4 hours (provisional) |
-| We Work Remotely | `https://weworkremotely.com/remote-jobs.rss` (RSS) | 6 hours (provisional) |
-| Jobicy | `https://jobicy.com/api/v2/remote-jobs` (JSON) | 1 hour (documented) |
-| Remotive | `https://remotive.com/api/remote-jobs` (JSON) | 6 hours (documented) |
-| Working Nomads | `POST https://www.workingnomads.com/jobsapi/_search` (JSON) | 6 hours (provisional) |
-| Himalayas | `https://himalayas.app/jobs/api` (JSON) | 24 hours (documented) |
-
-Every shared GET/POST helper enforces a 16 MiB response-body ceiling using
-both declared `Content-Length` and a bounded actual read; an oversized response
-is a collection failure, never an empty feed. Jobicy requests at most the
-provider's documented 200-result maximum. These seven sources are the frozen
-v1.0 set; additional source expansion belongs to v1.1.
-
-Remotive's terms require attributing listings with a link back to the original
-URL and allow polling at most four times a day; its listings are published with
-a 24-hour delay. Jobicy requires similar credit. CareerOS always stores each
-job's original URL and labels its source, and `collect due` enforces the
-polling floors above.
-
-Each source keeps its committed start marker for crash observability, then
-commits job upserts, derived grouping, and successful run bookkeeping in one
-transaction. A pre-commit interruption leaves only an `incomplete` attempt;
-the newest incomplete attempt is due immediately on restart, and startup of a
-collection command deterministically repairs grouping before the retry. A
-failed attempt remains distinct and follows the normal polling interval.
-
-Working Nomads is a remote-only board and does not publish a documented public
-API: its collector targets the same internal Elasticsearch search endpoint that
-powers the public listing pages, so the endpoint is undocumented and may change
-without notice. CareerOS sends only a minimal bounded request and treats any
-malformed response as a collection failure rather than an empty result.
-
-Himalayas publishes a free, documented public JSON API that requires no API
-key or authentication. Its browse endpoint returns at most 20 jobs per request,
-and its documented cache/update cadence supports CareerOS's conservative
-24-hour polling floor; the API rate-limits excessive volume with HTTP 429.
-
-### Provider attribution and data rights
-
-The MIT license covers Career WatchPost source code, not provider job
-descriptions, payloads, trademarks, logos, or employer content. Local
-collection is a private workflow; it is not permission to publish a feed,
-redistribute structured listings, or run a live-data portfolio demo. Preserve
-source labels and original listing links, and review current provider terms
-before any use beyond the local workflow.
-
-- [Arbeitnow terms](https://www.arbeitnow.com/terms/) and the
-  [Remote OK feed guidance](https://remoteok.com/faq) require source credit and
-  links back to the source listing.
-- [Jobicy API/RSS guidance](https://jobicy.com/jobs-rss-feed) requires canonical
-  URLs, source attribution, hourly-or-slower synchronization, and no
-  presentation as an original posting.
-- [Remotive API terms](https://remotive.com/remote-jobs/api) require a Remotive
-  link and source mention and prohibit third-party job-site and lead-capture
-  uses.
-- [Himalayas API terms](https://himalayas.app/terms) require an unchanged
-  application link and visible source link, prohibit onward job-board,
-  aggregator, or structured-data redistribution, and require removal after
-  expiry.
-- We Work Remotely has no broad redistribution grant established by this
-  review. [Working Nomads terms](https://www.workingnomads.com/terms-and-conditions)
-  restrict resale and competitive-product use; its undocumented listing
-  endpoint remains a local-use uncertainty.
-
-The configurable ATS integrations are narrow published/public read-only
-interfaces, not general redistribution licences: see the official
-[Lever developer FAQ](https://hire.lever.co/developer/support),
-[Greenhouse Job Board API](https://docs.greenhouse.io/job-board.html),
-[Workable careers-page API guidance](https://help.workable.com/hc/en-us/articles/115012771647-Using-the-Workable-API-to-create-a-careers-page),
-and [SmartRecruiters Posting API](https://developers.smartrecruiters.com/docs/posting-api)
-and [API policy](https://developers.smartrecruiters.com/docs/the-smartrecruiters-platform).
-The configured account or board owner remains responsible for permission and
-current terms. Career WatchPost does not submit applications and does not
-authorize public redistribution of collected data.
-
-Before enabling a source, confirm that the intended collection and use are
-permitted; avoid collection where authorization remains unresolved. This
-source-code publication does not certify provider compliance or verify that
-Himalayas expiry-removal obligations are enforced automatically.
-
-## Cross-source duplicate detection
-
-CareerOS detects when the same vacancy is listed by several job boards using
-deterministic, stdlib-only normalization (`group regroup` recomputes the
-canonical groups; `group explain` shows them read-only). Grouping is
-non-destructive: the `jobs` table is the source of truth and the derived group
-tables never mutate it. `search --grouped` and `rank --grouped` collapse
-cross-source duplicates into one result per group.
-
-## Application tracking
-
-CareerOS records what you have done with a vacancy so already-handled jobs can
-be recognized later. Tracking is **local workflow state only**: CareerOS never
-submits applications, sends email, or contacts any external service on your
-behalf.
-
-One current application record is stored per tracked job (keyed by the stable
-`jobs.id`) together with an append-only history of every status transition.
-Supported statuses: `interested`, `applied`, `interview`, `offer`, `rejected`,
-`withdrawn`.
-
-```bash
-uv run careeros application set 12 applied --note "sent CV"   # track + note
-uv run careeros application set 12 interview                  # transition
-uv run careeros application show 12                           # current state
-uv run careeros application list --status applied             # filtered list
-uv run careeros application history 12                        # event history
-```
-
-Repeating the same status with no note is an idempotent no-op; adding a note
-appends a same-status history event. Every write is transactional, and records
-are anchored to `jobs.id` (never to the derived grouping tables), so
-`group regroup` can never delete or orphan application history.
-
-`search` and `rank` accept explicit tracking filters — `--untracked`,
-`--status STATUS` (repeatable), and `--exclude-status STATUS` (repeatable) —
-which show the actual state (`Application: Applied`, `Application: Untracked`)
-on matching results. Without these flags the default output is unchanged.
-
-## Reminders
-
-CareerOS lets you attach local follow-up reminders to a stored job so a planned
-next step is not lost. Reminders are **local workflow state only**: CareerOS
-records and reports them locally, and it does not send messages, contact
-employers, submit applications, or infer deadlines. Reminder commands are
-`careeros reminder <add|list|show|update|complete|reopen|delete>`.
-
-```bash
-uv run careeros reminder add 12 interview 2026-08-10T14:00:00Z \
-  --message "second round call"            # add a reminder
-uv run careeros reminder list              # open reminders, soonest first
-uv run careeros reminder list --overdue    # open + past due
-uv run careeros reminder list --upcoming   # open + future
-uv run careeros reminder list --completed  # done reminders
-uv run careeros reminder show 3            # one reminder in detail
-uv run careeros reminder update 3 --kind interview --due-at 2026-08-11T09:00:00+02:00
-uv run careeros reminder update 3 --clear-message # drop the message
-uv run careeros reminder complete 3        # mark done (idempotent)
-uv run careeros reminder reopen 3          # reopen (idempotent)
-uv run careeros reminder delete 3          # remove the reminder
-```
-
-Reminder kinds are validated centrally: `follow_up`, `interview`, `offer`,
-`review`, and `custom`. A reminder is anchored to the stable `jobs.id` (never
-the derived grouping tables), so `group regroup` can never delete or orphan it.
-
-Due timestamps are deliberately strict and deterministic: a full ISO-8601
-timestamp with an explicit UTC offset is required (`2026-08-10T14:00:00Z` or
-`+02:00`); naive and date-only values are rejected because CareerOS never
-guesses a timezone. Values are normalized and stored as UTC. `complete` and
-`reopen` are idempotent no-ops; `update` only changes fields you pass and
-supports deliberate message clearing. The write commands (`add`, `update`,
-`complete`, `reopen`, `delete`) respect the per-database lock and exit 75 on
-contention; the reads (`list`, `show`) never lock.
-
-### Reminder notifications
-
-Separate from storing/editing reminders, `careeros reminder notify-due` delivers
-a **local** notification when a reminder comes due, so a due reminder surfaces
-without keeping the web UI open. Delivery is **local only** — never web push,
-email, or any external service — and never completes, reschedules, or deletes a
-reminder. The delivery audit lives in the `reminder_notifications` table.
-
-```bash
-uv run careeros reminder notify-due --dry-run          # preview due reminders (no delivery)
-uv run careeros reminder notify-due                    # deliver due reminders
-uv run careeros reminder notify-due --backend stdout   # force text-line delivery
-uv run careeros reminder notify-history                # delivery history, newest first
-uv run careeros reminder notify-history --failed       # failed attempts only
-```
-
-Occurrence semantics: a reminder notifies **once per scheduled time** (the
-`(reminder_id, due_at)` pair). Rescheduling (`update --due-at`) creates a new
-occurrence and notifies again; reopening a completed reminder does **not**
-re-notify a time already delivered; deleting or completing a reminder silences
-it; an overdue time notifies exactly once when first observed — including
-across a reboot that spanned the due time.
-
-`--backend auto` (the default) uses the `desktop` backend when `notify-send`
-is on `PATH` **and** a session bus is reachable (the standard
-`DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus` socket), otherwise it
-falls back to `stdout` with an explanatory note. The bus — not the
-`DISPLAY`/`WAYLAND_DISPLAY` variables — is the delivery signal, so the systemd
-user timer delivers visible pop-ups inside a graphical login session even when
-the user manager inherits no display environment. `auto` never touches the
-network and keeps retrying failed deliveries on later runs. "Delivered" means
-notify-send (the desktop notification service) accepted the notification with
-exit code 0; CareerOS cannot prove that your desktop rendered a visible banner,
-so a transient or unnoticed pop-up is presentation behavior after a successful
-delivery, not a delivery failure.
-
-The independent systemd user timer runs the notifier periodically; see
-"Scheduled collection" below for installation. `careeros diagnose` verifies
-notification readiness end to end.
-
-## Daily review queue
-
-CareerOS gives you a **personalized daily review queue** for deciding what to do
-with each new opportunity. For every stored job you can record a lightweight,
-private review decision:
-
-- `shortlist` — worth pursuing; keep it on your radar.
-- `dismiss` — not a fit; hide it from future queues.
-- `review_later` — revisit it later without committing either way.
-
-Decisions are **local workflow state only** — CareerOS never shares them, never
-contacts employers, and never submits applications. Each decision is stored per
-job (keyed by the stable `jobs.id`) with an append-only history of every
-transition, so `group regroup` can never delete or orphan your reviews. Clearing
-a decision returns the job to the unreviewed pool.
-
-```bash
-uv run careeros review set 12 shortlist --note "top pick"   # decide + note
-uv run careeros review set 12 dismiss                       # change your mind
-uv run careeros review show 12                              # current decision
-uv run careeros review list --decision shortlist            # filtered list
-uv run careeros review history 12                           # decision history
-uv run careeros review clear 12                             # back to unreviewed
-```
-
-`review next` ranks today's queue against your candidate profile. It shows
-**unreviewed** opportunities by default, collapsed into one entry per canonical
-duplicate group (**grouped by default**; use `--no-grouped` for one entry per
-job). Every eligible opportunity is scored with the shared ranking engine and
-the queue is ordered best-first:
-
-```bash
-uv run careeros review next --profile "$PRIVATE_PROFILE"
-uv run careeros review next --profile ... --state shortlist --min-score 60
-uv run careeros review next --profile ... --include-tracked
-uv run careeros review next --profile ... --no-grouped --format json
-```
-
-- `--state` picks the queue filter (`unreviewed`, `shortlist`, `dismiss`,
-  `review_later`, or `any`); the default is `unreviewed`.
-- `--min-score` trims results below a match-score threshold after ranking.
-- By default, opportunities that already have an application record are hidden;
-  `--include-tracked` brings them back (annotated with their application
-  status).
-- `--format text` (default) and `--format json` render the same ranked queue.
-
-`review next`, `show`, `list`, and `history` are read-only and never lock. The
-write commands `review set` and `review clear` respect the per-database lock and
-exit 75 on contention, matching the rest of the suite.
-
-## Candidate profile
-
-Ranking and the Career Snapshot score jobs against a **candidate profile** — a
-small file describing the roles you are looking for. Profiles may be written in
-**JSON** (`.json`) or **YAML** (`.yaml`/`.yml`); the format is chosen by file
-extension. All fields are optional and unknown top-level fields are silently
-ignored.
-
-Supported fields:
-
-- `desired_titles` — titles to match (e.g. `"Machine Learning Engineer"`)
-- `skills` — preferred skills to look for in the posting
-- `required_skills` — skills that must appear (missing ones are penalized)
-- `preferred_locations` — locations that count as a match
-- `remote_preference` — an optional provider/domain-specific string (trimmed,
-  up to 50 characters), or `null`; the API does not narrow this vocabulary
-- `excluded_terms` — soft-excluded terms (small penalty)
-- `hard_excluded_terms` — hard exclusions that force a score of 0
-- `preferred_employment_types` — e.g. `"Full-time"`
-- `preferred_seniority` — provider/domain-specific terms (e.g. `"Senior"`);
-  each entry is preserved and may be up to 100 characters
-
-### Private profile
-
-The default profile path is
-`${XDG_CONFIG_HOME:-~/.config}/careeros/candidate_profile.yaml`. This file is
-**private** and must never be committed. CareerOS accepts a profile only when
-it is an owner-controlled regular file with mode `0600` and exactly one hard
-link; symlinks, hardlinks, directories, special files, unsafe ownership, and
-group/world-readable or writable modes are rejected. The containing private
-directory created by `profile init` is also owner-only (`0700`). Read-only
-commands never create or repair a missing or unsafe profile. These checks apply
-to every CLI consumer of the file-backed profile (ranking, report, review,
-saved-search, and export commands); the computation-only HTTP APIs continue to
-accept their inline JSON profile and do not read this file.
-
-It holds your real job-search preferences, unlike the committed fictional examples
-`config/candidate_profile.example.json` and
-`config/candidate_profile.example.yaml`. Those fixtures are documentation and
-test references, not executable profile inputs: use the private workflow above
-or a disposable profile in a newly created private directory.
-
-Initialize your private profile safely (refuses to overwrite an existing file):
-
-```bash
-# For a disposable profile outside the repository:
-PRIVATE_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/careeros-profile.XXXXXX")"
-PRIVATE_PROFILE="$PRIVATE_PROFILE_DIR/candidate_profile.yaml"
-uv run careeros profile init "$PRIVATE_PROFILE"
-```
-
-Then validate or inspect it:
-
-```bash
-uv run careeros profile validate "$PRIVATE_PROFILE"
-uv run careeros profile show "$PRIVATE_PROFILE"
-```
-
-Exit codes: `0` success, `1` missing/invalid profile (and `init` refusing an
-existing file), `2` usage errors (unsupported file extension). `init` writes a
-starter profile with every field commented or empty; `show` and `validate`
-default to the private path and `--force` is required to overwrite an existing
-file. `--force` refuses an unsafe existing target and never follows a link or
-silently changes permissions.
-
-Every file-backed Matching Profile must be a regular file owned by the
-effective user, mode `0600`, with exactly one hard link. Symlinks, hard links,
-special files, unsafe ownership, and group/world-readable or writable modes are
-rejected. The immediate destination parent directory used for writing must be
-effective-user owned with no group/world-write permission; intermediate path
-components must be real directories, and symlinked components are rejected. If
-an existing profile is
-rejected, first independently verify the exact path, owner, file type, links,
-and destination parent; only then may the owner choose a manual remediation
-such as `chmod 600 /verified/path/profile.yaml`, or use a newly created private
-path. Never blindly chmod an unknown-owner file. CareerOS does not automatically
-chmod, delete, or replace unsafe existing files.
-
-## Saved searches
-
-CareerOS can capture a reusable search or rank workflow so the same filters can
-be re-run later without retyping the flags. A saved search stores the query and
-filters (*intent*), never cached results: running it always queries the current
-database. Running a saved search never submits applications, sends email, or
-contacts any external service.
-
-```bash
-# Capture a recurring engineer search (search mode)
-uv run careeros saved-search create engineer "Engineer" --mode search --remote
-
-# Capture a ranking workflow (rank mode requires --profile)
-uv run careeros saved-search create top-roles "Engineer" --mode rank \
-  --profile "$PRIVATE_PROFILE" --min-score 70
-
-uv run careeros saved-search list                       # list workflows
-uv run careeros saved-search show engineer              # view a definition
-uv run careeros saved-search run engineer               # re-run against current DB
-uv run careeros saved-search update engineer --limit 50 # change filters
-uv run careeros saved-search rename engineer dev        # rename
-uv run careeros saved-search delete engineer            # remove
-```
-
-`--mode {search,rank}` is required at creation and cannot change afterwards.
-Mode-specific rules apply (`--profile` is invalid for `search` and required for
-`rank`; `--min-score` is rank-only). Names are case-insensitive for lookup but
-stored as given. `saved-search run` output is identical to the explicit
-`search`/`rank` commands. The write commands (`create`, `update`, `rename`,
-`delete`) respect the per-database lock and exit 75 on contention; the read
-commands (`list`, `show`, `run`) never lock.
-
-## Career Snapshot
-
-The **Career Snapshot** is a read-only local report (`careeros report`) that
-pulls your stored jobs, application tracking, saved searches, and collection
-history into one deterministic screen. It is a dashboard, not an agent: it
-never submits applications, never sends email, never fetches jobs, and never
-contacts any external service. The report holds no per-database lock, so it
-runs fine while a collection is in progress, and it never writes — not even a
-`collection_runs` entry.
-
-```bash
-uv run careeros report                                   # text (default)
-uv run careeros report --format json                     # same data as JSON
-uv run careeros report --profile "$PRIVATE_PROFILE"
-uv run careeros report --saved-search top-roles          # rank workflow drives the ranking
-uv run careeros report --limit 5 --grouped               # cap + collapse duplicates
-```
-
-`--format text` (default) and `--format json` are two renderers over the same
-immutable report model built by the same read-only reporting service, so both
-carry identical data. The text output has seven sections:
-
-- **Overview** — stored jobs, canonical groups, distinct opportunities,
-  tracked applications, saved searches, review-decision counters (reviewed,
-  unreviewed, shortlisted, dismissed, review-later groups), per-source last-run
-  summary, and which sources are currently due.
-- **Application pipeline** — one count per status (including `rejected` and
-  `withdrawn`) plus the most recently changed applications (newest first,
-  capped by `--limit`).
-- **Action items** — the pipeline items worth acting on, in prominence order:
-  interview attention, offer attention, interested (not applied), and applied
-  (awaiting progress). `rejected`/`withdrawn` appear only in the pipeline
-  counts, never as actions. CareerOS never invents deadlines or follow-up
-  dates from text.
-- **Reminders** — overdue count, due-today count, open total, and the urgent
-  open reminders (soonest first, capped by `--limit`). "Due today (UTC)" means
-  within the current UTC calendar day: CareerOS stores and compares reminder
-  times in UTC and never assumes your local timezone.
-- **Review queue** — a ranked, personalized daily queue of unreviewed
-  opportunities (grouped by default, tracked applications excluded), scored
-  against the report's profile. Without `--profile` or `--saved-search` the
-  section is honestly skipped with a note.
-- **Recommended opportunities** — profile-ranked jobs using the shared ranking
-  engine. Without `--profile` or `--saved-search` the section is honestly
-  skipped with a note. Tracked jobs are excluded (recommendations only propose
-  new opportunities), and `--grouped` collapses cross-source duplicates.
-- **Collection health** — per-source last run, outcome, fetched/inserted/
-  updated counts, last error, next-due time, and incomplete-run count.
-
-With `--saved-search NAME`, the named **rank-mode** saved search governs the
-query, filters, minimum score, and result limit; `--profile` may be passed
-alongside it to override the stored profile. Report flags like `--grouped`
-cannot be combined with `--saved-search` (the saved search already defines its
-own grouping), and a search-mode saved search is rejected. Exit codes: `0`
-success (including an empty database), `1` unknown saved search or
-profile/database failure, `2` invalid flags.
-
-## Deterministic exports
-
-CareerOS can project its stored state into portable files with `careeros
-export`. Exports are **deterministic and read-only**: the same database and
-flags always produce byte-identical output, and exporting never fetches jobs,
-never writes to the database, never acquires the collection lock (it runs while
-a collection is in progress), and never contacts an external service. A missing
-database path yields a valid empty export without creating the file.
-
-```bash
-uv run careeros export jobs                                          # JSON to stdout
-uv run careeros export jobs --grouped --format csv                   # grouped CSV
-uv run careeros export ranked --query engineer \
-  --profile "$PRIVATE_PROFILE"                                      # scored ranking
-uv run careeros export review \
-  --profile "$PRIVATE_PROFILE"                                      # review queue
-uv run careeros export source-stats --format jsonl                   # per-source stats
-# Write to a newly named file in an already-created private directory:
-EXPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/careeros-export.XXXXXX")"
-uv run careeros export collection-history \
-  --output "$EXPORT_DIR/runs.csv"
-```
-
-Subcommands and their key flags:
-
-- **`jobs`** — stored vacancies. Filters: `--query`, `--remote`, `--location`,
-  `--source`, `--employment-type`, `--grouped` (one record per canonical
-  duplicate group), `--clean-descriptions`.
-- **`ranked`** — jobs scored against a profile (requires `--query` and
-  `--profile`). Adds `--grouped`, `--min-score`, and `--no-feedback`.
-- **`review`** — the ranked daily review queue (requires `--profile`). Supports
-  `--state`, `--min-score`, `--include-tracked`, `--grouped`/`--no-grouped`
-  (grouped by default), and `--no-feedback`, mirroring `review next`.
-- **`source-stats`** — unified per-source statistics in registry order, with
-  `--source` to select one.
-- **`collection-history`** — collection runs newest first, with `--source` and
-  `--failed`.
-
-All subcommands share `--format {json,jsonl,csv}` (default `json`), `--limit N`
-(default 20; `0` means no cap, hard-capped at 1,000,000 records), `--output
-PATH` (default stdout), `--overwrite` (required to replace an existing
-`--output` file), and `--database`.
-
-Format contract:
-
-- **JSON** — a single document `{"records": [...], "total": N, "truncated":
-  bool}`. Record keys are in a fixed canonical order; nested values (`reasons`,
-  `score_components`, grouped `members`/`sources`/`urls`) are native
-  structures.
-- **JSONL** — one compact JSON record per line, in the same order.
-- **CSV** — a header row of the canonical column names followed by one row per
-  record; nested values render as stable JSON strings and empty cells are
-  blank.
-
-`total` always reports how many records matched before the cap, so truncation
-is always explicit (`truncated: true` when some records were dropped).
-Ranked and review exports carry `score`, `match_score`, `reasons`, and
-`score_components` per record (matching the JSON output of the rank and review
-commands), and flat job/ranked records include the canonical `group_id` when the
-job belongs to a group. Exporting into a closed pipe (e.g. `| head`) exits 0.
-Exit codes: `0` success, `1` output/profile/database failure, `2` usage errors.
-
-File output is private by construction: `--output` creates a regular `0600`
-file only in an existing directory owned by the effective user and not
-group/world-writable. An existing destination must also be effective-user
-owned, regular, mode `0600`, and single-link; unsafe destinations (including
-symlinks and hard links) are rejected. Without `--overwrite`, an existing file
-is never replaced. With `--overwrite`, CareerOS writes and fsyncs a same-
-directory `0600` temporary file and atomically publishes it after rechecking the
-destination (old or complete-new content, never partial content). A crash can
-leave a `.careeros-export-*.tmp` residue, which the owner may remove after
-independently verifying it. During first-time publication, a crash or cleanup
-failure may leave that temporary and destination sharing an inode, so the
-destination fails single-link validation until owner-verified cleanup. After
-publication, directory durability is best-effort; a sudden failure cannot prove
-whether the directory entry survived. Serialize concurrent writers using the
-same UID and destination.
-
-Exports also support stdout (the default), and a broken pipe such as
-`careeros export jobs | head` exits successfully. Shell redirection (`>`)
-bypasses CareerOS's private-file checks, so use `--output` for file exports. If
-a destination or parent is unsafe, use a new owner-controlled private
-directory/file after independent verification; do not blindly chmod or replace
-a file whose owner or path has not been verified.
-
-## Scheduled collection
-
-A periodic run can be installed from the source environment. Templates ship
-inside the `careeros` package, and generated services execute the exact Python
-interpreter that owns the installed CareerOS checkout:
-
-```bash
-careeros systemd install --dry-run                 # preview (writes nothing)
-careeros systemd install                           # install collection units
-careeros systemd install --units notify --enable   # independent notify timer
-careeros systemd install --units all --enable      # both timers
-careeros systemd uninstall --units all             # remove exact owned units
-```
-
-The timer runs `careeros collect due` every 15 minutes (first check 5 minutes
-after login) so CareerOS stays authoritative for per-source eligibility. The
-installer and uninstaller never touch the database. If the timer must run
-without a login session, enable lingering manually with
-`loginctl enable-linger "$USER"`; it is never enabled automatically. Re-run the
-installer with `--force` after deliberately moving/replacing the Python
-environment, since units embed that interpreter path. Installation is always
-user-level (`${XDG_CONFIG_HOME:-~/.config}/systemd/user`), never uses `sudo`,
-and never writes system-wide unit directories. Differing existing units abort
-unless `--force` is supplied; uninstall removes only exact generated content.
-
-## Complete private-state backup and recovery
-
-A recoverable CareerOS snapshot is a coordinated set, not only SQLite. It may
-contain the database, the matching managed Materials root (including
-`.careeros-store`), and the private candidate profile/config.
-
-1. Stop every writer first: stop the CareerOS web process, collection and
-   notification workers, and the two user timers if enabled. Do not copy a
-   Materials tree while imports, version creation, or package finalization can
-   run.
-2. Create the SQLite backup with the supported online operation:
-   `careeros database backup /backup/careeros.sqlite3 --database /active/careeros.sqlite3`.
-   This backup contains SQLite only.
-3. Copy the entire matching Materials root to the same backup set while it is
-   quiescent, preserving private permissions and the `.careeros-store` marker.
-   Also copy the private profile/config if it is needed to reproduce ranking.
-4. Record the database path, Materials-root path/override, CareerOS schema
-   version, and backup time together. The database's `material_store.store_id`
-   and the root marker form one binding; mixing a database and root from
-   different snapshots is rejected.
-5. To restore, stop writers again and restore SQLite only with
-   `careeros database restore BACKUP --database TARGET --confirm-replace`;
-   `database restore` has no Materials-root option. Separately restore the
-   matching Materials tree to the configured XDG location. Select that tree
-   for subsequent operation with `CAREEROS_MATERIALS_ROOT`, or pass
-   `--materials-root` only to a command that supports it, such as `material
-   audit` or `serve`. Restore the profile separately to its XDG path or keep
-   using its explicit path.
-6. Before resuming writers, run
-   `careeros material audit --database TARGET --materials-root RESTORED_ROOT`.
-   Only a successful audit certifies the database/root pair.
-
-Recovery intentionally loses database, Material, and profile changes newer
-than their respective backup copies. A missing/mismatched marker, missing or
-corrupt object, unsafe path/permissions, or inconsistent database metadata
-fails closed; do not edit the marker or database by hand to bypass the audit.
-
-## Today / Workflow and Attention Center
-
-Today is the single action-oriented Workflow / Attention Center. Home remains
-the separate profile-less operational and system overview, including collection
-and source health. `GET /today?limit=10` captures one server-side UTC `as_of`
-instant and one coherent SQLite read transaction. It returns these
-server-classified sections in order: overdue reminders, overdue application
-work, reminders due later today, application work due later today,
-non-temporal application attention, shortlisted opportunities not yet started,
-and Review next. Totals precede each section's independent limit (maximum 20;
-Review next is a three-item score-qualified preview).
-
-Review next reuses the stored explicit and learned Matching Preferences
-authority. The **Use learned preferences** checkbox is enabled by default and
-changes only that request; turning it off neither changes stored preferences nor
-disables explicit preference matching. Today remains deterministic, local-first,
-and model-free.
-
-Schema 14 stores immutable Review-ranking generations and rebuild authority.
-The loopback server rebuilds them asynchronously; normal Today reads validate
-the complete persisted current-item set, use live Review/Application
-eligibility, and re-score only the selected preview. Missing, stale,
-rebuilding, or corrupt ranking fails closed with HTTP 503 and `Retry-After: 5`;
-it never serves stale ranking or falls back to request-time whole-corpus
-scoring. Administrators can run
-`careeros database rebuild-ranking --database PATH`. See
-`docs/today-materialized-ranking.md` for the persistence and recovery contract.
-
-Completing a Reminder is the only inline Today write. Application,
-Preparation, Package, and Review details and mutations stay in their
-authoritative workspaces, reached through Today links. Loading Today never
-creates a Reminder or notification, executes a saved search, or turns source
-health into an attention category. Its public projection omits reminder
-messages, workflow notes/events, requirement text, Package answers and Material
-metadata, private profile paths, raw preference evidence, provider errors, and
-private scorer diagnostics.
-
-## Ranking explanations
-
-Ranked HTTP results include a deterministic `explanation` projection derived
-from the same `MatchResult` that produced `score` and `match_score`. It has
-`scope`, `listing_count`, `summary`, `score`, and structured `matches`, `gaps`,
-`unknowns`, and `other_factors`; factor points reconcile exactly to the raw
-contribution total. It is embedded in ranked jobs, grouped opportunities,
-review queues, and report ranking sections. Search-mode results remain
-unranked. Explanations belong to the exact ranked response item: they are not
-persisted, and the API has no generic job explanation endpoint.
-
-Application event notes are private local workflow data. The
-`application redact-note` command removes a note while preserving immutable
-event facts; backups made before redaction may retain the original content.
+SQLite backups do not contain managed Material bytes. Complete private recovery
+requires the matching database, Materials root, and applicable profile/source
+configuration. Use `database restore ... --confirm-replace` only after
+validating the backup and stopping writers. See [operations and recovery](reference/operations-and-recovery.md).
+
+For exact flags, status codes, routes, and provider limits, use the [CLI](reference/cli-reference.md), [API](reference/api-reference.md), and [job sources](reference/job-sources.md) references.

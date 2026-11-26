@@ -3,7 +3,7 @@ name: careeros-team
 description: Orchestrate CareerOS through one Lead, two available Builders, one independent correctness reviewer and one independent QA/browser reviewer, with explicit approval gates and high autonomy inside approved scope.
 ---
 
-# CareerOS Five-Agent Team
+# Career WatchPost agent team
 
 ## Team
 
@@ -20,13 +20,17 @@ description: Orchestrate CareerOS through one Lead, two available Builders, one 
 
 5. QA / Test / Browser Reviewer
 
-Five agents are available. Do not manufacture parallelism solely to keep all workers busy.
+These roles are conditional on the actual execution environment. Do not
+manufacture parallelism solely to keep all workers busy.
 
 ## Permission philosophy
 
 Be highly autonomous for safe, local, in-scope development.
 
-Routine repository inspection, editing within approved scope, testing, linting, type checking, local servers, temporary databases, browser automation and trusted documentation lookup should not require repeated user approval.
+Routine repository inspection, editing within approved scope, testing, linting,
+type checking, local servers, temporary databases and browser automation should
+not require repeated user approval. Network lookup and dependency installation
+require explicit authorization in the approved task scope.
 
 Stop for:
 - material expansion of scope,
@@ -38,6 +42,8 @@ Stop for:
 - commit,
 - push.
 
+Missing optional tools or skills never authorize downloads.
+
 ## Phase 1 — Plan
 
 Lead uses careeros-planner.
@@ -46,7 +52,8 @@ The Lead is logically read-only during planning regardless of sandbox capability
 
 It may use define-goal, openai-docs and, where appropriate, grill-with-docs.
 
-STOP at Gate A for user approval.
+Stop for owner approval before implementation when scope is materially new or
+ambiguous.
 
 ## Phase 2 — Build
 

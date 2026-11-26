@@ -1,74 +1,59 @@
-# Career WatchPost fictional portfolio demo
+# Portfolio feature tour
 
-This walkthrough is designed for screenshots and review using only disposable
-schema-14 state. It never reads the owner database, Materials, profile,
-configuration, browser state, or live provider feeds.
+This is a tour of committed screenshots captured from the actual loopback
+application with fictional disposable data. It is not a reproducible fixture,
+seed command, hosted demo, or promise that a fresh checkout recreates the
+captures. Installation is documented separately in the [user guide](user-guide.md).
 
-## Disposable setup
+The captures use fictional jobs, reserved example URLs, a generated text-based
+résumé, and disposable database, Materials, configuration, and browser paths.
+They do not show live provider collection, credentials, application
+submission, OCR, arbitrary PDF layout reconstruction, model-assisted
+extraction, or owner data. Career WatchPost has no product interface for
+inventing job listings; `collect` accesses live public providers.
 
-```bash
-DEMO_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/career-watchpost-demo.XXXXXX")"
-DEMO_DB="$DEMO_ROOT/careeros.sqlite3"
-DEMO_MATERIALS="$DEMO_ROOT/materials"
-DEMO_CONFIG="$DEMO_ROOT/config"
-DEMO_CACHE="$DEMO_ROOT/cache"
-mkdir -m 700 "$DEMO_MATERIALS" "$DEMO_CONFIG" "$DEMO_CACHE"
-export CAREEROS_DATABASE="$DEMO_DB"
-export CAREEROS_MATERIALS_ROOT="$DEMO_MATERIALS"
-export XDG_DATA_HOME="$DEMO_ROOT/data"
-export XDG_CONFIG_HOME="$DEMO_CONFIG"
-export XDG_CACHE_HOME="$DEMO_CACHE"
-unset CAREEROS_SOURCES_CONFIG
-```
+## Today: daily priorities and workflow context
 
-This walkthrough does not provide a reusable seeding command. Career WatchPost
-has no product interface for inventing job listings, and `careeros collect`
-accesses live public providers rather than generating fictional data. The
-portfolio captures therefore use a separately reviewed, temporary qualification
-fixture outside the product. That private fixture procedure is retained with
-qualification evidence; it is not a released feature.
+Today brings review priorities and workflow context into a bounded daily view.
+See the [web workflow](user-guide.md#a-practical-web-workflow) for how to move
+from this overview to a concrete job or reminder.
 
-For a new capture campaign, prepare an equivalent disposable fixture through a
-separately reviewed test harness using reserved names and URLs under
-`https://example.com/`. Do not import a real résumé, call a provider, set live
-credentials, or fall back to a production database. Without such a fixture,
-this document is a walkthrough of the committed captures, not a reproducible
-seeding procedure.
+![Today workspace showing fictional daily review priorities and application workflow context](assets/portfolio-screenshots/01-today-workflow.png)
 
-## Suggested story
+[Open full-size Today screenshot](assets/portfolio-screenshots/01-today-workflow.png).
 
-1. Initialize a disposable fictional matching profile with
-   `careeros profile init "$DEMO_CONFIG/candidate_profile.yaml"`.
-2. Start from the separately reviewed fictional fixture; do not run a collector
-   as part of this portfolio walkthrough.
-3. Open the loopback UI and show Today / Workflow and Attention Center.
-4. Show Review with deterministic score components and a human decision.
-5. Track an application and add a local follow-up reminder.
-6. Inspect Matching Preferences after synthetic review evidence.
-7. Review fictional Career Fact candidates and provenance, if synthetic
-   Material input is available.
-8. Export a bounded review result to a temporary path under `DEMO_ROOT`.
+## Review: explainable matching before a decision
 
-The five portfolio captures are:
+Deterministic score components make the ranking inspectable before a human
+review decision. See [search and Review](user-guide.md#discovery-search-and-review).
 
-- `docs/assets/portfolio-screenshots/01-today-workflow.png`
-- `docs/assets/portfolio-screenshots/02-review-scoring.png`
-- `docs/assets/portfolio-screenshots/03-applications-reminders.png`
-- `docs/assets/portfolio-screenshots/04-matching-preferences.png`
-- `docs/assets/portfolio-screenshots/05-career-profile-provenance.png`
+![Review workspace displaying fictional job matches and their score components](assets/portfolio-screenshots/02-review-scoring.png)
 
-They were captured from the actual loopback UI with a temporary qualification
-fixture that used seven fictional jobs, reserved `jobs.example.com` URLs, a
-generated fictional text-based PDF résumé, and disposable database, Materials,
-HOME, XDG, cache, runtime, and browser-profile paths. The browser made no live
-provider request. Each image was visually reviewed and checked for embedded
-local-path or owner identifiers before inclusion.
+[Open full-size Review screenshot](assets/portfolio-screenshots/02-review-scoring.png).
 
-## Truthful demo boundary
+## Applications and reminders: track the next step
 
-The demo shows stored fictional jobs, deterministic matching, review, workflow
-tracking, reminders, exports, and Career Profile provenance. It does not show a
-live collection run, provider authorization, application submission, LLM
-extraction, OCR, arbitrary PDF column reconstruction, hosted deployment, or
-import of private profile data. Career WatchPost remains local-first and
-model-free for these workflows.
+Local application status and follow-up planning keep actions attached to
+concrete jobs. See [applications and reminders](user-guide.md#applications-and-reminders).
+
+![Fictional application tracking and local follow-up reminder details](assets/portfolio-screenshots/03-applications-reminders.png)
+
+[Open full-size Applications screenshot](assets/portfolio-screenshots/03-applications-reminders.png).
+
+## Matching Preferences: explicit choices and learned evidence
+
+Explicit preferences and learned-evidence controls let the user inspect and
+adjust matching behavior. See the [adaptive recommendations contract](architecture/adaptive-recommendations.md).
+
+![Matching Preferences workspace showing explicit preferences and learned evidence controls](assets/portfolio-screenshots/04-matching-preferences.png)
+
+[Open full-size Matching Preferences screenshot](assets/portfolio-screenshots/04-matching-preferences.png).
+
+## Career Profile: reviewed facts with provenance
+
+Reviewed Career Facts retain their evidence lineage. A deliberate save creates
+an immutable profile version; see [saving a Career Profile](user-guide.md#saving-a-career-profile).
+
+![Career Profile workspace showing fictional reviewed Career Facts and source provenance](assets/portfolio-screenshots/05-career-profile-provenance.png)
+
+[Open full-size Career Profile screenshot](assets/portfolio-screenshots/05-career-profile-provenance.png).
