@@ -7,10 +7,15 @@ WatchPost; the stable Python distribution, import namespace, CLI, storage
 paths, environment variables, API headers, and systemd units intentionally
 remain `careeros` for compatibility.
 
-The accepted Product 1 baseline is version `1.2.1`, schema 14. Version `1.2.2`
-is the branding and portfolio candidate described by the qualification record;
-it does not add product behavior, migrations, provider credentials, or hosted
-services.
+Version `1.2.2` is qualified, owner accepted, and released as a source-only
+repository on schema 14. It is a branding and portfolio release and does not
+add product behavior, migrations, provider credentials, or hosted services.
+
+This source-only repository preserves the genuine development sequence from
+the original private project. Its public Git history is derived from that
+history with privacy and presentation sanitization; commit chronology,
+released functionality, and technical contracts are preserved. No wheel or
+source-distribution release asset is published from this repository.
 
 ## What it does
 
@@ -31,6 +36,7 @@ services.
 Requires Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 
 ```bash
+# Run from a source checkout (use tag v1.2.2 for the released application tree).
 uv sync --extra development --extra api
 uv run careeros diagnose
 uv run careeros collect arbeitnow --limit 10 --database /tmp/careeros-demo.sqlite3
@@ -75,9 +81,9 @@ collector responses, immutable Career Profile provenance, and fail-closed
 private-file handling. Read-only commands do not create persistent state.
 
 The repository contains focused tests, strict type checking, formatting/lint
-checks, and release qualification records. Historical release records are
-preserved as historical CareerOS documents; they are not rewritten as branded
-evidence.
+checks, and release qualification records. Historical CareerOS records are
+retained as privacy-sanitized release summaries rather than rewritten as new
+Career WatchPost achievements.
 
 ## Privacy and rights boundary
 

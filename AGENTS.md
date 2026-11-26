@@ -1,7 +1,7 @@
 # CareerOS — Agent instructions
 
 Career WatchPost is the public-facing identity for the accepted Product 1
-v1.2.2 branding candidate. The stable technical namespace remains `careeros`.
+v1.2.2 branding release. The stable technical namespace remains `careeros`.
 The Product 1 v1.2.1 release is the private-file-hardening and
 deterministic Career Fact correction patch after the v1.2.0
 durable/materialized Today review-ranking release. Its proposed package version
@@ -26,7 +26,7 @@ patch boundary and qualification record, and
 `docs/v1.2.0-release-qualification.md` for the historical Today-ranking release
 boundary and qualification record. See
 `docs/v1.2.1-release-qualification.md` for the accepted v1.2.1 boundary and
-`docs/v1.2.2-release-qualification.md` for the separate branding candidate.
+`docs/v1.2.2-release-qualification.md` for the accepted branding release.
 
 Stable private defaults are XDG-based and independent of the checkout or
 installed environment: database

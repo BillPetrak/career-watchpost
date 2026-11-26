@@ -5,18 +5,16 @@ This guide retains the detailed CareerOS operational reference for the public Ca
 
 Career WatchPost is a privacy-first career workflow; its stable technical namespace remains CareerOS/`careeros`.
 
-**The accepted Product 1 v1.2.1 baseline is the private-file-hardening and
-deterministic Career Fact correction patch after the v1.2.0
-durable/materialized Today review-ranking release.** Accepted package version
-`1.2.1` retains
-the seven released built-in sources as the exact zero-configuration defaults
-and the four optional credential-free, owner-curated sources configured through
+**Career WatchPost v1.2.2 is qualified, owner accepted, and released as a
+source-only repository.** It retains the private-file-hardening and
+deterministic Career Fact correction baseline from Product 1 v1.2.1 and the
+seven released built-in sources as the exact zero-configuration defaults and
+the four optional credential-free, owner-curated sources configured through
 private `sources.yaml`: Lever, Greenhouse, Workable, and SmartRecruiters, in
 that fixed order. Product 1 v1.05's local résumé intelligence and immutable
-Career Profile workflow remain intact.
- See
+Career Profile workflow remain intact. See
 `docs/v1.2.1-release-qualification.md` for the accepted patch boundary and
-`docs/v1.2.2-release-qualification.md` for the branding candidate state. The
+`docs/v1.2.2-release-qualification.md` for the accepted branding release. The
 released v1.2.0 qualification remains at
 `docs/v1.2.0-release-qualification.md`; the v1.1 and v1.1.1 historical records
 remain at `docs/v1.1-release-qualification.md` and
@@ -202,32 +200,29 @@ Collection commands are mutually exclusive per database via an OS advisory
 lock, while the read-only commands remain available during collection; a lock
 conflict exits with code 75. See `AGENTS.md` for the full command reference.
 
-### Installed release and private runtime state
+### Source installation and private runtime state
 
-CareerOS requires Python 3.11 or newer. An installed user can run a downloaded
-or locally supplied release wheel without a Git checkout. Create an isolated
-environment and install the wheel with the API dependencies:
+CareerOS requires Python 3.11 or newer. This publication is source-only: no
+wheel or source-distribution release asset is available, and the privately
+qualified artifacts are not published. From a source checkout, select tag
+`v1.2.2` for the released application tree and install its dependencies:
 
 ```bash
-python3.11 -m venv ~/.venvs/careeros
-source ~/.venvs/careeros/bin/activate
-python -m pip install '/path/to/careeros-1.2.2-py3-none-any.whl[api]'
-
-careeros --help
-python -m careeros --help
-careeros collect arbeitnow --limit 10  # new state only: create schema v14 + collect
-careeros serve                         # then open http://127.0.0.1:8000/ui
+git checkout v1.2.2
+uv sync --extra api
+uv run careeros --help
+uv run careeros collect arbeitnow --limit 10  # new state: schema v14 + collect
+uv run careeros serve                         # open http://127.0.0.1:8000/ui
 ```
 
-This route installs an existing release artifact; it does not imply publication
-to PyPI. The server deliberately refuses a missing, uninitialized, or old-schema
-database. The collection command above is the supported first-run bootstrap for
-new private state. Existing state must be migrated explicitly with writers
+The server deliberately refuses a missing, uninitialized, or old-schema
+database. The collection command above is the supported first-run bootstrap
+for new private state. Existing state must be migrated explicitly with writers
 stopped and a supported backup retained. The current release boundary is
 schema 13 to schema 14; structurally valid earlier schemas pass through their
 historical migrations in order before the v13-to-v14 step. Malformed, unknown,
 and future schemas fail closed, and there is no supported down migration. The
-wheel and source checkout use the same stable XDG-compatible defaults:
+source checkout uses the stable XDG-compatible defaults:
 
 - database: `${XDG_DATA_HOME:-~/.local/share}/careeros/careeros.sqlite3`
 - managed Materials: `${XDG_DATA_HOME:-~/.local/share}/careeros/materials`
@@ -238,8 +233,8 @@ wheel and source checkout use the same stable XDG-compatible defaults:
 `--materials-root` is authoritative where supported; otherwise
 `CAREEROS_MATERIALS_ROOT` overrides the Materials default. Explicit profile
 paths always win. `~`, `XDG_DATA_HOME`, and `XDG_CONFIG_HOME` are expanded,
-and read-only operations do not create absent state. Recreating a wheel or
-virtual environment therefore does not move private state.
+and read-only operations do not create absent state. Recreating a virtual
+environment therefore does not move private state.
 
 CareerOS does not silently migrate the former checkout-local defaults. An
 existing user should stop writers, make a supported SQLite backup, copy the
@@ -467,9 +462,51 @@ malformed response as a collection failure rather than an empty result.
 
 Himalayas publishes a free, documented public JSON API that requires no API
 key or authentication. Its browse endpoint returns at most 20 jobs per request,
-and the feed is cached and refreshed every 24 hours, so CareerOS enforces a
-documented 24-hour polling floor; the API rate-limits excessive volume with
-HTTP 429.
+and its documented cache/update cadence supports CareerOS's conservative
+24-hour polling floor; the API rate-limits excessive volume with HTTP 429.
+
+### Provider attribution and data rights
+
+The MIT license covers Career WatchPost source code, not provider job
+descriptions, payloads, trademarks, logos, or employer content. Local
+collection is a private workflow; it is not permission to publish a feed,
+redistribute structured listings, or run a live-data portfolio demo. Preserve
+source labels and original listing links, and review current provider terms
+before any use beyond the local workflow.
+
+- [Arbeitnow terms](https://www.arbeitnow.com/terms/) and the
+  [Remote OK feed guidance](https://remoteok.com/faq) require source credit and
+  links back to the source listing.
+- [Jobicy API/RSS guidance](https://jobicy.com/jobs-rss-feed) requires canonical
+  URLs, source attribution, hourly-or-slower synchronization, and no
+  presentation as an original posting.
+- [Remotive API terms](https://remotive.com/remote-jobs/api) require a Remotive
+  link and source mention and prohibit third-party job-site and lead-capture
+  uses.
+- [Himalayas API terms](https://himalayas.app/terms) require an unchanged
+  application link and visible source link, prohibit onward job-board,
+  aggregator, or structured-data redistribution, and require removal after
+  expiry.
+- We Work Remotely has no broad redistribution grant established by this
+  review. [Working Nomads terms](https://www.workingnomads.com/terms-and-conditions)
+  restrict resale and competitive-product use; its undocumented listing
+  endpoint remains a local-use uncertainty.
+
+The configurable ATS integrations are narrow published/public read-only
+interfaces, not general redistribution licences: see the official
+[Lever developer FAQ](https://hire.lever.co/developer/support),
+[Greenhouse Job Board API](https://docs.greenhouse.io/job-board.html),
+[Workable careers-page API guidance](https://help.workable.com/hc/en-us/articles/115012771647-Using-the-Workable-API-to-create-a-careers-page),
+and [SmartRecruiters Posting API](https://developers.smartrecruiters.com/docs/posting-api)
+and [API policy](https://developers.smartrecruiters.com/docs/the-smartrecruiters-platform).
+The configured account or board owner remains responsible for permission and
+current terms. Career WatchPost does not submit applications and does not
+authorize public redistribution of collected data.
+
+Before enabling a source, confirm that the intended collection and use are
+permitted; avoid collection where authorization remains unresolved. This
+source-code publication does not certify provider compliance or verify that
+Himalayas expiry-removal obligations are enforced automatically.
 
 ## Cross-source duplicate detection
 
@@ -890,9 +927,9 @@ a file whose owner or path has not been verified.
 
 ## Scheduled collection
 
-A periodic run can be installed from either a wheel or source environment.
-Templates ship inside the `careeros` package, and generated services execute
-the exact Python interpreter that owns the installed CareerOS artifact:
+A periodic run can be installed from the source environment. Templates ship
+inside the `careeros` package, and generated services execute the exact Python
+interpreter that owns the installed CareerOS checkout:
 
 ```bash
 careeros systemd install --dry-run                 # preview (writes nothing)
